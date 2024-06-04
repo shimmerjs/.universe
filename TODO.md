@@ -1,0 +1,7 @@
+- update Go config (use home-manager, clean up zshrc)
+- configure nostromo to ssh to herq
+- investigate zsh plugins not working
+- clean up zshrc
+- niv sources in home-manager modules?
+- make occurrences of shimmerjs parameterized via options...?
+- update herq

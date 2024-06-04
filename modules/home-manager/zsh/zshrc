@@ -1,0 +1,35 @@
+# Nix
+if [ -e '/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh' ]; then
+  . '/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh'
+fi
+
+if [ -e $HOME/.nix-profile/etc/profile.d/nix.sh ]; then 
+  . $HOME/.nix-profile/etc/profile.d/nix.sh; 
+fi
+
+# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
+[[ ! -f $HOME/.config/p10k.zsh ]] || source $HOME/.config/p10k.zsh
+
+# only put cwd on tab/window title
+export DISABLE_AUTO_TITLE="true"
+precmd () {print -Pn "\e]0;%~\a"}
+
+# kubectl autocomplete
+source <(kubectl completion zsh)
+compdef __start_kubectl k
+
+# brolang config
+export GO111MODULE="on"
+# set these explicitly so they are available to shell scripts
+export GOPATH="$HOME/go"
+export GOBIN="$GOPATH/bin"
+
+# - add user controlled bin directory to front of PATH, ensures
+#   those binaries override nix provided binaries when provided
+# - followed by go binaries
+export PATH="$HOME/bin:$GOBIN:$PATH"
+
+# fzf powered shell history
+h() {
+  print -z $( ([ -n "$ZSH_NAME" ] && fc -l 1 || history) | fzf +s --tac +x -e --height "50%" | sed -E 's/ *[0-9]*\*? *//' | sed -E 's/\\/\\\\/g')
+}
