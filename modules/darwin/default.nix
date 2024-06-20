@@ -1,3 +1,4 @@
+{ ... }:
 {
   imports = [
     ../nix
@@ -10,8 +11,7 @@
   nix = {
     # We install Nix using a separate installer for macOS, this setting tells 
     # nix-darwin to just use whatever is running.
-    # TODO: can't use daemon because nix-darwin says it requires build users...
-    # useDaemon = true;
+    useDaemon = true;
     settings = {
       trusted-users = [ "root" "shimmerjs" ];
       allowed-users = [ "shimmerjs" ];
