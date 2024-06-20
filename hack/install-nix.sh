@@ -3,7 +3,7 @@
 # Installs Nix on non-NixOS hosts.
 
 set -eu
-source .env
+source ${BASH_SOURCE[0]}/.env
 
 echo "installing nix@$NIX_VERSION"
 
