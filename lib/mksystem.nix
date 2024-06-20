@@ -23,6 +23,7 @@ systemFn rec {
 
   modules = [
     osConfig
+    (if darwin then inputs.mac-app-util.darwinModules.default else { })
   ] ++ (if homeMgr then # TODO: figure out how to make this conditional inline
     [
       home-manager.home-manager
@@ -30,6 +31,7 @@ systemFn rec {
         home-manager.useGlobalPkgs = true;
         home-manager.useUserPackages = true;
         home-manager.users.${user} = import hmConfig { inputs = inputs; };
+        home-manager.sharedModules = (if darwin then [ inputs.mac-app-util.homeManagerModules.default ] else [ ]);
       }
     ] else [ ]);
 }

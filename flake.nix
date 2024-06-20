@@ -13,6 +13,9 @@
       url = "github:LnL7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # Helps address issue where Nix-intalled apps don't show up in Spotlight
+    mac-app-util.url = "github:hraban/mac-app-util";
   };
 
   outputs = inputs@{ self, nixpkgs, home-manager, darwin, ... }:
