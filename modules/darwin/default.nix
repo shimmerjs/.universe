@@ -20,10 +20,10 @@
 
   programs.zsh.enable = true;
 
-  # Explicitly set up user home directory to workaround nix-darwin issue:
-  # https://github.com/LnL7/nix-darwin/issues/423
   users.users.shimmerjs = {
     name = "shimmerjs";
+    # Explicitly set up user home directory to workaround nix-darwin issue:
+    # https://github.com/LnL7/nix-darwin/issues/423
     home = "/Users/shimmerjs";
   };
 }

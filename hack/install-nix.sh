@@ -2,8 +2,7 @@
 
 # Installs Nix on non-NixOS hosts.
 
-set -eu
-source $(dirname ${BASH_SOURCE[0]})/.env
+source $(dirname ${BASH_SOURCE[0]})/lib.sh
 
 echo "installing nix@$NIX_VERSION"
 

@@ -2,7 +2,7 @@
   programs.kitty = {
     enable = true;
     settings = {
-      # Dont update unless its via nix
+      # Dont update unless its via Nix
       update_check_interval = 0;
 
       startup_session = "sessions/default.conf";

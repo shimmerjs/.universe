@@ -27,6 +27,12 @@
           darwin = true;
           homeMgr = true;
         };
+        aw-chainguard = mkSystem "aw-chainguard" {
+          system = "aarch64-darwin";
+          user = "shimmerjs";
+          darwin = true;
+          homeMgr = true;
+        };
         # TODO: personal mac mini
       };
       # TODO: nixosConfigurations:
