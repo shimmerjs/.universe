@@ -1,7 +1,8 @@
-{ ... }:
-let
-  cfgPath = "Library/Preferences/com.knollsoft.Rectangle.plist";
-in
+# Config for Rectangle, window management for macOS.
+{ pkgs, ... }:
 {
-  home.file."${cfgPath}".source = ./com.knollsoft.Rectangle.plist;
+  home.file."Library/Preferences/com.knollsoft.Rectangle.plist".source = ./com.knollsoft.Rectangle.plist;
+  home.packages = with pkgs; [
+    rectangle
+  ];
 }
