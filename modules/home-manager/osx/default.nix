@@ -1,5 +1,9 @@
 { pkgs, ... }:
 {
+  imports = [
+    ./rectangle
+  ];
+
   programs.git = {
     extraConfig = {
       credential = {
