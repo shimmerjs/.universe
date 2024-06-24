@@ -1,5 +1,9 @@
 { pkgs, ... }:
 {
+  imports = [
+    ./go.nix
+  ];
+
   home.packages = with pkgs; [
     niv # Manages pinned dependencies for Nix projects
 
@@ -23,14 +27,6 @@
 
     # Languages and language tooling
     yarn
-    go
-    gopls
-    gopkgs
-    godef
-    golint
-    gocode-gomod
-    gotools
-    golangci-lint
     # https://github.com/microsoft/vscode-remote-release/issues/648#issuecomment-503148523
     nodejs-18_x
     nixpkgs-fmt
