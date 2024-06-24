@@ -42,6 +42,7 @@
       AppleShowAllExtensions = true;
       AppleShowAllFiles = true;
 
+      # Don't correct me
       NSAutomaticCapitalizationEnabled = false;
       NSAutomaticDashSubstitutionEnabled = false;
       NSAutomaticPeriodSubstitutionEnabled = false;
@@ -78,6 +79,15 @@
         # Limit DS_Store as much as possible
         DSDontWriteNetworkStores = true;
         DSDontWriteUSBStores = true;
+      };
+
+      "NSGlobalDomains" = {
+        # Make key-repeat more responsive + faster by default, defined here because
+        # we can define the fractional values as strings. 
+        #
+        # system.defaults.NSGlobalDomain counterpart is typed as int.
+        InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
+        KeyRepeat = 0.5; # How quickly key repeats, default is 2 or 30ms
       };
     };
   };
