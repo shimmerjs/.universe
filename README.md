@@ -12,5 +12,11 @@ aren't available via nixpkgs).
 # Will prompt installation of XCode CLI tools
 git clone https://github.com/shimmerjs/.universe && cd .universe
 hack/install-nix.nix
-
+hack/init-darwin.sh
 ```
+
+## Prior Art
+
+- https://github.com/mitchellh/nixos-config for general layout and approach in a
+  flakey world.
+- [Activating `nix-darwin` settings on switch instead of next login](https://medium.com/@zmre/nix-darwin-quick-tip-activate-your-preferences-f69942a93236)
