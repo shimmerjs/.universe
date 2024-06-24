@@ -1,3 +1,4 @@
+# home-manager configuration applied to all macOS hosts.
 { pkgs, ... }:
 {
   imports = [
@@ -15,5 +16,6 @@
   home.packages = with pkgs; [
     # Manage macOS CoreFoundation libraries with Nix
     darwin.CF
+    telegram-desktop
   ];
 }

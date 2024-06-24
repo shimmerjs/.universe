@@ -6,7 +6,9 @@
   ];
 
   networking = {
-    hostName = "nostromo";
-    computerName = "nostromo";
+    hostName = "aw-chainguard";
+    computerName = "aw-chainguard";
   };
+
+  # TODO: default browser
 }
