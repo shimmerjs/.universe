@@ -43,10 +43,7 @@ in
     };
     sessionVariables = {
       HYPHEN_INSENSITIVE = "true";
-      DISABLE_AUTO_UPDATE = "true";
       COMPLETION_WAITING_DOTS = "false";
-      # Try to fix ansi colors: https://superuser.com/a/448892
-      CLICOLOR = 1;
       GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
       BAT_THEME = "OneHalfLight";
     };

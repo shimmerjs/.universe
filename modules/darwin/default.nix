@@ -92,12 +92,6 @@
     };
   };
 
-  # Automatically apply macOS preference changes without requiring login/logout
-  system.activationScripts.postUserActivation.text = ''
-    # Following line should allow us to avoid a logout/login cycle
-    /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u
-  '';
-
   # Enable homebrew for all macOS hosts to install apps that aren't available
   # via nixpkgs
   homebrew = {
@@ -113,4 +107,10 @@
       "flycut" # Clipboard manager
     ];
   };
+
+  # Automatically apply macOS preference changes without requiring login/logout
+  system.activationScripts.postUserActivation.text = ''
+    # Following line should allow us to avoid a logout/login cycle
+    /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u
+  '';
 }

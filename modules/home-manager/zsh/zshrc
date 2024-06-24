@@ -9,15 +9,9 @@ precmd () {print -Pn "\e]0;%~\a"}
 source <(kubectl completion zsh)
 compdef __start_kubectl k
 
-# brolang config
-export GO111MODULE="on"
-# set these explicitly so they are available to shell scripts
-export GOPATH="$HOME/go"
-export GOBIN="$GOPATH/bin"
-
-# - add user controlled bin directory to front of PATH, ensures
-#   those binaries override nix provided binaries when provided
-# - followed by go binaries
+# Add user controlled ad hoc bin directories to front of PATH, ensures that 
+# these binaries take precedence over nix-provided binaries when they conflict,
+# allowing quick and dirty testing of dev builds, etc.
 export PATH="$HOME/bin:$GOBIN:$PATH"
 
 # fzf powered shell history
