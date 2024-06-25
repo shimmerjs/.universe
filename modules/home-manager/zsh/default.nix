@@ -7,7 +7,6 @@ in
   programs.zsh = with pkgs; {
     enable = true;
     autosuggestion.enable = true;
-    historySubstringSearch.enable = true;
     enableCompletion = true;
     syntaxHighlighting.enable = true;
     initExtra = builtins.readFile ./zshrc;
@@ -46,10 +45,6 @@ in
     sessionVariables = {
       # Highlight the portion of the command populated via history query by 
       # dimming the part we typed in.
-      HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND = "fg=white";
-      # Highlight failed query by making it red.
-      HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND = "fg=red,bold";
-      HYPHEN_INSENSITIVE = "true";
       COMPLETION_WAITING_DOTS = "false";
       GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
       BAT_THEME = "OneHalfLight";
