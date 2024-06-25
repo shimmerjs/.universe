@@ -66,12 +66,12 @@
       ShowPathbar = true;
       ShowStatusBar = true;
       FXPreferredViewStyle = "Nlsv"; # Default to list view
-
+      FXDefaultSearchScope = "SCcf"; # Search current folder
       # Don't show icons on the desktop
       CreateDesktop = false;
     };
 
-    screencapture.location = "~/Pictures/screenshots";
+    screencapture.location = "/Users/shimmerjs/Pictures/screenshots";
 
     # Settings that aren't covered by nix-darwin APIs
     CustomUserPreferences = {
@@ -89,7 +89,19 @@
         InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
         KeyRepeat = 0.5; # How quickly key repeats, default is 2 or 30ms
       };
+
+      # Finder settings not covered by nix-darwin module...
+      # TODO: move all to this section so I can just deal with preferences 
+      # structure instead of whatever nix-darwin exposes _and_ preferences
+      "com.apple.finder" = {
+        # Always keep folders at top, even when sorting files by name
+        _FXSortFoldersFirst = true;
+        # Make new finder windows open up in ~/
+        NewWindowTarget = "PfLo";
+        NewWindowTargetPath = "file:///Users/shimmerjs";
+      };
     };
+
   };
 
   # Enable homebrew for all macOS hosts to install apps that aren't available
@@ -105,6 +117,7 @@
     brews = [ ];
     casks = [
       "flycut" # Clipboard manager
+      "docker" # Tool for creation of human suffering
     ];
   };
 
