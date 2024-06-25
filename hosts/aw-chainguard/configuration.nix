@@ -10,5 +10,9 @@
     computerName = "aw-chainguard";
   };
 
-  # TODO: default browser
+  homebrew = {
+    casks = [
+      "docker" # Tool for creation of human suffering
+    ];
+  };
 }

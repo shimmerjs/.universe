@@ -3,12 +3,12 @@
 {
   imports = [
     ../../modules/home-manager
-    ../../modules/home-manager/osx
-    ../../modules/home-manager/tools
-    ../../modules/home-manager/tools/dev.nix
-    ../../modules/home-manager/git
+    ../../modules/home-manager/darwin
     ../../modules/home-manager/kitty
     ../../modules/home-manager/vscode
-    ../../modules/home-manager/zsh
   ];
+
+  programs.git = {
+    userEmail = "alex.weidner@chainguard.dev";
+  };
 }

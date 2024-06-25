@@ -5,7 +5,6 @@
     enable = true;
 
     userName = "alex weidner";
-    userEmail = "shimmerjs@dpu.sh";
 
     extraConfig = {
       pull = {

@@ -1,7 +1,7 @@
 { pkgs, ... }:
 let
-  # TODO: integrate this with flake.nix?
-  sources = import ../../../nix/sources.nix;
+  # TODO: how to integrate this with flake.nix?
+  sources = import ../../nix/sources.nix;
 in
 {
   programs.zsh = with pkgs; {
@@ -9,15 +9,35 @@ in
     autosuggestion.enable = true;
     enableCompletion = true;
     syntaxHighlighting.enable = true;
-    initExtra = builtins.readFile ./zshrc;
+    initExtra = ''
+      # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
+      [[ ! -f $HOME/.config/p10k.zsh ]] || source $HOME/.config/p10k.zsh
+
+      # only put cwd on tab/window title
+      export DISABLE_AUTO_TITLE="true"
+      precmd () {print -Pn "\e]0;%~\a"}
+
+      # Add user controlled ad hoc bin directories to front of PATH, ensures that 
+      # these binaries take precedence over nix-provided binaries when they conflict,
+      # allowing quick and dirty testing of dev builds, etc.
+      export PATH="$HOME/bin:$GOBIN:$PATH"
+
+      # fzf powered shell history
+      h() {
+        print -z $( ([ -n "$ZSH_NAME" ] && fc -l 1 || history) | fzf +s --tac +x -e --height "50%" | sed -E 's/ *[0-9]*\*? *//' | sed -E 's/\\/\\\\/g')
+      }
+
+      # Configure keybindings to allow incremental history search
+      # via zsh-autosuggestions
+      bindkey "^[[A" history-beginning-search-backward
+      bindkey "^[[B" history-beginning-search-forward
+    '';
     shellGlobalAliases = {
-      # TODO: try to put these aliases in the relevant modules
       k = "kubectl";
       ksh = "kitty +kitten ssh";
       kcopy = "kitty +kitten clipboard";
       kpaste = "kitty +kitten clipboard --get-clipboard";
-      j = "just";
-      bzl = "bazel";
+      bazel = "bazelisk";
       # Shortcut for showing images in the terminal
       icat = "kitty +kitten icat --scale-up";
       # Graphviz rendering with friendly settings for rendering in the terminal
@@ -43,8 +63,6 @@ in
       ignoreAllDups = true;
     };
     sessionVariables = {
-      # Highlight the portion of the command populated via history query by 
-      # dimming the part we typed in.
       COMPLETION_WAITING_DOTS = "false";
       GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
       BAT_THEME = "OneHalfLight";

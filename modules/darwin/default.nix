@@ -1,3 +1,5 @@
+# Default macOS system configuration applied to all macOS hosts. Additional 
+# modules are then layered on top or defined as part of the host definition.
 { ... }:
 {
   imports = [
@@ -101,7 +103,6 @@
         NewWindowTargetPath = "file:///Users/shimmerjs";
       };
     };
-
   };
 
   # Enable homebrew for all macOS hosts to install apps that aren't available
@@ -113,11 +114,9 @@
     caskArgs = {
       appdir = "~/Applications"; # Use non-global directory
     };
-    taps = [ ];
-    brews = [ ];
+
     casks = [
       "flycut" # Clipboard manager
-      "docker" # Tool for creation of human suffering
     ];
   };
 

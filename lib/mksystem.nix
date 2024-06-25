@@ -23,6 +23,8 @@ systemFn rec {
 
   modules = [
     osConfig
+    # Utility that ensures apps installed via nix show up in Spotlight and 
+    # the Applications folder
     (if darwin then inputs.mac-app-util.darwinModules.default else { })
   ] ++ (if homeMgr then # TODO: figure out how to make this conditional inline
     [
