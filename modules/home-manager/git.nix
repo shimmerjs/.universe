@@ -5,8 +5,13 @@
     enable = true;
 
     userName = "alex weidner";
+    userEmail = "shimmerjs@dpu.sh";
 
     extraConfig = {
+      init = {
+        defaultBranch = "main";
+      };
+
       pull = {
         rebase = "false";
       };

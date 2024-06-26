@@ -109,6 +109,7 @@
   # via nixpkgs
   homebrew = {
     enable = true;
+
     onActivation.cleanup = "uninstall"; # Clean up removed apps
 
     caskArgs = {
@@ -117,8 +118,12 @@
 
     casks = [
       "flycut" # Clipboard manager
+      "spotify" # I know
     ];
   };
+
+  # Add homebrew binaries to PATH
+  environment.systemPath = [ "/opt/homebrew/bin" ];
 
   # Automatically apply macOS preference changes without requiring login/logout
   system.activationScripts.postUserActivation.text = ''

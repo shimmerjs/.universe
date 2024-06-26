@@ -11,6 +11,13 @@
   };
 
   homebrew = {
+    taps = [
+      "chainguard-dev/tap" # Needed for chainctl, not gitsign
+    ];
+    brews = [
+      "gitsign"
+      "chainctl"
+    ];
     casks = [
       "docker" # Tool for creation of human suffering
     ];
