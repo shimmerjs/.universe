@@ -5,14 +5,29 @@ used).
 
 ### macOS
 
-Install Homebrew if it's going to be used for the host (e.g. for apps that 
-aren't available via nixpkgs).
+Initialize system without cloning the repo:
+
+```sh
+# Install XCode tools
+xcode-select --install
+# Install Homebrew
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# Install Nix
+sh <(curl -L https://releases.nixos.org/nix/nix-${NIX_VERSION:-'2.22.1'}/install)
+# Initialize system
+nix run nix-darwin \
+  --extra-experimental-features nix-command \
+  --extra-experimental-features flakes \
+  -- switch --flake "github:shimmerjs/.universe#${HOSTNAME:-$(hostname)}"
+```
+
+To set up the `~/.universe` repo for pulling more updates and applying them by
+hand, or tweaking that hosts config:
 
 ```sh
 # Will prompt installation of XCode CLI tools
-git clone https://github.com/shimmerjs/.universe && cd .universe
-hack/install-nix.nix
-hack/init-darwin.sh
+git clone https://github.com/shimmerjs/.universe $HOME/.universe && cd $HOME/.universe
+hack/switch.sh
 ```
 
 ## Prior Art
