@@ -21,14 +21,9 @@ in
       # these binaries take precedence over nix-provided binaries when they conflict,
       # allowing quick and dirty testing of dev builds, etc.
       export PATH="$HOME/bin:$GOBIN:$PATH"
-
-      # fzf powered shell history
-      h() {
-        print -z $( ([ -n "$ZSH_NAME" ] && fc -l 1 || history) | fzf +s --tac +x -e --height "50%" | sed -E 's/ *[0-9]*\*? *//' | sed -E 's/\\/\\\\/g')
-      }
-
+      
       # Configure keybindings to allow incremental history search
-      # via zsh-autosuggestions
+      # while using zsh-autosuggestions.
       bindkey "^[[A" history-beginning-search-backward
       bindkey "^[[B" history-beginning-search-forward
     '';
@@ -61,6 +56,7 @@ in
       ignoreSpace = true;
       ignoreDups = true;
       ignoreAllDups = true;
+      expireDuplicatesFirst = true;
     };
     sessionVariables = {
       COMPLETION_WAITING_DOTS = "false";
@@ -81,4 +77,9 @@ in
   # Add generated p10k config file to correct location for zshrc to find it and
   # source it
   home.file.".config/p10k.zsh".source = ./p10k.zsh;
+
+  programs.fzf = {
+    enable = true;
+    enableZshIntegration = true;
+  };
 }
