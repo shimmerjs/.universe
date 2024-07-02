@@ -34,7 +34,7 @@
           # https://docs.sigstore.dev/signing/gitsign/#file-config
           gitsign = {
             connectorID = "https://accounts.google.com";
-            autocloseTimeout = 1;
+            autocloseTimeout = 0;
           };
         };
       }
