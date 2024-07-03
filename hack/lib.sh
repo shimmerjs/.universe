@@ -3,7 +3,7 @@
 NIX_VERSION="2.22.1"
 
 HOSTNAME="${HOSTNAME:-$(hostname)}"
-UNIVERSE_PATH="${UNIVERSE_PATH:-$(dirname ${BASH_SOURCE[0]/..})}"
+UNIVERSE_PATH="${UNIVERSE_PATH:-$(dirname ${BASH_SOURCE[0]})/..}"
 
 DISTDIR="dist"
 RESULTDIR="result"
