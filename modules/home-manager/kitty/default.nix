@@ -11,6 +11,7 @@
       macos_thicken_font = "0.40";
       macos_show_window_title_in = "none";
       macos_colorspace = "default";
+      macos_option_as_alt = "yes"; # Make ALT-_ keybindings work
 
       tab_bar_margin_width = "5.0";
       tab_bar_style = "powerline";
