@@ -9,6 +9,11 @@
     ../../modules/home-manager/gcloud
   ];
 
+  home.packages = with pkgs; [
+    terraform
+    k3d
+  ];
+
   # Work-specific git config
   programs.git = {
     includes = [
@@ -16,7 +21,7 @@
         condition = "gitdir:~/dev/cg/"; # All chainguard repos must be signed
         contents = {
           user = {
-            email = "alex.chainguard.dev";
+            email = "alex.weidner@chainguard.dev";
           };
           commit = {
             gpgSign = true;
