@@ -8,21 +8,21 @@
     }
     {
       name = "vscode-bazel";
-      publisher = "BazelBuild";
-      version = "0.7.0";
-      sha256 = "05wvih09184bsp4rv2m55z0sasra2qrvch5m3bkbrjq7rcqgibgx";
+      publisher = "bazelbuild";
+      version = "0.10.0";
+      sha256 = "1fxid7g6rb9x6y68g76kzcjcdnjlifxdzd0cgiyhnzi6qp70w9gi";
     }
     {
       name = "markdown-mermaid";
       publisher = "bierner";
-      version = "1.20.0";
-      sha256 = "0g9xrssiw06rik0pz1kpv1smllxvnjfw50207gj70xnlvlxvpqjy";
+      version = "1.23.1";
+      sha256 = "1qyhm4cq5i2f1c17hy61bhr3h6ydg44s52ygqq6cga712mw951c5";
     }
     {
       name = "prettier-vscode";
       publisher = "esbenp";
-      version = "10.1.0";
-      sha256 = "01s0vi2h917mqfpdrhqhp2ijwkibw95yk2js0l587wvajbbry2s9";
+      version = "10.4.0";
+      sha256 = "1iy7i0yxnhizz40llnc1dk9q8kk98rz6ki830sq7zj3ak9qp9vzk";
     }
     {
       name = "markdown-table-formatter";
@@ -33,14 +33,20 @@
     {
       name = "go";
       publisher = "golang";
-      version = "0.39.1";
-      sha256 = "0kj8s71sfi1bjirdxv4wicwbmrdryll1sfnlfqwz7j2zc05961l0";
+      version = "0.41.4";
+      sha256 = "03gxgcvjk5plzkk7gjsrrck1kszzbzswkbcr33m3qlkyz4iw9nly";
+    }
+    {
+      name = "terraform";
+      publisher = "hashicorp";
+      version = "2.31.2024061114";
+      sha256 = "1y33lw058x9wll5b0y6rn71xgc54611d7dbbk38699hswp8xa3d2";
     }
     {
       name = "nix-ide";
       publisher = "jnoortheen";
-      version = "0.2.2";
-      sha256 = "1264027sjh9a112si0y0p3pk3y36shj5b4qkpsj207z7lbxqq0wg";
+      version = "0.3.1";
+      sha256 = "1cpfckh6zg8byi6x1llkdls24w9b0fvxx4qybi9zfcy5gc60r6nk";
     }
     {
       name = "gitless";
@@ -51,20 +57,20 @@
     {
       name = "python";
       publisher = "ms-python";
-      version = "2023.21.13101009";
-      sha256 = "0w58fyzx8qmrw29gv6167ppxcb2qb4jvc392z0w9v5ank351kccv";
+      version = "2024.9.2024062703";
+      sha256 = "07gd8zq20rk3mk2bikgbh5r168c6l2ap3pi8c9hbm7347mhfqv12";
     }
     {
       name = "remote-explorer";
       publisher = "ms-vscode";
-      version = "0.5.2023110609";
-      sha256 = "0aqx3r7k3ik4cyxn5fad8c6a0rm68gncr7g08pygsfmmmnbwm3jp";
+      version = "0.5.2024061309";
+      sha256 = "1hscgwzdwyd3pv6p24451y3rgi8wqf02arf6n502mb1v3sagiprg";
     }
     {
       name = "remote-server";
       publisher = "ms-vscode";
-      version = "1.6.2023110609";
-      sha256 = "0r10709r1vffi0wgib5xhq3haa6ash3mk0d9qz3hxi69gng58vd2";
+      version = "1.6.2024061709";
+      sha256 = "044f2qaj1dldsjyhb17b8s5z1dpkl3l386zfqrlilg9as1hw58ir";
     }
     {
       name = "everforest";
@@ -92,7 +98,7 @@
     }
     {
       name = "d2";
-      publisher = "Terrastruct";
+      publisher = "terrastruct";
       version = "0.8.8";
       sha256 = "12yj9ammrhrh0cnyr30x3d87d4n7q7j19cggdvyblbwmdln66ycy";
     }
