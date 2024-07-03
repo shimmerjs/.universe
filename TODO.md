@@ -7,6 +7,10 @@
 - [ ] Set up Rectangle launch agent (or whatever) via `nix-darwin`.
 - [ ] Setup Flycut launch agent (or whatever) via `nix-darwin`.
 - [ ] Sync settings for Flycut via `nix-darwin` or `home-manager`
+- [ ] Use shell created from `flake.nix` for `hack/` scripts instead of `nix-shell`?
+      - Confirm that using `nix-shell` uses unpinned channels that aren't
+        controlled by `flake.nix`.
+- [ ] Improve `$UNIVERSE_PATH`
 
 ## Long-term
 
