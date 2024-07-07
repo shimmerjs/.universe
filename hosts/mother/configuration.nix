@@ -3,6 +3,7 @@
 {
   imports = [
     ../../modules/darwin
+    ../../modules/darwin/play.nix
   ];
 
   networking = {
