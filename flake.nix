@@ -36,7 +36,12 @@
           darwin = true;
           homeMgr = true;
         };
-        # TODO: personal mac mini
+        mother = mkSystem "mother" {
+          system = "aarch64-darwin";
+          user = "shimmerjs";
+          darwin = true;
+          homeMgr = true;
+        };
       };
       # TODO: nixosConfigurations:
       # - herq
