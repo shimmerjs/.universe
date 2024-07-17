@@ -39,10 +39,23 @@
           # https://docs.sigstore.dev/signing/gitsign/#file-config
           gitsign = {
             connectorID = "https://accounts.google.com";
-            autocloseTimeout = 0;
+            autocloseTimeout = "1s";
           };
         };
       }
     ];
+  };
+
+  programs.ssh.extraConfig = ''
+    Host github.com
+      AddKeysToAgent yes
+      IdentityFile ~/.ssh/id_ed25519
+  '';
+
+  programs.gh = {
+    enable = true;
+    settings = {
+      git_protocol = "ssh";
+    };
   };
 }

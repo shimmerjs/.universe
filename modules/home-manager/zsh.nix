@@ -45,6 +45,8 @@ in
       batdiff = "git diff --name-only --diff-filter=d | xargs bat --diff";
       # For pretty-fying streams of mixed garbage that contain JSON objects 
       jqmess = "jq -R 'fromjson? | .'";
+      # Naive git aliases for common workflows.
+      gitsync = "git fetch upstream && git checkout main && git rebase upstream/master";
     };
     shellAliases = {
       ls = "ls -A --color=auto";
