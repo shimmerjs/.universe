@@ -1,8 +1,5 @@
-{ pkgs, ... }:
-let
-  # TODO: how to integrate this with flake.nix?
-  sources = import ../../nix/sources.nix;
-in
+# TODO: move more stuff out into dev.nix
+{ pkgs, inputs, ... }:
 {
   programs.zsh = with pkgs; {
     enable = true;
@@ -16,11 +13,6 @@ in
       # only put cwd on tab/window title
       export DISABLE_AUTO_TITLE="true"
       precmd () {print -Pn "\e]0;%~\a"}
-
-      # Add user controlled ad hoc bin directories to front of PATH, ensures that 
-      # these binaries take precedence over nix-provided binaries when they conflict,
-      # allowing quick and dirty testing of dev builds, etc.
-      export PATH="$HOME/bin:$GOBIN:$PATH"
       
       # Configure keybindings to allow incremental history search
       # while using zsh-autosuggestions.
@@ -42,11 +34,8 @@ in
       # Shortcut for showing image rendered from default graphviz settings
       # for terminal friendly graphs
       idot = "tdot | icat";
-      batdiff = "git diff --name-only --diff-filter=d | xargs bat --diff";
       # For pretty-fying streams of mixed garbage that contain JSON objects 
       jqmess = "jq -R 'fromjson? | .'";
-      # Naive git aliases for common workflows.
-      gitsync = "git fetch upstream && git checkout main && git rebase upstream/master";
     };
     shellAliases = {
       ls = "ls -A --color=auto";
@@ -62,16 +51,13 @@ in
     };
     sessionVariables = {
       COMPLETION_WAITING_DOTS = "false";
-      GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
       BAT_THEME = "OneHalfLight";
     };
     plugins = with sources; [
       {
         name = "powerlevel10k";
         file = "powerlevel10k.zsh-theme";
-        src = fetchFromGitHub {
-          inherit (sources.powerlevel10k) owner repo rev sha256;
-        };
+        src = inputs.powerlevel10k;
       }
     ];
   };
