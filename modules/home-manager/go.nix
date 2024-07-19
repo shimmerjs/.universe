@@ -6,6 +6,10 @@
     goPath = "dev/go";
   };
 
+  home.sessionPath = [
+    "$GOBIN"
+  ];
+
   # Go tools that are needed by editor tooling (gopls) or are just useful.
   home.packages = with pkgs; [
     gopls

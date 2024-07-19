@@ -1,3 +1,5 @@
+# Correctly installs gcloud CLI with the extra components required for
+# authenticating to GKE clusters.
 { pkgs, ... }:
 {
   home.packages = with pkgs;
