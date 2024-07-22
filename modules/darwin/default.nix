@@ -4,6 +4,7 @@
 {
   imports = [
     ../nix.nix
+    ../universe.nix
   ];
 
   # Used for backwards compatibility, please read the changelog before changing.

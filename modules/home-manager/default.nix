@@ -4,7 +4,6 @@
 # Should not assume graphical environment
 { pkgs, ... }:
 {
-  # Configuration for home-manager itself
   programs.home-manager.enable = true;
   home.stateVersion = "21.03"; # Version set by home-manager when first installed.
 
