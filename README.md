@@ -1,3 +1,94 @@
+Machine definitions for multiple hosts using NixOS, `nix-darwin`, and
+`home-manager`.
+
+As someone who has put off truly learning how Nix the language works by rifling
+through blogs, open-source repositories, issue trackers, et al, I attempt to pay
+that effort forward by heavily commenting the configurations themselves and
+providing minimal documentation explaining the how and why to serve as a basic
+reference for others.
+
+While the structure and approach of this repository have more or less settled,
+this repository is still very much an early stage WIP. See [TODO.md](./TODO.md)
+for information on various improvements I have in mind.
+
+## Repo Structure
+
+- `lib`: Nix libraries. The comments in [`lib/mksystem.nix`](./lib/mksystem.nix)
+  explain how the function plumbs additional configuration parameters to the
+  configuration modules that are instantiated for the created system.
+- `modules`: (Generally) reusable configuration modules.
+- `hosts`: NixOS/macOS machine definitions. Host Nix files define attribute sets
+  that are consumed by `lib/mksystem.nix` to instantiate the appropriate system 
+  configuration in `flake.nix`, e.g.:
+
+  ```nix
+  # hosts/example.nix
+  {
+    system = "aarch64-darwin"; # The system architecture.
+    user = "shimmerjs";        # The system's main user.
+
+    # Optional user-specific configuration that can be shared across hosts,
+    # see more info below.
+    homie = import ../homies/shimmerjs;
+
+    # OS config, which will be evaluated by nix-darwin or NixOS depending on the 
+    # value for 'system' above.
+    systemConfig = import ./configuration.nix;
+
+    # home-manager configuration for this host's main user as defined above.
+    home = import ./home.nix;
+  }
+  ```
+
+  Can then be instantiated in `flake.nix` by doing:
+
+  ```nix
+  # flake.nix 
+
+  outputs = inputs@{ self, nixpkgs, home-manager, darwin, ... }:
+    let
+      mkSystem = import ./lib/mksystem.nix { inherit nixpkgs inputs; };
+    in
+    {
+      darwinConfigurations = {
+        example = mkSystem "example";
+      };
+    };
+  };
+
+  # [...]
+  ```
+- `homies`: User-specific configurations that can be layered on top of 
+  host-specific system and home-manager config. The concept of homies allows
+  separating the concerns of configuring my user and configuring a specific 
+  host.
+  
+  A homie is structured as such:
+
+  ```nix
+  # homies/dennis/default.nix
+  {
+    # home-manager module defining cross-platform userland for our homie dennis.
+    # This sould be configuration that dennis always wants to apply to his hosts.
+    home = import ./home;
+    
+    # darwin and nixos are both attribute sets that define a system config
+    # module and an optional additional home-manager module that is added
+    # if this homie is imported into a system of that type.
+
+    darwin = {
+      systemConfig = { pkg, lib, config, ... }: { };
+      home = { pkg, lib, config, ... }: {};
+    };
+
+    nixos = {
+      systemConfig = { pkg, lib, config, ... }: { };
+      home = { pkg, lib, config, ... }: {};
+    };
+  }
+  ```
+- `hack`: Scripts and shit that make things chooch.
+
 ## Setting up a new host
 
 Create `hosts/$HOSTNAME/{configuration.nix,home.nix}` (if home-manager is to be
@@ -32,6 +123,7 @@ hack/switch.sh
 
 ## Prior Art
 
-- https://github.com/mitchellh/nixos-config for general layout and approach in a
-  flakey world.
+- https://github.com/mitchellh/nixos-config provided great inspiration and an 
+  initial foothold for general layout and approach in a flakey world. Still
+  hate Terraform, though.
 - [Activating `nix-darwin` settings on switch instead of next login](https://medium.com/@zmre/nix-darwin-quick-tip-activate-your-preferences-f69942a93236)
