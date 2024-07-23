@@ -7,9 +7,6 @@ let
   lib = nixpkgs.lib;
   attrByPath = lib.attrsets.attrByPath;
 
-  # Infer OS from system string.
-  isDarwin = lib.strings.hasSuffix "darwin" system;
-
   # Assume config file path based on the system name provided. 
   # `hosts/$HOST.nix` and `hosts/$HOST/default.nix` are supported.
   hostFile =
@@ -25,6 +22,9 @@ let
   # Define extra module arguments that are passed to system configurations and
   # home-manager configurations.
   moduleArgs = { inherit system hostname user inputs; };
+
+  # Infer OS from system string.
+  isDarwin = lib.strings.hasSuffix "darwin" system;
 
   # Get homies OS-specific configuration.
   # TODO: this probably doesnt gracefully handle partial objects
