@@ -5,6 +5,7 @@
 hostname:
 let
   lib = nixpkgs.lib;
+  attrByPath = lib.attrsets.attrByPath;
 
   # Infer OS from system string.
   isDarwin = lib.strings.hasSuffix "darwin" system;
@@ -29,8 +30,8 @@ let
   # TODO: this probably doesnt gracefully handle partial objects
   homieOSConfig =
     if isDarwin
-    then hostConfig.homie.darwin
-    else hostConfig.homie.nixos;
+    then attrByPath [ "homie" "darwin" ] { } hostConfig
+    else attrByPath [ "homie" "nixos" ] { } hostConfig;
 
   # We hook up home-manager if the host or the homie has defined a home function.
   loadHomeManager = hostConfig ? "home"
@@ -52,9 +53,9 @@ systemFn rec {
 
   modules = [
     # Load host system configuration if present.
-    (if hostConfig ? "systemConfig" then hostConfig.systemConfig else { })
+    hostConfig.systemConfig or { }
     # Load homie system configuration if present.
-    (if hostConfig ? "homie" then homieOSConfig.systemConfig else { })
+    homieOSConfig.systemConfig or { }
 
     # Ensure that apps installed via nix-darwin show up in Spotlight and the
     # Applications folder.
