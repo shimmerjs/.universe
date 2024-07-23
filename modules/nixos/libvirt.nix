@@ -1,4 +1,4 @@
-{ pkgs, user, .... }:
+{ pkgs, user, ... }:
 {
   security.polkit.enable = true;
   virtualisation.libvirtd.enable = true;
