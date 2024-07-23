@@ -4,7 +4,9 @@
   system = "x86_64-linux";
   user = "shimmerjs";
 
-  systemConfig = import ../modules/nixos/iso.nix;
+  systemConfig = import ../modules/nixos/iso.nix {
+    rootSSHKeyFile = ../homies/shimmerjs/shimmerjs.pub;
+  };
 }
 
 # TODO: deal with ssh/root.nix not existing anymore, should keep iso.nix pure
