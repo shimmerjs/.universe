@@ -12,6 +12,9 @@
   system.stateVersion = "22.05"; # Did you read the comment?
   time.timeZone = "America/New_York";
 
+  # NixOS-specific nix.gc configuration
+  nix.gc.dates = "weekly";
+
   programs.zsh.enable = true;
 
   users.mutableUsers = false;

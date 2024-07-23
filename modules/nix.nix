@@ -12,11 +12,6 @@
     };
     gc = {
       automatic = true;
-      interval = {
-        Hour = 3;
-        Minute = 0;
-        Weekday = 3;
-      };
     };
     # Trade disk space for cached builds
     extraOptions = ''

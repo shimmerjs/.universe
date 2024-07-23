@@ -17,6 +17,14 @@
     # multi-user builds, which is the default for all newer macOS nix 
     # installations.
     useDaemon = true;
+    # GC configuration that is specific to nix-darwin
+    gc = {
+      interval = {
+        Hour = 3;
+        Minute = 0;
+        Weekday = 3;
+      };
+    };
   };
 
   networking = {
