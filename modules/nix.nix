@@ -1,5 +1,5 @@
 # Default configuration for Nix itself that is used for most hosts.
-{ ... }:
+{ user, ... }:
 {
   nix = {
     settings = {
