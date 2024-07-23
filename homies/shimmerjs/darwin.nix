@@ -80,6 +80,7 @@
         "spotify"
         "docker"
         "bitwarden" # Bitwarden GUI
+        "keymapp" # Manage ergodox-ez keyboard graphically
       ];
     };
   };
@@ -94,6 +95,7 @@
 
     home.packages = with pkgs; [
       telegram-desktop
+      wally-cli # Manage ergodox-ez keyboard
     ];
 
     universe.home.rectangle = {
