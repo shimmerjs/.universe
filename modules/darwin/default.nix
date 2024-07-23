@@ -16,12 +16,7 @@
     # nix-darwin to just use whatever is running. It is also required for
     # multi-user builds, which is the default for all newer macOS nix 
     # installations.
-    # TODO: support additional users via options
     useDaemon = true;
-    settings = {
-      trusted-users = [ "root" user ];
-      allowed-users = [ user ];
-    };
   };
 
   networking = {
