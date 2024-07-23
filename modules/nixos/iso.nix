@@ -1,13 +1,13 @@
 # A minimal definition used to build ISO images for new machines.
 # Allows SSHing in for headless install with passwordless sudo.
-{ config, pkgs, hostname, ... }:
+{ config, pkgs, hostname, inputs, ... }:
 {
   imports = [
-    "${pkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
+    "${inputs.nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
 
     # Provide an initial copy of the NixOS channel so that the user
     # doesn't need to run "nix-channel --update" first.
-    "${pkgs}/nixos/modules/installer/cd-dvd/channel.nix"
+    "${inputs.nixpkgs}/nixos/modules/installer/cd-dvd/channel.nix"
 
     # passwordless root on image
     ./nixos/security/sudo.nix
@@ -15,7 +15,7 @@
     # ./nixos/ssh/root.nix
     # include tailscale config so that we can register the 
     # node with our mesh during bootstrapping
-    ./nixos/networking
+    # ./nixos/networking
   ];
 
   # Enable SSH in the boot process.
