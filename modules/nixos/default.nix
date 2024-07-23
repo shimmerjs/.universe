@@ -15,6 +15,8 @@
   # NixOS-specific nix.gc configuration
   nix.gc.dates = "weekly";
 
+  networking.hostName = hostname;
+
   programs.zsh.enable = true;
 
   users.mutableUsers = false;
