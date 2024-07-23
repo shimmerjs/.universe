@@ -25,7 +25,7 @@
       "wheel"
       "networkmanager"
     ];
-    honme = "/home/${user}";
+    home = "/home/${user}";
     shell = pkgs.zsh;
   };
 }
