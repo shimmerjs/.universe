@@ -35,6 +35,7 @@
         mother = mkSystem "mother";
       };
       nixosConfigurations = {
+        herq = mkSystem "herq";
         # Only used to create installable media for new hosts.
         freshmeat = mkSystem "freshmeat";
       };
