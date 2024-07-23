@@ -35,7 +35,7 @@ let
 
   # We hook up home-manager if the host or the homie has defined a home function.
   loadHomeManager = hostConfig ? "home"
-    || hostConfig.homie ? "home"
+    || lib.hasAttrByPath [ "homie" "home" ] hostConfig
     || homieOSConfig ? "home";
 
   # Resolve functions for defining system and home-manager based on OS.
