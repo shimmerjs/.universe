@@ -43,6 +43,7 @@
         herq = mkSystem "herq";
         # Only used to create installable media for new hosts.
         freshmeat = mkSystem "freshmeat";
+        expat = mkSystem "expat";
       };
       # TODO: nixosConfigurations:
       # - herq
