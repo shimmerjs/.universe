@@ -68,7 +68,10 @@ systemFn rec {
     {
       config._module.args = moduleArgs;
     }
-  ] ++ (lib.optionals loadHomeManager [
+  ] ++ (lib.optionals (hostConfig ? "diskConfig") [
+    inputs.disko.nixosModules.disko
+    hostConfig.diskConfig
+  ]) ++ (lib.optionals loadHomeManager [
     home-manager.home-manager
     {
       home-manager.useGlobalPkgs = true;
