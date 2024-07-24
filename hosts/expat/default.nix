@@ -20,6 +20,6 @@
   };
 
   diskConfig = import ../../modules/nixos/disko/simple-gpt-lvm.nix {
-    disk = "nvme0n1";
+    disk = "/dev/nvme0n1";
   };
 }
