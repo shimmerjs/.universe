@@ -30,4 +30,9 @@
     home = "/home/${user}";
     shell = pkgs.zsh;
   };
+
+  # Always ensure git is installed so we can pull the config repo.
+  environment.systemPackages = with pkgs; [
+    git
+  ];
 }
