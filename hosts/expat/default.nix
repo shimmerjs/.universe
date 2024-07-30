@@ -16,7 +16,7 @@
     boot.loader.efi.canTouchEfiVariables = true;
 
     age.secrets.k3s-server-token.file = ../../homies/shimmerjs/secrets/k3s-server-token.age;
-    services.k3s.tokenFile = age.secrets.k3s-server-token.path;
+    services.k3s.tokenFile = config.age.secrets.k3s-server-token.path;
 
     users.users.${user}.openssh.authorizedKeys = {
       keyFiles = [
