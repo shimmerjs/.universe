@@ -1,9 +1,10 @@
 # Function that helps keep root flake.nix more declarative. Handles wiring up
 # various Nix configurations for a specific host.
-{ nixpkgs, inputs }:
+{ inputs }:
 
 hostname:
 let
+  nixpkgs = inputs.nixpkgs;
   lib = nixpkgs.lib;
   attrByPath = lib.attrsets.attrByPath;
 
@@ -15,19 +16,14 @@ let
     else ../hosts/${hostname}/default.nix;
   hostConfig = import hostFile;
 
-  system = hostConfig.system;
+  currentSystem = hostConfig.system;
   # TODO: allow homie to define user if present
   user = hostConfig.user;
 
-  # Define extra module arguments that are passed to system configurations and
-  # home-manager configurations.
-  moduleArgs = { inherit system hostname user inputs; };
-
   # Infer OS from system string.
-  isDarwin = lib.strings.hasSuffix "darwin" system;
+  isDarwin = lib.strings.hasSuffix "darwin" currentSystem;
 
   # Get homies OS-specific configuration.
-  # TODO: this probably doesnt gracefully handle partial objects
   homieOSConfig =
     if isDarwin
     then attrByPath [ "homie" "darwin" ] { } hostConfig
@@ -49,26 +45,23 @@ let
     else inputs.home-manager.nixosModules;
 in
 systemFn rec {
-  inherit system;
+  system = currentSystem;
+  # Expose some extra args to our system config modules
+  # Inspired by: https://github.com/mitchellh/nixos-config/blob/992fd3bc0984cd306e307fd59b22a37af77fca25/lib/mksystem.nix#L51-L58
+  # This allows modules listed here to add these parameters, e.g.
+  # { pkgs, config, lib, user, inputs, ...}: { ... }
+  specialArgs = { inherit currentSystem hostname user inputs; };
 
   modules = [
     # Load host system configuration if present.
     hostConfig.systemConfig or { }
     # Load homie system configuration if present.
     homieOSConfig.systemConfig or { }
-
+  ] ++ (lib.optionals isDarwin [
     # Ensure that apps installed via nix-darwin show up in Spotlight and the
     # Applications folder.
-    (if isDarwin then inputs.mac-app-util.darwinModules.default else { })
-
-    # Expose some extra args to our modules
-    # Inspired by: https://github.com/mitchellh/nixos-config/blob/992fd3bc0984cd306e307fd59b22a37af77fca25/lib/mksystem.nix#L51-L58
-    # This allows modules listed here to add these parameters, e.g.
-    # { pkgs, config, lib, username, ...}: { ... }
-    {
-      config._module.args = moduleArgs;
-    }
-  ] ++ (lib.optionals (hostConfig ? "diskConfig") [
+    inputs.mac-app-util.darwinModules.default
+  ]) ++ (lib.optionals (hostConfig ? "diskConfig") [
     inputs.disko.nixosModules.disko
     hostConfig.diskConfig
   ]) ++ (lib.optionals loadHomeManager [
@@ -76,7 +69,8 @@ systemFn rec {
     {
       home-manager.useGlobalPkgs = true;
       home-manager.useUserPackages = true;
-      home-manager.extraSpecialArgs = moduleArgs;
+      # Propagate the same set of specialArgs to home-manager configuration.
+      home-manager.extraSpecialArgs = specialArgs;
       home-manager.users.${user}.imports = [
         hostConfig.home or { }
         hostConfig.homie.home or { }

@@ -8,11 +8,3 @@
     rootSSHKeyFile = ../homies/shimmerjs/shimmerjs.pub;
   };
 }
-
-# TODO: deal with ssh/root.nix not existing anymore, should keep iso.nix pure
-# {
-#   users.extraUsers.root.openssh.authorizedKeys.keys = [
-#     (builtins.readFile ./keys/booninite.keys)
-#     (builtins.readFile ./keys/shimmerjs-key)
-#   ];
-# }

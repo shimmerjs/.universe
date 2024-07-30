@@ -19,6 +19,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    agenix = {
+      url = "github:ryantm/agenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.darwin.follows = "darwin";
+    };
+
     # Helps address issue where Nix-intalled apps don't show up in Spotlight
     mac-app-util.url = "github:hraban/mac-app-util";
 
@@ -29,9 +35,9 @@
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, home-manager, darwin, disko, ... }:
+  outputs = inputs@{ self, nixpkgs, home-manager, darwin, disko, agenix, ... }:
     let
-      mkSystem = import ./lib/mksystem.nix { inherit nixpkgs inputs; };
+      mkSystem = import ./lib/mksystem.nix { inherit inputs; };
     in
     {
       darwinConfigurations = {

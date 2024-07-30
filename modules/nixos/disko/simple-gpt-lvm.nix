@@ -1,3 +1,4 @@
+# An extremely simple disk configuration for single disk machines.
 { disk ? "/dev/sda" }:
 { lib, ... }: {
   disko.devices = {

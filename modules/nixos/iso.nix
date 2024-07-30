@@ -1,6 +1,7 @@
-{ rootSSHKeyFile }:
 # A minimal definition used to build ISO images for new machines.
 # Allows SSHing in for headless install with passwordless sudo.
+# TODO: Add install scripts to this to simplify the various steps
+{ rootSSHKeyFile }:
 { config, pkgs, hostname, modulesPath, ... }:
 {
   imports = [
@@ -12,11 +13,13 @@
 
     # Passwordless sudo on image
     ./sudo.nix
-    # Enable tailscale for registration during machine bootstrapping
-    ./tailscale.nix
+    # Configure Nix to enable flakes, etc
+    ../nix.nix
+  ];
 
-    # root ssh key setup for installation
-    # ./nixos/ssh/root.nix
+  # Make sure we can git clone config repo on new host
+  environment.systemPackages = with pkgs; [
+    git
   ];
 
   # Enable SSH in the boot process.
