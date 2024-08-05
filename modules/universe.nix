@@ -2,7 +2,7 @@
 # .universe.
 { pkgs, hostname, ... }:
 let
-  cmd = if pkgs.stdenv.isDarwin then "darwin-rebuild" else "nixos-rebuild";
+  cmd = if pkgs.stdenv.isDarwin then "darwin-rebuild" else "sudo nixos-rebuild";
 in
 {
   environment.variables = {
