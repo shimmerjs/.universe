@@ -7,7 +7,7 @@ that effort forward by heavily commenting the configurations themselves and
 providing minimal documentation explaining the how and why to serve as a basic
 reference for others.
 
-- [`lib/mksystem.nix](./lib/mksystem.nix) is used to define [hosts](#hosts) in 
+- [`lib/mksystem.nix`](./lib/mksystem.nix) is used to define [hosts](#hosts) in 
   `flake.nix`.
     - Sets `specialArgs` for OS and home-manager modules to propagate information
       about the current user and system to children modules.
