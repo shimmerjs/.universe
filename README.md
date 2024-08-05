@@ -1,5 +1,5 @@
 Machine definitions for multiple hosts using NixOS, `nix-darwin`, and
-`home-manager`.
+`home-manager` with flakes.
 
 As someone who has put off truly learning how Nix (the language) works by rifling
 through blogs, open-source repositories, issue trackers, et al, I attempt to pay
@@ -17,7 +17,7 @@ reference for others.
   user-specific configuration to be reused across multiple hosts.
 - Non-critical secrets (`k3s` server token) are managed with 
   [ryantm/agenix](github.com/ryantm/agenix). Critical secrets (`tailscale` 
-  reusable auth key, private keys) are managed using Bitwarden.
+  reusable auth key, private keys) are managed using Bitwarden, outside of Nix.
 
 While the structure and approach of this repository have more-or-less settled,
 it is still very much an early stage WIP. TODOs are tracked in 
@@ -80,8 +80,8 @@ outputs = inputs@{ self, nixpkgs, home-manager, darwin, ... }:
 
 ## Homies
 
-User-specific configurations that can be layered on top of host-specific system
-and home-manager config. The concept of homies allows separating the concerns of
+User-specific configurations that can be layered on top of a host's system and
+home-manager config. The concept of homies allows separating the concerns of
 configuring my user and configuring a specific host.
 
 A homie is structured as such:
