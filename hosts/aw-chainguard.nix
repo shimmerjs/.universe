@@ -14,6 +14,7 @@
         "gitsign"
         "chainctl"
         "hcledit"
+        "helm" # :[
       ];
     };
   };
@@ -57,6 +58,10 @@
           };
         }
       ];
+
+      aliases = {
+        cs = "commit -s";
+      };
     };
 
     # Set up SSH key for github.com authentication
