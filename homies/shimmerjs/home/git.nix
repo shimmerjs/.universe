@@ -25,6 +25,11 @@
         editor = "vim";
       };
     };
+
+    aliases = {
+      c = "commit";
+      co = "checkout";
+    };
   };
 
   programs.zsh = {
