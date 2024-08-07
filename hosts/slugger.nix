@@ -10,7 +10,7 @@
 
     users.users.${user}.openssh.authorizedKeys = {
       keyFiles = [
-        ../../homies/shimmerjs/shimmerjs.pub
+        ../homies/shimmerjs/shimmerjs.pub
       ];
     };
   };
