@@ -4,7 +4,7 @@
 
   systemConfig = { user, inputs, ... }: {
     imports = [
-      ../modules/nixos/rasperry-pi-4b.nix
+      ../modules/nixos/raspberry-pi-4b.nix
       inputs.agenix.nixosModules.default
     ];
 
