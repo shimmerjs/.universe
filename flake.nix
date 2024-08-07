@@ -50,6 +50,7 @@
         # Only used to create installable media for new hosts.
         freshmeat = mkSystem "freshmeat";
         expat = mkSystem "expat";
+        slugger = mkSystem "slugger";
       };
       # TODO: nixosConfigurations:
       # - herq
