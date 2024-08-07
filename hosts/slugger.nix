@@ -15,7 +15,7 @@
     };
   };
 
-  diskConfig = import ../../modules/nixos/disko/simple-gpt-lvm.nix {
+  diskConfig = import ../modules/nixos/disko/simple-gpt-lvm.nix {
     disk = "/dev/mmcblk1";
   };
 }
