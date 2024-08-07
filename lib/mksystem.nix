@@ -1,5 +1,9 @@
-# Function that helps keep root flake.nix more declarative. Handles wiring up
-# various Nix configurations for a specific host.
+# Function that helps keep root flake.nix more declarative and abstracts away
+# common machinery for host definitions, such as wiring up various required 
+# modules.
+#
+# It also passes on additional special arguments that can be accessed by 
+# configuration modules for better parameterization.
 { inputs }:
 
 hostname:
@@ -48,6 +52,11 @@ systemFn rec {
   system = currentSystem;
   # Expose some extra args to our system config modules
   # Inspired by: https://github.com/mitchellh/nixos-config/blob/992fd3bc0984cd306e307fd59b22a37af77fca25/lib/mksystem.nix#L51-L58
+  #
+  # We use specialArgs instead of the config._module.args approach because using
+  # config._module.args to populate module imports causes infinite recursion.
+  # https://daiderd.com/nix-darwin/manual/index.html#opt-_module.args
+  # 
   # This allows modules listed here to add these parameters, e.g.
   # { pkgs, config, lib, user, inputs, ...}: { ... }
   specialArgs = { inherit currentSystem hostname user inputs; };
