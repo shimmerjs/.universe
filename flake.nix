@@ -14,16 +14,20 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Manage disk configuration with Nix
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Secret management
     agenix = {
       url = "github:ryantm/agenix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.darwin.follows = "darwin";
     };
+
+    raspberry-pi-nix.url = "github:nix-community/raspberry-pi-nix";
 
     # Helps address issue where Nix-intalled apps don't show up in Spotlight
     mac-app-util.url = "github:hraban/mac-app-util";
