@@ -7,12 +7,13 @@
   systemConfig = { config, lib, pkgs, ... }: {
     homebrew = {
       taps = [
-        "chainguard-dev/tap" # Needed for chainctl, not gitsign
+        "chainguard-dev/tap"
         "minamijoyo/hcledit"
       ];
       brews = [
         "gitsign"
         "chainctl"
+        "melange"
         "hcledit"
         "helm" # :[
       ];
