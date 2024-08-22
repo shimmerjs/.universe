@@ -17,6 +17,9 @@
         "hcledit"
         "helm" # :[
       ];
+      casks = [
+        "google-chrome"
+      ];
     };
   };
 
@@ -77,6 +80,73 @@
       enable = true;
       settings = {
         git_protocol = "ssh";
+      };
+    };
+    # TODO: patch home-manager to support defining host configuration
+    # or at least generate from root settings, gh config story is dumb 
+    # enough to drop it
+    home.file."${config.xdg.configHome}/gh/hosts.yml".text = ''
+      github.com:
+        git_protocol: ssh
+        users:
+            shimmerjs:
+                git_protocol: ssh
+        user: shimmerjs
+    '';
+
+    programs.gh-dash = {
+      enable = true;
+      settings = {
+        prSections = [
+          {
+            title = "prs/team";
+            filters = "is:open author:joshrwolf";
+          }
+          {
+            title = "prs/review-requested";
+            filters = "is:open review-requested:@me";
+          }
+          {
+            title = "prs/mine";
+            filters = "is:open author:@me";
+            layout = {
+              author = {
+                hidden = true;
+              };
+            };
+          }
+        ];
+        defaults = {
+          preview = {
+            width = 80;
+          };
+        };
+        repoPaths = {
+          "chainguard-*/*" = "~/dev/cg/chainguard-*/*";
+          "wolfi-dev/*" = "~/dev/cg/wolfi-dev/*";
+        };
+        # Based on Everforest Light Medium, to be consistent with Kitty + VSCode
+        # https://github.com/sainnhe/everforest/blob/master/palette.md#light
+        theme = {
+          colors = {
+            text = {
+              primary = "#5C6A72";
+              secondary = "#3A94C5";
+              inverted = "#708089";
+              faint = "#939F91";
+              warning = "#DFA000";
+              success = "#93B259";
+            };
+            background = {
+              selected = "#E6E2CC";
+            };
+            border = {
+              primary = "#829181";
+              secondary = "#A6B0A0";
+              faint = "#BDC3AF";
+            };
+          };
+        };
       };
     };
   };
