@@ -10,7 +10,6 @@
       ../modules/darwin/tailscale.nix
     ];
 
-    # TODO: fetch additional network services before applying
     networking.knownNetworkServices = [
       "Ethernet"
       "Thunderbolt Bridge"
