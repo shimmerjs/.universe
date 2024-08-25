@@ -1,9 +1,15 @@
 {
   # nix-darwin configuration
-  systemConfig = { ... }: {
+  systemConfig = { pkgs, ... }: {
     imports = [
       ../../modules/darwin
       ../../modules/darwin/homebrew.nix
+    ];
+
+    # Add fonts for development
+    # TODO: move into dev-specific profile, some macOS hosts arent used for dev
+    fonts.packages = with pkgs; [
+      nerdfonts
     ];
 
     system.defaults = {

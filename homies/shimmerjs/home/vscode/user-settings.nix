@@ -113,6 +113,7 @@
   "editor" = {
     "tabSize" = 2;
     "fontSize" = 12;
+    "fontFamily" = "'FiraCode Nerd Font Mono', monospace";
     # vertical guides for line length
     "rulers" = [ 80 120 ];
     "minimap" = {

@@ -19,6 +19,7 @@
       window_border_width = "0.75pt";
 
       font_size = "16.0";
+      font_family = "FiraCode Nerd Font Mono";
 
       enable_audio_bell = "no";
 
