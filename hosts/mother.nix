@@ -14,6 +14,7 @@
       "Ethernet"
       "Thunderbolt Bridge"
       "Wi-Fi"
+      "ProtonVPN"
     ];
 
     users.users.${user}.openssh.authorizedKeys = {
