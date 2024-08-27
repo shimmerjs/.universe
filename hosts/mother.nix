@@ -5,9 +5,13 @@
 
   homie = import ../homies/shimmerjs;
 
-  systemConfig = { user, ... }: {
+  systemConfig = { pkgs, user, ... }: {
     imports = [
       ../modules/darwin/tailscale.nix
+    ];
+
+    environment.systemPackages = with pkgs; [
+      monero-cli
     ];
 
     networking.knownNetworkServices = [
