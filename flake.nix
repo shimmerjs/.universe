@@ -55,20 +55,7 @@
         freshmeat = mkSystem "freshmeat";
         expat = mkSystem "expat";
         slugger = mkSystem "slugger";
+        snake = mkSystem "snake";
       };
-      # TODO: nixosConfigurations:
-      # - herq
-      # - rpi k3s nodes
-      # - old mac mini running nixos
-      # nixosConfigurations = {
-      #   # Only used to create installable media for new hosts.
-      #   # (Hardcoded because flakes.)
-      #   freshmeat = mkSystem "freshmeat" {
-      #     # TODO(?): default value for mkSystem?
-      #     system = "x86_64-linux";
-      #     # TODO: not actually used because no home-manager. factor out?
-      #     user = "shimmerjs";
-      #   };
-      # };
     };
 }
