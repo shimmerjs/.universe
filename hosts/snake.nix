@@ -8,6 +8,10 @@
       inputs.agenix.nixosModules.default
     ];
 
+    # Required for ZFS pools on NixOS.
+    # TODO: automatically generate when needed
+    networking.hostId = "3bb167cd";
+
     users.users.${user}.openssh.authorizedKeys = {
       keyFiles = [
         ../homies/shimmerjs/shimmerjs.pub
@@ -71,20 +75,6 @@
             zfs_unmounted_fs = {
               type = "zfs_fs";
               options.mountpoint = "none";
-            };
-            zfs_legacy_fs = {
-              type = "zfs_fs";
-              options.mountpoint = "legacy";
-              mountpoint = "/zfs_legacy_fs";
-            };
-            zfs_testvolume = {
-              type = "zfs_volume";
-              size = "10M";
-              content = {
-                type = "filesystem";
-                format = "ext4";
-                mountpoint = "/ext4onzfs";
-              };
             };
           };
         };
