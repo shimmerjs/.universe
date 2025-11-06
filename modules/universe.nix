@@ -2,13 +2,13 @@
 # .universe.
 { pkgs, hostname, ... }:
 let
-  cmd = if pkgs.stdenv.isDarwin then "darwin-rebuild" else "sudo nixos-rebuild";
+  cmd = if pkgs.stdenv.isDarwin then "sudo darwin-rebuild" else "sudo nixos-rebuild";
 in
 {
   environment.variables = {
     UNIVERSE_PATH = "$HOME/.universe";
   };
-  # TODO: create proper script which can determine if anything is cloned to 
+  # TODO: create proper script which can determine if anything is cloned to
   # UNIVERSE_PATH and fall back to building flake from GitHub
   environment.shellAliases = {
     switch = "${cmd} switch --flake $UNIVERSE_PATH#${hostname}";

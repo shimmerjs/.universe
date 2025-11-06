@@ -7,9 +7,9 @@
       experimental-features = [ "nix-command" "flakes" ];
       trusted-users = [ "root" user ];
       allowed-users = [ user ];
-      # Get disk space back, UK style, apparently
-      auto-optimise-store = true;
     };
+    # Get disk space back, UK style, apparently
+    optimise.automatic = true;
     gc = {
       automatic = true;
     };

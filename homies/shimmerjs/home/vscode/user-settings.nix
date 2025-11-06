@@ -42,6 +42,8 @@
     "editor.tabSize" = 2;
     "editor.formatOnSave" = "explicit";
     "editor.defaultFormatter" = "fcrespo82.markdown-table-formatter";
+    "editor.wordWrap" = "bounded";
+    "editor.wordWrapColumn" = 80;
   };
   "[nix]" = {
     "editor.defaultFormatter" = "jnoortheen.nix-ide";
@@ -69,27 +71,27 @@
       "autopep8Path" = "~/.nix-profile/bin/autopep8";
     };
   };
-
   "bazel" = {
     "buildifierFixOnFormat" = "explicit";
   };
-
   "go" = {
     "lintOnSave" = "package";
     "useLanguageServer" = true;
   };
   "gopls" = {
     "ui.semanticTokens" = true;
-    "ui.completion.completionBudget" = "10ms";
+    "ui.completion.completionBudget" = "100ms";
     "deepCompletion" = true;
     "completeUnimported" = true;
+    "build.directoryFilters" = [
+      "-bazel**"
+      "-**/node_modules"
+    ];
   };
-
   "D2" = {
     "updateOnSave" = "explicit";
     "previewTheme" = "Terminal";
   };
-
   "prettier.requireConfig" = false;
 
   # File settings
@@ -101,21 +103,27 @@
       "**/bazel-*/*/**" = true;
       "**/node_modules/**" = true;
     };
+    "insertFinalNewline" = true;
   };
 
   # Editor settings
   # Helps deal with explorer font size
   "window.zoomLevel" = 2.0;
 
-  # color theme
-  "workbench.colorTheme" = "Everforest Light";
+  # Color theme and configuration
+  workbench.colorTheme = "Everforest Dark";
+  everforest.darkWorkbench = "material";
+  everforest.darkContrast = "soft";
 
   "editor" = {
     "tabSize" = 2;
     "fontSize" = 12;
     "fontFamily" = "'FiraCode Nerd Font Mono', monospace";
     # vertical guides for line length
-    "rulers" = [ 80 120 ];
+    "rulers" = [
+      80
+      120
+    ];
     "minimap" = {
       "enabled" = false;
     };
@@ -146,7 +154,7 @@
 
   "workbench.editor.closeEmtpyGroups" = false;
 
-  # everything is read-only, so we dont want vscode attempting to udpate 
+  # everything is read-only, so we dont want vscode attempting to udpate
   # anything on its own
   "extensions.autoCheckUpdates" = false;
   "extensions.autoUpdate" = false;

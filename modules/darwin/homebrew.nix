@@ -1,14 +1,26 @@
 # Base homebrew config with sane defaults.
 # TODO: make into module
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  user,
+  ...
+}:
 {
   homebrew = {
     enable = true;
 
-    onActivation.cleanup = "uninstall"; # Clean up removed apps
+    onActivation.cleanup = "zap"; # Clean up removed apps
 
     caskArgs = {
       appdir = "~/Applications"; # Use non-global directory
+    };
+
+    user = user;
+
+    global = {
+      brewfile = true;
+      autoUpdate = false;
     };
   };
 

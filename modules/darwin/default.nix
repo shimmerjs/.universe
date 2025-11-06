@@ -12,11 +12,6 @@
   system.stateVersion = 4;
 
   nix = {
-    # We install Nix using a separate installer for macOS, this setting tells 
-    # nix-darwin to just use whatever is running. It is also required for
-    # multi-user builds, which is the default for all newer macOS nix 
-    # installations.
-    useDaemon = true;
     # GC configuration that is specific to nix-darwin
     gc = {
       interval = {
@@ -43,13 +38,18 @@
 
   security = {
     pam = {
-      enableSudoTouchIdAuth = true;
+      services = {
+        sudo_local = {
+          touchIdAuth = true;
+        };
+      };
     };
   };
 
   # Automatically apply macOS preference changes without requiring login/logout
-  system.activationScripts.postUserActivation.text = ''
+  system.activationScripts.postActivation.text = ''
     # Following line should allow us to avoid a logout/login cycle
-    /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u
+    # TODO: Use username parameter, dont poison root darwin module
+    sudo -u ${user} /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u
   '';
 }

@@ -6,7 +6,7 @@
     autosuggestion.enable = true;
     enableCompletion = true;
     syntaxHighlighting.enable = true;
-    initExtra = ''
+    initContent = ''
       # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
       [[ ! -f $HOME/.config/p10k.zsh ]] || source $HOME/.config/p10k.zsh
 

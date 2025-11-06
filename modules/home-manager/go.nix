@@ -1,13 +1,18 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 {
   programs.go = {
+    package = pkgs.go_1_24;
     enable = true;
-    goBin = "dev/go/bin";
-    goPath = "dev/go";
+    env = {
+      GOBIN = "${config.home.homeDirectory}/dev/go/bin";
+      GOPATH = "${config.home.homeDirectory}/dev/go";
+    };
+    telemetry.mode = "off";
   };
 
+  # Ensure binaries built with Go end up on PATH
   home.sessionPath = [
-    "$GOBIN"
+    "$(go env GOBIN)"
   ];
 
   # Go tools that are needed by editor tooling (gopls) or are just useful.

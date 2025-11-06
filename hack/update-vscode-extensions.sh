@@ -6,7 +6,7 @@
 
 source $(dirname ${BASH_SOURCE[0]})/lib.sh
 
-VSCODE_EXTENSIONS_NIX="${VSCODE_EXTENSIONS_NIX:-$UNIVERSE_PATH/modules/home-manager/vscode/extensions.nix}"
+VSCODE_EXTENSIONS_NIX="${VSCODE_EXTENSIONS_NIX:-$UNIVERSE_PATH/homies/$(whoami)/home/vscode/extensions.nix}"
 
 "$(dirname "${BASH_SOURCE[0]}")/gen-vscode-extensions.sh" | tee "$VSCODE_EXTENSIONS_NIX"
 nixpkgs-fmt "$VSCODE_EXTENSIONS_NIX"

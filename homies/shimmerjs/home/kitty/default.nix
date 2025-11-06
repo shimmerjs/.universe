@@ -1,16 +1,15 @@
 {
   programs.kitty = {
     enable = true;
+    themeFile = "everforest_dark_soft";
     settings = {
       # Dont update unless its via Nix
       update_check_interval = 0;
 
       startup_session = "sessions/default.conf";
-
       macos_quit_when_last_window_closed = "yes";
-      macos_thicken_font = "0.40";
+      macos_thicken_font = "0.10";
       macos_show_window_title_in = "none";
-      macos_colorspace = "default";
       macos_option_as_alt = "yes"; # Make ALT-_ keybindings work
 
       tab_bar_margin_width = "5.0";
@@ -29,7 +28,7 @@
       scrollback_lines = 50000;
       scrollback_pager = "fzf --ansi --no-bold";
 
-      enabled_layouts = "fat:bias=70;full_size=1,tall:bias=70;full_size=1";
+      enabled_layouts = "fat:bias=70;full_size=1,tall:bias=70;full_size=1,vertical";
 
       # Enable reading and writing from clipboard
       clipboard_control = "write-clipboard read-clipboard write-primary read-primary";
@@ -74,15 +73,8 @@
       "cmd+k" = "clear_terminal clear active";
       "ctrl+k" = "clear + terminal scroll active";
     };
-    extraConfig = ''
-      include themes/everforest_light_medium.conf
-    '';
   };
   # Wire up static kitty assets not managed by home-manager/nix
-  home.file.".config/kitty/themes" = {
-    recursive = true;
-    source = ./themes;
-  };
   home.file.".config/kitty/sessions" = {
     recursive = true;
     source = ./sessions;

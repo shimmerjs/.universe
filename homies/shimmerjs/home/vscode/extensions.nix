@@ -1,28 +1,28 @@
 {
   extensions = [
     {
-      name = "cue";
-      publisher = "asdine";
-      version = "0.3.2";
-      sha256 = "03l4ff46z81m5108afdw2ncba3h22qnbckgz3gacsx6i123fmicc";
-    }
-    {
       name = "vscode-bazel";
       publisher = "bazelbuild";
-      version = "0.10.0";
-      sha256 = "1fxid7g6rb9x6y68g76kzcjcdnjlifxdzd0cgiyhnzi6qp70w9gi";
+      version = "0.12.0";
+      sha256 = "1fp5wnnybm0w4dxdrr2cksvqfc7lkyqbkqinp3nkyw8hl6i00hqz";
     }
     {
       name = "markdown-mermaid";
       publisher = "bierner";
-      version = "1.23.1";
-      sha256 = "1qyhm4cq5i2f1c17hy61bhr3h6ydg44s52ygqq6cga712mw951c5";
+      version = "1.29.0";
+      sha256 = "132hygm7r5zd5dwjx3k9lwlg8q930wkslqxq45060frdzbdxjdxa";
+    }
+    {
+      name = "vscode-cue";
+      publisher = "cuelangorg";
+      version = "0.0.17";
+      sha256 = "1zxyfv7j05ld79ymr4krp3kwl364klr9x8as8ig9b3x1zgg29k4g";
     }
     {
       name = "prettier-vscode";
       publisher = "esbenp";
-      version = "10.4.0";
-      sha256 = "1iy7i0yxnhizz40llnc1dk9q8kk98rz6ki830sq7zj3ak9qp9vzk";
+      version = "11.0.0";
+      sha256 = "1fcz8f4jgnf24kblf8m8nwgzd5pxs2gmrv235cpdgmqz38kf9n54";
     }
     {
       name = "markdown-table-formatter";
@@ -33,20 +33,26 @@
     {
       name = "go";
       publisher = "golang";
-      version = "0.41.4";
-      sha256 = "03gxgcvjk5plzkk7gjsrrck1kszzbzswkbcr33m3qlkyz4iw9nly";
+      version = "0.51.1";
+      sha256 = "016lzhpm5d1q95k2nph94rdwdmf4sqx1amdn1fz0170pd4apz7pj";
     }
     {
       name = "terraform";
       publisher = "hashicorp";
-      version = "2.31.2024061114";
-      sha256 = "1y33lw058x9wll5b0y6rn71xgc54611d7dbbk38699hswp8xa3d2";
+      version = "2.37.2025092217";
+      sha256 = "1s648ma6yfxnbzjfm7sj0vxqh8p924hmydqf1jpsv1nvmd58v6mc";
     }
     {
       name = "nix-ide";
       publisher = "jnoortheen";
-      version = "0.3.1";
-      sha256 = "1cpfckh6zg8byi6x1llkdls24w9b0fvxx4qybi9zfcy5gc60r6nk";
+      version = "0.5.0";
+      sha256 = "1nx25y6pzcn25yy836kpg55rms4sbzz6kglaillb799c6d1qcnwd";
+    }
+    {
+      name = "nightfox";
+      publisher = "keifererikson";
+      version = "0.0.14";
+      sha256 = "09kp1ss8plg5l9mifnkk4dyf1g2immfr6gymzcaysdrzqwj8m48i";
     }
     {
       name = "gitless";
@@ -57,20 +63,20 @@
     {
       name = "python";
       publisher = "ms-python";
-      version = "2024.9.2024062703";
-      sha256 = "07gd8zq20rk3mk2bikgbh5r168c6l2ap3pi8c9hbm7347mhfqv12";
+      version = "2025.17.2025110501";
+      sha256 = "1a15qpgsg3si8y0rjjqdj2dr104q1qm7nfl1khbdv0g7hr5dkv8r";
     }
     {
       name = "remote-explorer";
       publisher = "ms-vscode";
-      version = "0.5.2024061309";
-      sha256 = "1hscgwzdwyd3pv6p24451y3rgi8wqf02arf6n502mb1v3sagiprg";
+      version = "0.6.2025081809";
+      sha256 = "10rsnl5yk08mhcwg5j7s2xsawd7v2ilcgg2rm9v904v3nd2qi8xv";
     }
     {
       name = "remote-server";
       publisher = "ms-vscode";
-      version = "1.6.2024061709";
-      sha256 = "044f2qaj1dldsjyhb17b8s5z1dpkl3l386zfqrlilg9as1hw58ir";
+      version = "1.6.2025102109";
+      sha256 = "0a7m29m0wzkq02bjc5bz3w5l4gkmc0i7q2r1bg2dl2qg084z2bcs";
     }
     {
       name = "everforest";
@@ -87,8 +93,8 @@
     {
       name = "even-better-toml";
       publisher = "tamasfe";
-      version = "0.19.2";
-      sha256 = "0q9z98i446cc8bw1h1mvrddn3dnpnm2gwmzwv2s3fxdni2ggma14";
+      version = "0.21.2";
+      sha256 = "0208cms054yj2l8pz9jrv3ydydmb47wr4i0sw8qywpi8yimddf11";
     }
     {
       name = "ayu";

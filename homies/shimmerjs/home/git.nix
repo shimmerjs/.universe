@@ -4,31 +4,53 @@
     package = git;
     enable = true;
 
-    userName = "alex weidner";
-    userEmail = "shimmerjs@dpu.sh";
+    settings = {
+      user.name = "alex weidner";
+      user.email = "shimmerjs@dpu.sh";
 
-    extraConfig = {
+      core.editor = "vim";
+      init.defaultBranch = "main";
+
       # Always checkout my forks branches instead of upstream
       checkout.defaultRemote = "origin";
+      branch.sort = "-committerdate";
+      commit.verbose = "true";
+      diff.algorithm = "histogram";
+      merge.conflictstyle = "zdiff3";
+      # Don't require -u on pushes or setting up during git branch
+      push.autosetupRemote = "true";
+      push.rebase = "false";
+      pull.rebase = "true";
+      rebase.autosquash = "true";
+      rebase.updateRefs = "true";
+      rerere.enabled = "true";
+      worktree.useRelativePaths = "true";
 
-      init = {
-        defaultBranch = "main";
+      status.aheadBehind = "false";
+      fetch.output = "compact";
+
+      aliases = {
+        c = "commit";
+        cs = "commit -s";
+        ammend = "commit --amend";
+        fix = "commit --amend --no-edit";
+        fixso = "commit --amend --no-edit --signoff";
+
+        co = "checkout";
+        d = "diff";
+        p = "push";
+        pl = "pull";
+        s = "status --short --branch";
+
+        sync = "!git checkout main && git pull upstream main";
+
+        sls = "stash list";
+
+        wls = "worktree list";
+        wrm = "worktree remove";
+        wprune = "worktree prune";
+        wmv = "worktree move";
       };
-
-      push = {
-        # Don't require -u on pushes or setting up during git branch
-        autoSetupRemote = "true";
-        rebase = "false";
-      };
-
-      core = {
-        editor = "vim";
-      };
-    };
-
-    aliases = {
-      c = "commit";
-      co = "checkout";
     };
   };
 
@@ -37,8 +59,6 @@
       GIT_SSL_CAINFO = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     };
     shellGlobalAliases = {
-      # Naive git shell aliases for common workflows.
-      gitsync = "git fetch upstream && git checkout main && git rebase upstream/main";
       batdiff = "git diff --name-only --diff-filter=d | xargs bat --diff";
     };
   };
