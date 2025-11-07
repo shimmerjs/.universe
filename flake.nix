@@ -51,6 +51,7 @@
         nostromo = mkSystem "nostromo";
         aw-chainguard = mkSystem "aw-chainguard";
         mother = mkSystem "mother";
+        kraken = mkSystem "kraken";
       };
       nixosConfigurations = {
         herq = mkSystem "herq";
