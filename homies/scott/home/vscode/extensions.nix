@@ -40,7 +40,7 @@
       name = "terraform";
       publisher = "hashicorp";
       version = "2.37.2025092217";
-      sha256 = "1s648ma6yfxnbzjfm7sj0vxqh8p924hmydqf1jpsv1nvmd58v6mc";
+      sha256 = "sha256-Lg26S7HyFcsJMQAwRQfZdgyxDaa6ti2v6yXEHkygFwc=";
     }
     {
       name = "nix-ide";
@@ -64,7 +64,7 @@
       name = "python";
       publisher = "ms-python";
       version = "2025.17.2025110501";
-      sha256 = "1a15qpgsg3si8y0rjjqdj2dr104q1qm7nfl1khbdv0g7hr5dkv8r";
+      sha256 = "sha256-ccpsOwW1jq/RL9Wf0whEXYBTiSa5Ru2OzXt2v2RECI0=";
     }
     {
       name = "remote-explorer";

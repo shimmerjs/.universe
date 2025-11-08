@@ -30,10 +30,10 @@
     raspberry-pi-nix.url = "github:nix-community/raspberry-pi-nix";
 
     # Helps address issue where Nix-intalled apps don't show up in Spotlight
-    mac-app-util = {
-      url = "github:hraban/mac-app-util";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # mac-app-util = {
+    #  url = "github:hraban/mac-app-util";
+    #  inputs.nixpkgs.follows = "nixpkgs";
+    # };
 
     # Non-flake inputs
     powerlevel10k = {

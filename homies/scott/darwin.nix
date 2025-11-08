@@ -94,11 +94,9 @@
         casks = [
           "flycut" # Clipboard manager
           "spotify"
-          "docker"
+          # "docker"
           "bitwarden" # Bitwarden GUI
           "keymapp" # Manage ergodox-ez keyboard graphically
-          # "logi-options+" # Manage my mouse, ideally
-          "signal" # Holla at ya boy
         ];
       };
     };

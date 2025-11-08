@@ -13,18 +13,13 @@
     {
       homebrew = {
         taps = [
-          "chainguard-dev/tap"
           "minamijoyo/hcledit"
         ];
         brews = [
           "gitsign"
-          "chainctl"
           "melange"
           "hcledit"
           "helm" # :[
-        ];
-        casks = [
-          "google-chrome"
         ];
       };
     };
