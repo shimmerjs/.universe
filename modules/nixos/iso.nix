@@ -2,7 +2,13 @@
 # Allows SSHing in for headless install with passwordless sudo.
 # TODO: Add install scripts to this to simplify the various steps
 { rootSSHKeyFile }:
-{ config, pkgs, hostname, modulesPath, ... }:
+{
+  config,
+  pkgs,
+  hostname,
+  modulesPath,
+  ...
+}:
 {
   imports = [
     "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix"
@@ -23,8 +29,7 @@
   ];
 
   # Enable SSH in the boot process.
-  systemd.services.sshd.wantedBy = pkgs.lib.mkForce
-    [ "multi-user.target" ];
+  systemd.services.sshd.wantedBy = pkgs.lib.mkForce [ "multi-user.target" ];
 
   # Trade build speed for file size.
   isoImage.squashfsCompression = "gzip -Xcompression-level 1";

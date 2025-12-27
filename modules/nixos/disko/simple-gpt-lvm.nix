@@ -1,6 +1,9 @@
 # An extremely simple disk configuration for single disk machines.
-{ disk ? "/dev/sda" }:
-{ ... }: {
+{
+  disk ? "/dev/sda",
+}:
+{ ... }:
+{
   disko.devices = {
     disk.main = {
       device = disk;

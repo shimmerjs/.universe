@@ -31,7 +31,14 @@
     (python3.withPackages
       # install pip because its not included with the python3 nixpkg by
       # default
-      (ps: with ps; [ pip pylint autopep8 ]))
+      (
+        ps: with ps; [
+          pip
+          pylint
+          autopep8
+        ]
+      )
+    )
 
     # Insert meme here
     kubectl

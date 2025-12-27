@@ -16,5 +16,6 @@ in
 {
   "homies/shimmerjs/secrets/k3s-server-token.age".publicKeys = [
     shimmerjs
-  ] ++ k3s;
+  ]
+  ++ k3s;
 }

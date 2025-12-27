@@ -1,6 +1,11 @@
 # Config module for Rectangle, window management for macOS.
 # TODO: Make it usable for Linux OS as well
-{ pkgs, config, lib, ... }:
+{
+  pkgs,
+  config,
+  lib,
+  ...
+}:
 let
   cfg = config.universe.home.rectangle;
 in
@@ -20,10 +25,8 @@ with lib;
     };
   };
 
-  config.home.packages =
-    mkIf cfg.enable
-      [ pkgs.rectangle ];
-  config.home.file."Library/Preferences/com.knollsoft.Rectangle.plist" =
-    mkIf (cfg.configFile != { })
-      cfg.configFile;
+  config.home.packages = mkIf cfg.enable [ pkgs.rectangle ];
+  config.home.file."Library/Preferences/com.knollsoft.Rectangle.plist" = mkIf (
+    cfg.configFile != { }
+  ) cfg.configFile;
 }
