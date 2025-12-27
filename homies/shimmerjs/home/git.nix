@@ -29,7 +29,7 @@
       status.aheadBehind = "false";
       fetch.output = "compact";
 
-      aliases = {
+      alias = {
         c = "commit";
         cs = "commit -s";
         ammend = "commit --amend";
@@ -37,6 +37,7 @@
         fixso = "commit --amend --no-edit --signoff";
 
         co = "checkout";
+        b = "branch";
         d = "diff";
         p = "push";
         pl = "pull";
@@ -45,6 +46,9 @@
         sync = "!git checkout main && git pull upstream main";
 
         sls = "stash list";
+        ss = "stash show";
+        spop = "stash pop";
+        sdrop = "stash drop";
 
         wls = "worktree list";
         wrm = "worktree remove";
@@ -54,12 +58,12 @@
     };
   };
 
-  programs.zsh = {
+  home = {
+    shellAliases = {
+      g = "git";
+    };
     sessionVariables = {
       GIT_SSL_CAINFO = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    };
-    shellGlobalAliases = {
-      batdiff = "git diff --name-only --diff-filter=d | xargs bat --diff";
     };
   };
 }

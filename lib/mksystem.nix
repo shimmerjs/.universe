@@ -91,11 +91,6 @@ systemFn rec {
         hostConfig.homie.home or { }
         homieOSConfig.home or { }
       ];
-      # Ensure that apps installed via home-manager show up in Spotlight and the
-      # Applications folder as well.
-      home-manager.sharedModules = (
-        lib.optionals isDarwin [ inputs.mac-app-util.homeManagerModules.default ]
-      );
     }
   ]);
 }

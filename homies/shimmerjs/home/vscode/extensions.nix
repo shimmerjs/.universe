@@ -15,8 +15,8 @@
     {
       name = "vscode-cue";
       publisher = "cuelangorg";
-      version = "0.0.17";
-      sha256 = "1zxyfv7j05ld79ymr4krp3kwl364klr9x8as8ig9b3x1zgg29k4g";
+      version = "0.0.18";
+      sha256 = "10dpq5s9zh72ig84d8aa136srxb2a0q0ryvisx4an0l2n65g89jf";
     }
     {
       name = "prettier-vscode";
@@ -63,8 +63,8 @@
     {
       name = "python";
       publisher = "ms-python";
-      version = "2025.17.2025110501";
-      sha256 = "1a15qpgsg3si8y0rjjqdj2dr104q1qm7nfl1khbdv0g7hr5dkv8r";
+      version = "2025.19.2025112401";
+      sha256 = "0dw9j0zccnm5rz0p62swq4kp0j3a2ms9179gjs8r083r1sqxca76";
     }
     {
       name = "remote-explorer";

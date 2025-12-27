@@ -44,6 +44,12 @@
           static-only = true;
         };
 
+        WindowManager = {
+          # Rectangle has control of drag-edge-tiling-whatever
+          EnableTilingByEdgeDrag = false;
+          EnableTopTilingByEdgeDrag = false;
+        };
+
         spaces = {
           spans-displays = false;
         };
@@ -97,7 +103,6 @@
           "spotify"
           "docker"
           "bitwarden" # Bitwarden GUI
-          "keymapp" # Manage ergodox-ez keyboard graphically
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
         ];
@@ -120,8 +125,12 @@
       ];
 
       home.packages = with pkgs; [
-        # telegram-desktop
-        wally-cli # Manage ergodox-ez keyboard
+        keymapp
+        # Telegram
+        telegram-desktop
+        tg
+        # Signal
+        signal-cli
       ];
 
       universe.home.rectangle = {

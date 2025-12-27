@@ -29,12 +29,6 @@
 
     raspberry-pi-nix.url = "github:nix-community/raspberry-pi-nix";
 
-    # Helps address issue where Nix-intalled apps don't show up in Spotlight
-    mac-app-util = {
-      url = "github:hraban/mac-app-util";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     # Non-flake inputs
     powerlevel10k = {
       url = "github:romkatv/powerlevel10k";
@@ -42,7 +36,16 @@
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, home-manager, darwin, disko, agenix, ... }:
+  outputs =
+    inputs@{
+      self,
+      nixpkgs,
+      home-manager,
+      darwin,
+      disko,
+      agenix,
+      ...
+    }:
     let
       mkSystem = import ./lib/mksystem.nix { inherit inputs; };
     in

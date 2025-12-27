@@ -2,6 +2,12 @@
   programs.kitty = {
     enable = true;
     themeFile = "everforest_dark_soft";
+    quickAccessTerminalConfig = {
+      edge = "left";
+      width = "180";
+      hide_on_focus_loss = "yes";
+      background_opacity = "0.9";
+    };
     settings = {
       # Dont update unless its via Nix
       update_check_interval = 0;
@@ -9,13 +15,13 @@
       startup_session = "sessions/default.conf";
       macos_quit_when_last_window_closed = "yes";
       macos_thicken_font = "0.10";
-      macos_show_window_title_in = "none";
+      macos_show_window_title_in = "menubar";
       macos_option_as_alt = "yes"; # Make ALT-_ keybindings work
 
       tab_bar_margin_width = "5.0";
       tab_bar_style = "powerline";
 
-      window_border_width = "0.75pt";
+      window_border_width = "0.60pt";
 
       font_size = "16.0";
       font_family = "FiraCode Nerd Font Mono";
@@ -28,7 +34,7 @@
       scrollback_lines = 50000;
       scrollback_pager = "fzf --ansi --no-bold";
 
-      enabled_layouts = "fat:bias=70;full_size=1,tall:bias=70;full_size=1,vertical";
+      enabled_layouts = "fat:bias=50;full_size=2,vertical";
 
       # Enable reading and writing from clipboard
       clipboard_control = "write-clipboard read-clipboard write-primary read-primary";
