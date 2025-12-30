@@ -35,6 +35,7 @@
       config,
       lib,
       pkgs,
+      user,
       ...
     }:
     {
@@ -106,9 +107,13 @@
         github.com:
           git_protocol: ssh
           users:
-              shimmerjs:
+              ${user}:
                   git_protocol: ssh
-          user: shimmerjs
+          user: ${user}
       '';
+
+      programs.vscode.profiles.default = with pkgs; {
+        extensions = with vscode-extensions; [ hashicorp.terraform ];
+      };
     };
 }

@@ -3,8 +3,8 @@
     {
       name = "vscode-bazel";
       publisher = "bazelbuild";
-      version = "0.12.0";
-      sha256 = "1fp5wnnybm0w4dxdrr2cksvqfc7lkyqbkqinp3nkyw8hl6i00hqz";
+      version = "0.13.1";
+      sha256 = "1hhmygzh4xv5ra8vgaysgngwslhph4827l73l0bzzhmpgvjiqybl";
     }
     {
       name = "markdown-mermaid";
@@ -21,8 +21,8 @@
     {
       name = "prettier-vscode";
       publisher = "esbenp";
-      version = "11.0.0";
-      sha256 = "1fcz8f4jgnf24kblf8m8nwgzd5pxs2gmrv235cpdgmqz38kf9n54";
+      version = "11.0.2";
+      sha256 = "062jpvq1p558d7ynccsn5khmq424dw9id1h9vkqig9v0kpvgh0rz";
     }
     {
       name = "markdown-table-formatter";
@@ -33,20 +33,14 @@
     {
       name = "go";
       publisher = "golang";
-      version = "0.51.1";
-      sha256 = "016lzhpm5d1q95k2nph94rdwdmf4sqx1amdn1fz0170pd4apz7pj";
-    }
-    {
-      name = "terraform";
-      publisher = "hashicorp";
-      version = "2.37.2025092217";
-      sha256 = "1s648ma6yfxnbzjfm7sj0vxqh8p924hmydqf1jpsv1nvmd58v6mc";
+      version = "0.53.0";
+      sha256 = "0vmgnv484hhvkdjdd22dqgcp0g6j9k1cn0qp31vj1nzi0r3n22cs";
     }
     {
       name = "nix-ide";
       publisher = "jnoortheen";
-      version = "0.5.0";
-      sha256 = "1nx25y6pzcn25yy836kpg55rms4sbzz6kglaillb799c6d1qcnwd";
+      version = "0.5.5";
+      sha256 = "0zy22r34b3bk0wrs435fz8yf7ii3khwa6zn7bq48sji4y0q495vs";
     }
     {
       name = "nightfox";
@@ -63,8 +57,8 @@
     {
       name = "python";
       publisher = "ms-python";
-      version = "2025.19.2025112401";
-      sha256 = "0dw9j0zccnm5rz0p62swq4kp0j3a2ms9179gjs8r083r1sqxca76";
+      version = "2025.21.2025121801";
+      sha256 = "13li3hwg6lcgaa7cblhj8wppmx2rxqknvmvqi73i9b0g451ak4zi";
     }
     {
       name = "remote-explorer";
@@ -99,8 +93,8 @@
     {
       name = "ayu";
       publisher = "teabyii";
-      version = "1.0.5";
-      sha256 = "1visv44mizfvsysrdby1vrncv1g3qmf45rhjijmbyak2d60nm0gq";
+      version = "1.1.6";
+      sha256 = "0inyq12579hsz8brxqd31lakvf3g93j25543c5jv0qg4mpyp4bwc";
     }
     {
       name = "d2";
