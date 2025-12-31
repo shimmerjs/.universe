@@ -70,11 +70,6 @@ systemFn rec {
     # Load homie system configuration if present.
     homieOSConfig.systemConfig or { }
   ]
-  ++ (lib.optionals isDarwin [
-    # # Ensure that apps installed via nix-darwin show up in Spotlight and the
-    # # Applications folder.
-    # inputs.mac-app-util.darwinModules.default
-  ])
   ++ (lib.optionals (hostConfig ? "diskConfig") [
     inputs.disko.nixosModules.disko
     hostConfig.diskConfig
