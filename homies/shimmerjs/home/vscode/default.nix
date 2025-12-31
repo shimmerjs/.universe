@@ -1,4 +1,24 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
+let
+  # Load all extensions from nix-vscode package instead of nixpkgs, other than
+  # remote-ssh, which has required special patches
+  vscodeExts = inputs.nix-vscode-extensions.extensions.${pkgs.stdenv.hostPlatform.system};
+  exts =
+    with vscodeExts;
+    with vscode-marketplace;
+    [
+      bazelbuild.vscode-bazel
+      bierner.markdown-mermaid
+      cuelangorg.vscode-cue
+      fcrespo82.markdown-table-formatter
+      golang.go
+      terrastruct.d2
+      sainnhe.everforest
+      maattdd.gitless
+      ms-python.python
+      jnoortheen.nix-ide
+    ];
+in
 {
   programs.vscode = with pkgs; {
     enable = true;
@@ -7,12 +27,9 @@
       extensions =
         with vscode-extensions;
         [
-          # Pull remote-ssh extension from nixpkgs to pick up special patches that
-          # fix interactions with the remote development server the extension tries
-          # to set up.
           ms-vscode-remote.remote-ssh
         ]
-        ++ vscode-utils.extensionsFromVscodeMarketplace (import ./extensions.nix).extensions;
+        ++ exts;
       userSettings = import ./user-settings.nix;
       keybindings = import ./keybindings.nix;
       enableExtensionUpdateCheck = false;

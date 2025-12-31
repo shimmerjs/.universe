@@ -36,6 +36,7 @@
       lib,
       pkgs,
       user,
+      inputs,
       ...
     }:
     {
@@ -113,7 +114,10 @@
       '';
 
       programs.vscode.profiles.default = with pkgs; {
-        extensions = with vscode-extensions; [ hashicorp.terraform ];
+        extensions =
+          with inputs.nix-vscode-extensions.extensions.${pkgs.stdenv.hostPlatform.system};
+          with vscode-marketplace;
+          [ hashicorp.terraform ];
       };
     };
 }
