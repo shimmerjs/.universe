@@ -36,6 +36,8 @@
       idot = "tdot | icat";
       # For pretty-fying streams of mixed garbage that contain JSON objects
       jqmess = "jq -R 'fromjson? | .'";
+      # User-specific universe aliases
+      uedit = "code $UNIVERSE_PATH";
     };
     shellAliases = {
       ls = "ls -A --color=auto";
