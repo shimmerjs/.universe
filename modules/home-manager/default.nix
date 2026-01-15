@@ -11,6 +11,12 @@
     "$HOME/.local/bin"
   ];
 
+  # Ensure that installed apps are indexed by Spotlight on macOS
+  targets.darwin = {
+    copyApps.enable = true;
+    linkApps.enable = false;
+  };
+
   programs.ssh.enable = true;
 
   # Packages that should be everywhere, basically.
