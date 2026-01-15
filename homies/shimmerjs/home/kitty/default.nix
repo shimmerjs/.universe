@@ -1,4 +1,10 @@
 {
+  pkgs,
+  inputs,
+  lib,
+  ...
+}:
+{
   programs.kitty = {
     enable = true;
     themeFile = "everforest_dark_soft";
@@ -50,6 +56,11 @@
       "cmd+shift+4" = "goto_tab 4";
       "cmd+shift+5" = "goto_tab 5";
       "cmd+shift+6" = "goto_tab 6";
+      "cmd+shift+e" = ''
+        launch --type=overlay --allow-remote-control ${
+          lib.getExe inputs.kitty-tab-switcher.packages.${pkgs.stdenv.hostPlatform.system}.default
+        }
+      '';
 
       # Window management
       "cmd+s" = "new_window_with_cwd";
