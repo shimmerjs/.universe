@@ -30,6 +30,7 @@
       fetch.output = "compact";
 
       alias = {
+        a = "add";
         c = "commit";
         cs = "commit -s";
         ammend = "commit --amend";

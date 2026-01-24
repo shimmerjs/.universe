@@ -24,9 +24,15 @@
     d2
     asciinema
 
+    nb
+    w3m
+
+    # New tricks?
+    eza
+    silver-searcher
+
     # Nix
-    niv # Nix sources manager
-    nixfmt-rfc-style
+    nixfmt
 
     (python3.withPackages
       # install pip because its not included with the python3 nixpkg by

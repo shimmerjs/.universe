@@ -10,8 +10,9 @@ in
   };
   # TODO: create proper script which can determine if anything is cloned to
   # UNIVERSE_PATH and fall back to building flake from GitHub
-  environment.shellAliases = {
-    uswitch = "${cmd} switch --flake $UNIVERSE_PATH#${hostname}";
-    ubuild = "${cmd} build --flake $UNIVERSE_PATH#${hostname}";
-  };
+  # TODO: dont install globally
+  environment.systemPackages = with pkgs; [
+    (writeShellScriptBin "ubuild" "${cmd} build --flake $UNIVERSE_PATH#${hostname} \"$@\"")
+    (writeShellScriptBin "uswitch" "${cmd} switch --flake $UNIVERSE_PATH#${hostname} \"$@\"")
+  ];
 }

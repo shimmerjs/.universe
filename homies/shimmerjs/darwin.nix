@@ -80,8 +80,8 @@
             # we can define the fractional values as strings.
             #
             # system.defaults.NSGlobalDomain counterpart is typed as int.
-            InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
-            KeyRepeat = 0.5; # How quickly key repeats, default is 2 or 30ms
+            # InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
+            # KeyRepeat = 0.5; # How quickly key repeats, default is 2 or 30ms
           };
 
           # Finder settings not covered by nix-darwin module...
@@ -101,7 +101,7 @@
         casks = [
           "flycut" # Clipboard manager
           "spotify"
-          "docker"
+          "docker-desktop"
           "bitwarden" # Bitwarden GUI
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
@@ -121,6 +121,7 @@
       imports = [
         ./home/kitty
         ./home/vscode
+        ./home/nvim
         ../../modules/home-manager/rectangle.nix
       ];
 
