@@ -1,8 +1,18 @@
 # Configuration that helps work with the system configuration defined by
 # .universe.
-{ pkgs, hostname, ... }:
+{
+  inputs,
+  pkgs,
+  lib,
+  hostname,
+  ...
+}:
 let
-  cmd = if pkgs.stdenv.isDarwin then "sudo darwin-rebuild" else "sudo nixos-rebuild";
+  cmd =
+    if pkgs.stdenv.isDarwin then
+      "sudo ${lib.getExe inputs.darwin.packages.${pkgs.stdenv.hostPlatform.system}.darwin-rebuild}"
+    else
+      "sudo nixos-rebuild";
 in
 {
   environment.variables = {
