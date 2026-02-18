@@ -38,6 +38,8 @@
       url = "github:dseum/nix-vscode-extensions";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # nvim frameworky thing
+    nixCats.url = "github:BirdeeHub/nixCats-nvim";
 
     # Non-flake inputs
     powerlevel10k = {

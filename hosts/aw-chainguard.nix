@@ -15,16 +15,15 @@
       homebrew = {
         taps = [
           "chainguard-dev/tap"
-          "minamijoyo/hcledit"
         ];
         brews = [
           "gitsign"
           "chainctl"
           "melange"
-          "hcledit"
           "helm" # :[
         ];
         casks = [
+          "orbstack"
           "google-chrome"
         ];
       };
@@ -119,5 +118,7 @@
           with vscode-marketplace;
           [ hashicorp.terraform ];
       };
+
+      programs.claude-code.enable = true;
     };
 }

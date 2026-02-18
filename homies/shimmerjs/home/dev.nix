@@ -2,6 +2,7 @@
 {
   imports = [
     ../../../modules/home-manager/go.nix
+    ./nvim
   ];
 
   home.packages = with pkgs; [

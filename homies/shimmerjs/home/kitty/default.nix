@@ -11,13 +11,19 @@
 
     settings.kitty_mod = "ctrl+opt+shift";
     keybindings = {
-      # TODO: figure out how to use action_alias to DRY out `launch --cwd=current` etc
+      # Reload configuration
+      "cmd+ctrl+," = "load_config_file";
 
       # Docs
       "f1" = "show_kitty_doc conf";
 
+      # Clipboard
+      "cmd+c" = "copy_or_noop";
+      "cmd+v" = "paste_from_clipboard";
+
       # OS windows
       "cmd+n" = "new_os_window";
+      "cmd+q" = "quit";
 
       # Splits / "kitty windows"
       "cmd+enter" = "new_window_with_cwd";
@@ -59,26 +65,39 @@
 
       # Scrollback and terminal content management / helpers
       # https://sw.kovidgoyal.net/kitty/#the-scrollback-buffer
-      # TODO: use modals/overlay windows for some scrollback funs
+      # TODO: use modals/overlay windows/slits for some scrollback funs
+      # TODO: action for clearing last command
       "cmd+shift+h" = "show_scrollback";
-      "ktty_mod+c" = "copy_last_command_output";
+      "cmd+shift+g" = "show_last_non_empty_command_output";
+      "kitty_mod+c" = "copy_last_command_output";
 
       # Reset terminal
       # TODO: leverage ability to clear into the scrollback?
       "cmd+k" = "clear_terminal clear active";
       "cmd+option+k" = "clear + terminal scroll active";
+      "cmd+l" = "clear_terminal last_command_active";
+
+      # Scrolling
+      # TODO: use vim arrows?
+      "cmd+up" = "scroll_line_up";
+      "cmd+down" = "scroll_line_down";
+      "cmd+page_up" = "scroll_page_up";
+      "cmd+page_down" = "scroll_page_down";
+      # scroll_to_prompt -1 (previous command)
+      # scroll_to_prompt 1 (next command)
 
       # Layouts
       "cmd+shift+l" = "next_layout";
 
       # Font sizes
-      "cmd+shift+equal" = "change_font_size current + 2.0";
-      "cmd+minus" = "change_font_size current - 2.0";
-      "cmd+opt+shift+equal" = "change_font_size all + 2.0";
-      "cmd+opt+minus" = "change_font_size all - 2.0";
+      "cmd+equal" = "change_font_size all + 2.0";
+      "cmd+minus" = "change_font_size all - 2.0";
+      "cmd+0" = "change_font_size all 0"; # Reset font size
     };
 
     settings = {
+      # Ensure that Nix-managed binaries are available to kitty actions
+      env = "read_from_shell=PATH";
       # Dont update unless its via Nix
       update_check_interval = 0;
       enable_audio_bell = "no";
@@ -86,18 +105,18 @@
       clipboard_control = "write-clipboard read-clipboard write-primary read-primary";
 
       confirm_os_window_close = 0;
+      remember_window_position = "yes";
 
       allow_hyperlinks = "yes";
-      open_url_modifiers = "cmd";
+      open_url_modifier = "cmd";
 
       # Session bits
       startup_session = "sessions/default.conf";
 
       # macOS specific bits
-      macos_quit_when_last_window_closed = "yes";
-      macos_thicken_font = "0.10";
       macos_show_window_title_in = "menubar";
       macos_option_as_alt = "yes"; # Make ALT-_ keybindings work
+      macos_titlebar_color = "background";
 
       # Appearance
       tab_bar_margin_width = "5.0";
