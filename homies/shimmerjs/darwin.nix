@@ -127,7 +127,7 @@
         keymapp
         # Telegram
         telegram-desktop
-        tg
+        # tg
         # Signal
         signal-cli
       ];

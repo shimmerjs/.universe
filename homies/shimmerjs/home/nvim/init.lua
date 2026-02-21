@@ -1,1 +1,1 @@
-require("lua")
+require('lua')

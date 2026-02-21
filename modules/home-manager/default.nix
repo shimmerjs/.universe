@@ -29,6 +29,5 @@
     coreutils
     ack
     tree
-    vim
   ];
 }

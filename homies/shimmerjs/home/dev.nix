@@ -31,6 +31,7 @@
     # New tricks?
     eza
     silver-searcher
+    fd
 
     # Nix
     nixfmt
