@@ -4,6 +4,7 @@ sequences).
 """
 
 import re
+import json
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Final, Union, TypeAlias
@@ -64,7 +65,7 @@ def handle_result(args: list[str], answer: str, target_window_id: int, boss: Bos
         # group shortcuts with the same actions together.
         for key, action in key_mappings.items():
             key_repr: ShortcutRepr = key.human_repr(kitty_mod=opts.kitty_mod)
-            key_repr = f"{key_repr:<18} {fmt.fg.red}→{fmt.fg.default}"
+            key_repr = f"{key_repr:<18} {fmt.fg.red}\t→{fmt.fg.default}"
             if match := re.search(r"^push_keyboard_mode (\w+)$", action):
                 # bold the mode name if found
                 action_fmt = (
@@ -105,9 +106,4 @@ def handle_result(args: list[str], answer: str, target_window_id: int, boss: Bos
         output.extend(sum(output_categorized[category].values(), []))
         output.append("")
 
-    boss.display_scrollback(
-        boss.active_window,
-        "\n".join(output),
-        title="Kitty keyboard mappings",
-        report_cursor=False,
-    )
+    return "\n".join(output)

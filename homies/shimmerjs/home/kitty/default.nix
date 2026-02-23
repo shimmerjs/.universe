@@ -4,6 +4,17 @@
   lib,
   ...
 }:
+let
+  # Build custom kitty cheatsheet tool
+  kittykrib = (
+    pkgs.buildGoModule {
+      pname = "kittykrib";
+      src = ./cheatsheet;
+      version = "0.1.0";
+      vendorHash = null;
+    }
+  );
+in
 {
   programs.kitty = {
     enable = true;
@@ -15,7 +26,10 @@
       "cmd+ctrl+," = "load_config_file";
 
       # Show current keybindings
-      "f2" = "kitten kits/keybindings.py";
+      "f2" =
+        "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings.py | less -r\"";
+      "f3" =
+        "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings2.py | ${kittykrib}\"";
       # Docs
       "f1" = "show_kitty_doc conf";
 
@@ -26,7 +40,6 @@
       # OS windows
       "cmd+n" = "new_os_window";
       "cmd+q" = "quit";
-
       # Splits / "kitty windows"
       "cmd+enter" = "new_window_with_cwd";
       "cmd+]" = "next_window";
@@ -100,6 +113,8 @@
     settings = {
       # Ensure that Nix-managed binaries are available to kitty actions
       env = "read_from_shell=PATH";
+      # Required to automate kitty
+      allow_remote_control = "yes";
       # Dont update unless its via Nix
       update_check_interval = 0;
       enable_audio_bell = "no";
@@ -110,7 +125,6 @@
       remember_window_position = "yes";
 
       allow_hyperlinks = "yes";
-      open_url_modifier = "cmd";
 
       # Session bits
       startup_session = "sessions/default.conf";
