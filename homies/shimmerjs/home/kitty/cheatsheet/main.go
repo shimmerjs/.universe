@@ -5,70 +5,117 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
-	"text/tabwriter"
-	// "github.com/charmbracelet/lipgloss"
+
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 )
 
+// todo: probably get wired up into bubbletea before fucking with layout anymore
+
 // todo: add ordering for specific actions
+// todo: add kitty mod at the top
+// todo: sort based on keys (eg put f keys together if they are in same category)
+// todo: flat list mode for fzf friendlyness
+// todo: sort some categories by length of action so they are at the bottom
+// todo: style for 'long action' which adds more margin
 // todo: parse out action aliases from config
 // todo: accept config file
 // todo: highlights/common section with specific commands featured
 // todo: handle non-default modes?
 
-var categories = map[string]*category{
-	"scrolling": {
-		selector: &categorySelector{
-			re: "^scroll_|show_scrollback|show_.*_command_output|clear_terminal",
-		},
-	},
-	"cliipboard": {
-		selector: &categorySelector{
-			re: "clipboard",
-			actions: []string{
-				"copy_or_noop",
-				"paste_from_selction",
-				"pass_selection_from_program",
-			},
-		},
-	},
-	"windows": {
+var categories = []*category{
+	{
+		name: "windows",
+		key:  "w",
 		selector: &categorySelector{
 			re: "window",
 		},
 	},
-	"tabs": {
+	{
+		name: "tabs",
+		key:  "t",
 		selector: &categorySelector{
 			re: "tab",
 		},
 	},
-	"layout": {
+	{
+		name: "layout",
+		key:  "l",
 		selector: &categorySelector{
 			re: "layout",
 		},
 	},
-	"system": {
+	{
+		name: "scrolling",
+		key:  "m",
+		selector: &categorySelector{
+			re: "^scroll_|show_scrollback|show_.*_command_output|clear_terminal",
+		},
+	},
+	{
+		name: "system",
+		key:  "s",
 		selector: &categorySelector{
 			re:      "config|macos",
 			actions: []string{"quit"},
 		},
+	},
+	{
+		name: "clipboard",
+		key:  "c",
+		selector: &categorySelector{
+			re: "clipboard",
+			actions: []string{
+				"copy_or_noop",
+				"paste_from_selection",
+				"pass_selection_from_program",
+			},
+		},
+	},
+	{
+		name: "other",
+		key:  "o",
 	},
 }
 
 type kribNotes struct {
 	// all (via stdin)
 	// user-configured (read file, hardcoded)
-	kmod          []string
-	categories    map[string]*category
-	uncategorized map[string][]*bind
+	kmod       []string
+	categories []*category
+
+	width    int
+	filter   string // active category name, empty = show all
+	viewport viewport.Model
+	ready    bool
+}
+
+func (k *kribNotes) getCategory(n string) *category {
+	for _, c := range k.categories {
+		if c.name == n {
+			return c
+		}
+	}
+	return nil
 }
 
 type category struct {
-	idx      int // Priority relative to other cateogires
+	name     string
 	selector *categorySelector
-	binds    map[string][]*bind // can have multiple bindings per action
+	binds    actions // can have multiple bindings per action
+	key      string
+}
+
+func (c *category) match(b *bind) bool {
+	if c.selector == nil {
+		return false
+	}
+	return c.selector.match(b)
 }
 
 type categorySelector struct {
@@ -85,19 +132,61 @@ func (s *categorySelector) match(b *bind) bool {
 		return ok
 	}
 
-	for _, a := range s.actions {
-		if a == b.action {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(s.actions, b.action)
 }
 
 type bind struct {
 	mode   string
 	keys   []string
 	action string
+}
+
+var keyGlyphs = map[string]string{
+	"cmd":   "\u2318",
+	"super": "\u2318",
+	"alt":   "\u2325",
+	"opt":   "\u2325",
+	"ctrl":  "\u2303",
+	"shift": "\u21E7",
+}
+
+func formatKey(k string) string {
+	if g, ok := keyGlyphs[strings.ToLower(k)]; ok {
+		return g
+	}
+	return k
+}
+
+func formatKeys(keys []string) string {
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = formatKey(k)
+	}
+	return strings.Join(parts, " + ")
+}
+
+func (b *bind) keyStr() string {
+	return formatKeys(b.keys)
+}
+
+type actions map[string][]*bind
+
+func (actions actions) rows() [][]string {
+	return slices.Collect(actions.iter())
+}
+
+func (actions actions) iter() iter.Seq[[]string] {
+	return func(yield func([]string) bool) {
+		for a, binds := range actions {
+			bstr := make([]string, 0, len(binds))
+			for _, x := range binds {
+				bstr = append(bstr, x.keyStr())
+			}
+			if !yield([]string{strings.Join(bstr, "\n"), a}) {
+				return
+			}
+		}
+	}
 }
 
 // '\u2318'
@@ -115,8 +204,8 @@ func run() error {
 		return err
 	}
 
-	fmt.Println(k.render())
-	return nil
+	_, err = tea.NewProgram(k).Run()
+	return err
 }
 
 func newSheet() (*kribNotes, error) {
@@ -132,10 +221,6 @@ func newSheet() (*kribNotes, error) {
 	d = bytes.TrimSpace(d)
 	in := make([]map[string]string, 0)
 	for l := range bytes.Lines(d) {
-		fmt.Println("---")
-		fmt.Println(string(l))
-		fmt.Println("---")
-
 		x := make(map[string]string)
 		if err := json.Unmarshal(l, &x); err != nil {
 			return nil, fmt.Errorf("line %s: %w", string(l), err)
@@ -144,10 +229,13 @@ func newSheet() (*kribNotes, error) {
 	}
 
 	k := &kribNotes{
-		categories:    categories,
-		uncategorized: make(map[string][]*bind),
+		categories: categories,
+	}
+	for _, c := range k.categories {
+		c.binds = make(map[string][]*bind, 0)
 	}
 
+	other := make(map[string][]*bind)
 	for _, x := range in {
 		switch {
 		case x["kitty_mod"] != "":
@@ -161,68 +249,22 @@ func newSheet() (*kribNotes, error) {
 
 			var matched bool
 			for _, c := range k.categories {
-				if c.selector.match(b) {
+				if c.match(b) {
 					matched = true
-					if c.binds == nil {
-						c.binds = make(map[string][]*bind)
-					}
 					c.binds[b.action] = append(c.binds[b.action], b)
 				}
 			}
 			if !matched {
-				k.uncategorized[b.action] = append(k.uncategorized[b.action], b)
+				other[b.action] = append(other[b.action], b)
 			}
 		}
 	}
-	// look for record that only has kitty mod set, pull mode/keys/action out of rest
-	// to populate bindings and categorize them
-	// also group by action to dedupe
 
-	lines := strings.Split(string(d), "\n")
-	fmt.Println(lines)
+	for _, c := range k.categories {
+		if c.name == "other" {
+			c.binds = other
+		}
+	}
 
 	return k, nil
-}
-
-func (k *kribNotes) render() string {
-	doc := strings.Builder{}
-
-	tw := tabwriter.NewWriter(&doc, 4, 0, 2, ' ', 0)
-
-	for n, c := range k.categories {
-		fmt.Fprintln(tw, "")
-		fmt.Fprintln(tw, n)
-		fmt.Fprintln(tw, "---")
-
-		for a, binds := range c.binds {
-			var b *bind
-			b, binds = binds[0], binds[1:]
-			fmt.Fprintf(tw, "%s\t%s\t\n",
-				strings.Join(b.keys, "+"), a,
-			)
-			for _, x := range binds {
-				fmt.Fprintf(tw, "%s\t\t\n", strings.Join(x.keys, "+"))
-			}
-		}
-	}
-
-	if len(k.uncategorized) > 0 {
-		fmt.Fprintln(tw, "")
-		fmt.Fprintln(tw, "misc")
-		fmt.Fprintln(tw, "---")
-		for a, binds := range k.uncategorized {
-			var b *bind
-			b, binds = binds[0], binds[1:]
-			fmt.Fprintf(tw, "%s\t%s\t\n",
-				strings.Join(b.keys, "+"), a,
-			)
-			for _, x := range binds {
-				fmt.Fprintf(tw, "%s\t\t\n", strings.Join(x.keys, "+"))
-			}
-		}
-	}
-
-	tw.Flush()
-
-	return doc.String()
 }

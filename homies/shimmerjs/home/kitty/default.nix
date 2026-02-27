@@ -25,13 +25,11 @@ in
       # Reload configuration
       "cmd+ctrl+," = "load_config_file";
 
-      # Show current keybindings
-      "f2" =
-        "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings.py | less -r\"";
-      "f3" =
-        "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings2.py | ${kittykrib}\"";
       # Docs
       "f1" = "show_kitty_doc conf";
+      # Show current keybindings
+      "f3" =
+        "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
 
       # Clipboard
       "cmd+c" = "copy_or_noop";
