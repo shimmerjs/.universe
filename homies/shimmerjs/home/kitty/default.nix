@@ -28,7 +28,7 @@ in
       # Docs
       "f1" = "show_kitty_doc conf";
       # Show current keybindings
-      "f3" =
+      "f2" =
         "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
 
       # Clipboard
@@ -53,6 +53,8 @@ in
       "ctrl+shift+f" = "move_window_forward";
       "ctrl+shift+b" = "move_window_backward";
       "ctrl+shift+t" = "move_window_to_top";
+      # Layouts
+      "cmd+shift+l" = "next_layout";
 
       # Split management specific to the 'splits' kitty layout
       #
@@ -67,9 +69,12 @@ in
       "ctrl+shift+r" = "layout_action rotate"; # Rotate orientation of active split
 
       # Tab management
+      "cmd+t" = "new_tab";
       "cmd+shift+]" = "next_tab";
       "cmd+shift+[" = "previous_tab";
       "cmd+shift+w" = "close_tab";
+      "kitty_mod+." = "move_tab_forward";
+      "kitty_mod+," = "move_tab_backward";
       "cmd+shift+e" = ''
         launch --type=overlay --allow-remote-control ${
           lib.getExe inputs.kitty-tab-switcher.packages.${pkgs.stdenv.hostPlatform.system}.default
@@ -80,6 +85,7 @@ in
       # https://sw.kovidgoyal.net/kitty/#the-scrollback-buffer
       # TODO: use modals/overlay windows/slits for some scrollback funs
       # TODO: action for clearing last command
+      # TODO: search_scrollback
       "cmd+shift+h" = "show_scrollback";
       "cmd+shift+g" = "show_last_non_empty_command_output";
       "kitty_mod+c" = "copy_last_command_output";
@@ -87,25 +93,27 @@ in
       # Reset terminal
       # TODO: leverage ability to clear into the scrollback?
       "cmd+k" = "clear_terminal clear active";
-      "cmd+option+k" = "clear + terminal scroll active";
+      "cmd+option+k" = "clear_terminal scroll active";
       "cmd+l" = "clear_terminal last_command_active";
 
       # Scrolling
       # TODO: use vim arrows?
+      # TODO: configure shortcuts for
+      #   scroll_home, scroll_end
+      #   scroll_to_prompt -1 (previous command)
+      #   scroll_to_prompt 1 (next command)
       "cmd+up" = "scroll_line_up";
       "cmd+down" = "scroll_line_down";
       "cmd+page_up" = "scroll_page_up";
       "cmd+page_down" = "scroll_page_down";
-      # scroll_to_prompt -1 (previous command)
-      # scroll_to_prompt 1 (next command)
-
-      # Layouts
-      "cmd+shift+l" = "next_layout";
 
       # Font sizes
+      # allow '+' or '=' for increasing font size
+      "cmd+plus" = "change_font_size all + 2.0";
       "cmd+equal" = "change_font_size all + 2.0";
       "cmd+minus" = "change_font_size all - 2.0";
-      "cmd+0" = "change_font_size all 0"; # Reset font size
+      # Reset font size
+      "cmd+0" = "change_font_size all 0";
     };
 
     settings = {
@@ -115,7 +123,10 @@ in
       allow_remote_control = "yes";
       # Dont update unless its via Nix
       update_check_interval = 0;
+      # Take full control of keybindings
+      clear_all_shortcuts = "yes";
       enable_audio_bell = "no";
+
       # Enable reading and writing from clipboard
       clipboard_control = "write-clipboard read-clipboard write-primary read-primary";
 
