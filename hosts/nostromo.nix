@@ -39,17 +39,10 @@
     {
       # TODO: paramterize WAN IP
       # TODO: generate this configuration from node information
-      programs.ssh = {
-        extraConfig = ''
-          Host herqtail
-            HostName herq
-
-          Host herq
-            HostName 192.168.1.226
-
-          Host herqmo
-            HostName 107.223.187.30
-        '';
+      programs.ssh.matchBlocks = {
+        "herqtail".hostname = "herq";
+        "herq".hostname = "192.168.1.226";
+        "herqmo".hostname = "107.223.187.30";
       };
     };
 }
