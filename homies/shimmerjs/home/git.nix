@@ -24,7 +24,6 @@
       rebase.autosquash = "true";
       rebase.updateRefs = "true";
       rerere.enabled = "true";
-      worktree.useRelativePaths = "true";
 
       status.aheadBehind = "false";
       fetch.output = "compact";
@@ -36,9 +35,11 @@
         ammend = "commit --amend";
         fix = "commit --amend --no-edit";
         fixso = "commit --amend --no-edit --signoff";
+        pick = "cherry-pick";
 
         co = "checkout";
         b = "branch";
+        nb = "checkout main -b";
         d = "diff";
         p = "push";
         pl = "pull";
@@ -51,6 +52,7 @@
         spop = "stash pop";
         sdrop = "stash drop";
 
+        w = "worktree";
         wls = "worktree list";
         wrm = "worktree remove";
         wprune = "worktree prune";
