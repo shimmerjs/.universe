@@ -5,36 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"iter"
 	"os"
-	"regexp"
-	"slices"
 	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 )
 
-// todo: probably get wired up into bubbletea before fucking with layout anymore
-
-// todo: add ordering for specific actions
-// todo: add kitty mod at the top
-// todo: sort based on keys (eg put f keys together if they are in same category)
-// todo: flat list mode for fzf friendlyness
-// todo: sort some categories by length of action so they are at the bottom
-// todo: style for 'long action' which adds more margin
-// todo: parse out action aliases from config
-// todo: accept config file
+// TODO: flat list mode for fzf friendlyness
+// TODO: parse out action aliases from config
 // todo: highlights/common section with specific commands featured
-// todo: handle non-default modes?
+// TODO: handle non-default modes?
 
 var categories = []*category{
 	{
 		name: "windows",
 		key:  "w",
 		selector: &categorySelector{
-			re: "window",
+			re: "window|layout_action",
+			actions: []string{
+				// since I use the customizable split layout exclusively, these actions
+				// are essentially window management action aliases
+				// TODO: use aliases to make easier to regex?
+				"launch --location=hsplit --cwd=current",
+				"launch --location=vsplit --cwd=current",
+				"launch --location=split --cwd=current",
+			},
 		},
+		sort: sortIntKeysLast,
 	},
 	{
 		name: "tabs",
@@ -61,15 +58,16 @@ var categories = []*category{
 		name: "system",
 		key:  "s",
 		selector: &categorySelector{
-			re:      "config|macos",
+			re:      "config|macos|show_kitty_doc",
 			actions: []string{"quit"},
 		},
+		header: true,
 	},
 	{
 		name: "clipboard",
 		key:  "c",
 		selector: &categorySelector{
-			re: "clipboard",
+			re: "clipboard|copy",
 			actions: []string{
 				"copy_or_noop",
 				"paste_from_selection",
@@ -82,114 +80,6 @@ var categories = []*category{
 		key:  "o",
 	},
 }
-
-type kribNotes struct {
-	// all (via stdin)
-	// user-configured (read file, hardcoded)
-	kmod       []string
-	categories []*category
-
-	width    int
-	filter   string // active category name, empty = show all
-	viewport viewport.Model
-	ready    bool
-}
-
-func (k *kribNotes) getCategory(n string) *category {
-	for _, c := range k.categories {
-		if c.name == n {
-			return c
-		}
-	}
-	return nil
-}
-
-type category struct {
-	name     string
-	selector *categorySelector
-	binds    actions // can have multiple bindings per action
-	key      string
-}
-
-func (c *category) match(b *bind) bool {
-	if c.selector == nil {
-		return false
-	}
-	return c.selector.match(b)
-}
-
-type categorySelector struct {
-	re      string
-	actions []string
-}
-
-func (s *categorySelector) match(b *bind) bool {
-	ok, err := regexp.MatchString(s.re, b.action)
-	if err != nil {
-		panic(err)
-	}
-	if ok {
-		return ok
-	}
-
-	return slices.Contains(s.actions, b.action)
-}
-
-type bind struct {
-	mode   string
-	keys   []string
-	action string
-}
-
-var keyGlyphs = map[string]string{
-	"cmd":   "\u2318",
-	"super": "\u2318",
-	"alt":   "\u2325",
-	"opt":   "\u2325",
-	"ctrl":  "\u2303",
-	"shift": "\u21E7",
-}
-
-func formatKey(k string) string {
-	if g, ok := keyGlyphs[strings.ToLower(k)]; ok {
-		return g
-	}
-	return k
-}
-
-func formatKeys(keys []string) string {
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = formatKey(k)
-	}
-	return strings.Join(parts, " + ")
-}
-
-func (b *bind) keyStr() string {
-	return formatKeys(b.keys)
-}
-
-type actions map[string][]*bind
-
-func (actions actions) rows() [][]string {
-	return slices.Collect(actions.iter())
-}
-
-func (actions actions) iter() iter.Seq[[]string] {
-	return func(yield func([]string) bool) {
-		for a, binds := range actions {
-			bstr := make([]string, 0, len(binds))
-			for _, x := range binds {
-				bstr = append(bstr, x.keyStr())
-			}
-			if !yield([]string{strings.Join(bstr, "\n"), a}) {
-				return
-			}
-		}
-	}
-}
-
-// '\u2318'
 
 func main() {
 	if err := run(); err != nil {
@@ -231,11 +121,7 @@ func newSheet() (*kribNotes, error) {
 	k := &kribNotes{
 		categories: categories,
 	}
-	for _, c := range k.categories {
-		c.binds = make(map[string][]*bind, 0)
-	}
-
-	other := make(map[string][]*bind)
+	other := k.getCategory("other")
 	for _, x := range in {
 		switch {
 		case x["kitty_mod"] != "":
@@ -251,18 +137,12 @@ func newSheet() (*kribNotes, error) {
 			for _, c := range k.categories {
 				if c.match(b) {
 					matched = true
-					c.binds[b.action] = append(c.binds[b.action], b)
+					c.addBind(b)
 				}
 			}
 			if !matched {
-				other[b.action] = append(other[b.action], b)
+				other.addBind(b)
 			}
-		}
-	}
-
-	for _, c := range k.categories {
-		if c.name == "other" {
-			c.binds = other
 		}
 	}
 

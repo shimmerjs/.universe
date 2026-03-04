@@ -119,45 +119,78 @@ func (k *kribNotes) View() tea.View {
 func (k *kribNotes) renderHeader() string {
 	barMarginX := 2
 	bar := titleContentStyle.
-		Padding(1, 2).
+		Padding(0, 2).
 		Margin(0, barMarginX).
 		Width(k.width - barMarginX*2)
 
-	activeColor := lipgloss.Color("#e6e6e6")
-
-	h1 := strings.Builder{}
-
-	h1.WriteString(titleContentStyle.
+	title := bar.Render(titleContentStyle.
 		Bold(true).
 		Render("kitty kribsheet"),
 	)
 
+	activeColor := lipgloss.Color("#e6e6e6")
+	inactiveColor := titleForeground
+	keyColor := lipgloss.Color("#a7c080")
+
+	nav := strings.Builder{}
 	for _, c := range k.categories {
-		label := fmt.Sprintf(" (%s) %s", c.key, c.name)
-		s := titleContentStyle.
-			AlignHorizontal(lipgloss.Right)
+		if c.header {
+			continue
+		}
+		keyStyle := lipgloss.NewStyle()
+		nameStyle := lipgloss.NewStyle()
 
 		switch {
 		case k.filter == c.name:
-			s = s.
-				Foreground(activeColor).
-				Bold(true)
+			keyStyle = keyStyle.Foreground(activeColor).Bold(true)
+			nameStyle = nameStyle.Foreground(activeColor).Bold(true)
 		case k.filter != "":
-			s = s.
-				Faint(true)
+			keyStyle = keyStyle.Foreground(inactiveColor).Faint(true)
+			nameStyle = nameStyle.Foreground(inactiveColor).Faint(true)
+		default:
+			keyStyle = keyStyle.Foreground(keyColor).Bold(true)
+			nameStyle = nameStyle.Foreground(inactiveColor)
 		}
 
-		h1.WriteString(s.Render(label))
+		nav.WriteString(" ")
+		nav.WriteString(keyStyle.Render(c.key))
+		nav.WriteString(nameStyle.Render(" " + c.name))
+		nav.WriteString(" ")
 	}
 
-	header := bar.Render(h1.String())
+	navLine := lipgloss.NewStyle().
+		Padding(0, 2).
+		Margin(0, barMarginX).
+		Render(nav.String())
+
+	header := lipgloss.JoinVertical(lipgloss.Left, title, navLine)
+
+	var subHeader []string
+	colWidth := categoryWidth + 2 // category + horizontal margin from categoryStyle
 
 	if len(k.kmod) > 0 {
 		kmodLine := lipgloss.NewStyle().
 			Padding(1, 2).
 			Margin(1, barMarginX, 0).
+			Width(colWidth).
 			Render("kitty_mod = " + formatKeys(k.kmod))
-		header = lipgloss.JoinVertical(lipgloss.Left, header, kmodLine)
+		subHeader = append(subHeader, kmodLine)
+	}
+
+	for _, c := range k.categories {
+		if !c.header || len(c.binds) == 0 {
+			continue
+		}
+		subHeader = append(subHeader, lipgloss.NewStyle().
+			Margin(1, 0, 0).
+			Render(mkCategoryTable().Width(0).Rows(c.rows()...).Render()),
+		)
+	}
+
+	if len(subHeader) > 0 {
+		header = lipgloss.JoinVertical(lipgloss.Left, header,
+			lipgloss.JoinHorizontal(lipgloss.Top, subHeader...),
+		)
 	}
 
 	return header
@@ -182,82 +215,51 @@ func (k *kribNotes) render() string {
 		if c == nil || len(c.binds) == 0 {
 			return docStyle.Render("(no bindings)")
 		}
-		if c.name == "other" {
-			return docStyle.Render(k.renderOther())
-		}
 		return docStyle.Render(k.renderCategory(c.name))
 	}
 
-	// Collect named categories (everything except "other") that have binds
-	var named []string
+	// Collect categories that have binds
+	type renderedCategory struct {
+		content string
+		height  int
+	}
+	var rendered []renderedCategory
 	for _, c := range k.categories {
-		if c.name != "other" && len(c.binds) > 0 {
-			named = append(named, c.name)
+		if c.header || len(c.binds) == 0 {
+			continue
 		}
+		s := k.renderCategory(c.name)
+		rendered = append(rendered, renderedCategory{content: s, height: lipgloss.Height(s)})
 	}
 
-	cols := k.colsPerRow()
-
-	// Render named categories in rows of `cols`
-	var rows []string
-	for i := 0; i < len(named); i += cols {
-		end := i + cols
-		if end > len(named) {
-			end = len(named)
-		}
-		chunk := named[i:end]
-		rendered := make([]string, len(chunk))
-		for j, name := range chunk {
-			rendered[j] = k.renderCategory(name)
-		}
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, rendered...))
+	numCols := k.colsPerRow()
+	if numCols > len(rendered) {
+		numCols = len(rendered)
 	}
 
-	doc := lipgloss.JoinVertical(lipgloss.Center, rows...)
-
-	// "other" category
-	other := k.renderOther()
-	if other != "" {
-		doc = lipgloss.JoinVertical(lipgloss.Center, doc, other)
+	// Distribute categories into columns greedily by shortest column height
+	columns := make([][]string, numCols)
+	colHeights := make([]int, numCols)
+	for _, rc := range rendered {
+		// Find the shortest column
+		shortest := 0
+		for j := 1; j < numCols; j++ {
+			if colHeights[j] < colHeights[shortest] {
+				shortest = j
+			}
+		}
+		columns[shortest] = append(columns[shortest], rc.content)
+		colHeights[shortest] += rc.height
 	}
+
+	cols := make([]string, numCols)
+	for i, col := range columns {
+		cols[i] = lipgloss.JoinVertical(lipgloss.Left, col...)
+	}
+	doc := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 
 	return docStyle.Render(doc)
 }
-
-func (k *kribNotes) renderOther() string {
-	uncategorizedRows := k.getCategory("other").binds.rows()
-	if len(uncategorizedRows) == 0 {
-		return ""
-	}
-
-	cols := k.colsPerRow()
-	otherCols := cols
-	if otherCols > len(uncategorizedRows) {
-		otherCols = len(uncategorizedRows)
-	}
-	chunkSize := (len(uncategorizedRows) + otherCols - 1) / otherCols // ceiling division
-	otherRendered := make([]string, 0, otherCols)
-	for i := 0; i < len(uncategorizedRows); i += chunkSize {
-		end := i + chunkSize
-		if end > len(uncategorizedRows) {
-			end = len(uncategorizedRows)
-		}
-		otherRendered = append(otherRendered, mkCategoryTable().Rows(uncategorizedRows[i:end]...).Render())
-	}
-	otherWidth := cols * categoryWidth
-	if otherWidth > k.width {
-		otherWidth = k.width
-	}
-	return categoryStyle.Render(
-		lipgloss.JoinVertical(lipgloss.Center,
-			headerStyle.Width(otherWidth).Render("other"),
-			lipgloss.JoinHorizontal(lipgloss.Left, otherRendered...),
-		),
-	)
-}
-
-// table needs to be struct probably to track all the necessary state for
-// conditional rendering
 
 func mkCategoryTable() *table.Table {
 	return baseTable().
@@ -291,7 +293,7 @@ func (k *kribNotes) renderCategory(n string) string {
 	c := lipgloss.JoinVertical(
 		lipgloss.Left,
 		headerStyle.Render(n),
-		mkCategoryTable().Rows(k.getCategory(n).binds.rows()...).Render(),
+		mkCategoryTable().Rows(k.getCategory(n).rows()...).Render(),
 	)
 	return categoryStyle.Render(c)
 }
