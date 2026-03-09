@@ -100,7 +100,6 @@
       homebrew = {
         casks = [
           "flycut" # Clipboard manager
-          "spotify"
           "bitwarden" # Bitwarden GUI
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
@@ -111,6 +110,7 @@
   # home-manager config for this homie that is only applied to darwin hosts.
   home =
     {
+      inputs,
       pkgs,
       config,
       lib,
@@ -127,6 +127,7 @@
         keymapp
         # Telegram
         telegram-desktop
+        inputs.spotatui.packages.${pkgs.stdenv.hostPlatform.system}.default
         # tg
         # Signal
         signal-cli
