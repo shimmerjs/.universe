@@ -139,6 +139,13 @@
               "burnin'"
               "usurping"
               "scheming"
+              "rippin"
+              "tokin"
+              "trippin"
+              "disassociating"
+              "spittin"
+              "commoditizin"
+              "overthrowing"
             ];
           };
         };
