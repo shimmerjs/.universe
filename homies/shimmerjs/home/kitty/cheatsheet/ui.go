@@ -166,31 +166,26 @@ func (k *kribNotes) renderHeader() string {
 	header := lipgloss.JoinVertical(lipgloss.Left, title, navLine)
 
 	var subHeader []string
-	colWidth := categoryWidth + 2 // category + horizontal margin from categoryStyle
 
 	if len(k.kmod) > 0 {
-		kmodLine := lipgloss.NewStyle().
+		kmodBox := lipgloss.NewStyle().
 			Padding(1, 2).
-			Margin(1, barMarginX, 0).
-			Width(colWidth).
+			Width(categoryWidth).
 			Render("kitty_mod = " + formatKeys(k.kmod))
-		subHeader = append(subHeader, kmodLine)
+		subHeader = append(subHeader, categoryStyle.Render(kmodBox))
 	}
 
 	for _, c := range k.categories {
 		if !c.header || len(c.binds) == 0 {
 			continue
 		}
-		subHeader = append(subHeader, lipgloss.NewStyle().
-			Margin(1, 0, 0).
-			Render(mkCategoryTable().Width(0).Rows(c.rows()...).Render()),
-		)
+		subHeader = append(subHeader, categoryStyle.Render(
+			mkCategoryTable().Rows(c.rows()...).Render(),
+		))
 	}
 
 	if len(subHeader) > 0 {
-		header = lipgloss.JoinVertical(lipgloss.Left, header,
-			lipgloss.JoinHorizontal(lipgloss.Top, subHeader...),
-		)
+		header = lipgloss.JoinVertical(lipgloss.Left, header, docStyle.Render(k.layoutColumns(subHeader)))
 	}
 
 	return header
@@ -201,11 +196,34 @@ func (k *kribNotes) colsPerRow() int {
 	// docStyle has Padding(0, 1) = 1 char each side
 	colWidth := categoryWidth + 2 // category + horizontal margin
 	docPad := 2                   // docStyle horizontal padding
-	n := (k.width - docPad) / colWidth
-	if n < 1 {
-		return 1
+	return max(1, (k.width-docPad)/colWidth)
+}
+
+func (k *kribNotes) layoutColumns(items []string) string {
+	if len(items) == 0 {
+		return ""
 	}
-	return n
+	numCols := min(k.colsPerRow(), len(items))
+	if numCols <= 1 {
+		return lipgloss.JoinVertical(lipgloss.Left, items...)
+	}
+	columns := make([][]string, numCols)
+	colHeights := make([]int, numCols)
+	for _, item := range items {
+		shortest := 0
+		for j := 1; j < numCols; j++ {
+			if colHeights[j] < colHeights[shortest] {
+				shortest = j
+			}
+		}
+		columns[shortest] = append(columns[shortest], item)
+		colHeights[shortest] += lipgloss.Height(item)
+	}
+	cols := make([]string, numCols)
+	for i, col := range columns {
+		cols[i] = lipgloss.JoinVertical(lipgloss.Left, col...)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 }
 
 func (k *kribNotes) render() string {
@@ -219,44 +237,15 @@ func (k *kribNotes) render() string {
 	}
 
 	// Collect categories that have binds
-	type renderedCategory struct {
-		content string
-		height  int
-	}
-	var rendered []renderedCategory
+	var items []string
 	for _, c := range k.categories {
 		if c.header || len(c.binds) == 0 {
 			continue
 		}
-		s := k.renderCategory(c.name)
-		rendered = append(rendered, renderedCategory{content: s, height: lipgloss.Height(s)})
+		items = append(items, k.renderCategory(c.name))
 	}
 
-	numCols := k.colsPerRow()
-	if numCols > len(rendered) {
-		numCols = len(rendered)
-	}
-
-	// Distribute categories into columns greedily by shortest column height
-	columns := make([][]string, numCols)
-	colHeights := make([]int, numCols)
-	for _, rc := range rendered {
-		// Find the shortest column
-		shortest := 0
-		for j := 1; j < numCols; j++ {
-			if colHeights[j] < colHeights[shortest] {
-				shortest = j
-			}
-		}
-		columns[shortest] = append(columns[shortest], rc.content)
-		colHeights[shortest] += rc.height
-	}
-
-	cols := make([]string, numCols)
-	for i, col := range columns {
-		cols[i] = lipgloss.JoinVertical(lipgloss.Left, col...)
-	}
-	doc := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+	doc := k.layoutColumns(items)
 
 	return docStyle.Render(doc)
 }
