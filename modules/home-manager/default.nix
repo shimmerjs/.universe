@@ -2,7 +2,7 @@
 # use home-manager, regardless of OS.
 #
 # Should not assume graphical environment
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 {
   programs.home-manager.enable = true;
   home.stateVersion = "21.03"; # Version set by home-manager when first installed.
@@ -12,7 +12,7 @@
   ];
 
   # Ensure that installed apps are indexed by Spotlight on macOS
-  targets.darwin = {
+  targets.darwin = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
     copyApps.enable = true;
     linkApps.enable = false;
   };

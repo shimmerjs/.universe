@@ -12,13 +12,9 @@ in
   config.nixCats = {
     enable = true;
     luaPath = ./.;
-    # nixCats-specific overlays (not applied to overall system)
     addOverlays = [
-      # This will add any plugins in inputs named "plugins-pluginName" to
-      # pkgs.neovimPlugins
       (utils.standardPluginOverlay inputs)
     ];
-    # Which package definitions below to build
     packageNames = [ "nvim" ];
 
     categoryDefinitions.replace =
@@ -32,14 +28,14 @@ in
         ...
       }@packageDef:
       {
-        # Available at runtime for plugins via PATH and
-        # in nvim terminal.
         lspsAndRuntimeDeps = with pkgs; {
           general = [
             lazygit
             fd
+            ripgrep
             fzf
             jq
+            gh
           ];
 
           lua = [
@@ -49,7 +45,7 @@ in
 
           nix = [
             nixd
-            # TODO: setup alejandra for fmting
+            alejandra
           ];
 
           go = [
@@ -64,32 +60,89 @@ in
           tf = [
             terraform-ls
           ];
+
+          markdown = [
+            marksman
+          ];
+
+          shell = [
+            bash-language-server
+            shellcheck
+            shfmt
+          ];
+
+          yaml = [
+            yaml-language-server
+          ];
+
+          json = [
+            vscode-langservers-extracted
+          ];
+
+          cue = [
+            cue
+          ];
         };
 
-        # plugins unconditionally loaded at startup
         startupPlugins = {
           general = with pkgs.vimPlugins; [
             lze
             lzextras
+            everforest
           ];
         };
 
-        # not loaded automatically at startup
-        # used with packadd / autocommand in config for lazy loading
         optionalPlugins = {
           general = with pkgs.vimPlugins; [
             vim-startuptime
             blink-cmp
-            nvim-treesitter.withAllGrammars # TODO: look into trimming to specific grammars
+            (nvim-treesitter.withPlugins (p: [
+              p.go
+              p.gomod
+              p.gosum
+              p.gowork
+              p.nix
+              p.lua
+              p.luadoc
+              p.bash
+              p.hcl
+              p.terraform
+              p.yaml
+              p.json
+              p.markdown
+              p.markdown_inline
+              p.cue
+              p.vim
+              p.vimdoc
+              p.regex
+              p.query
+              p.diff
+              p.gitcommit
+              p.toml
+              p.dockerfile
+              p.make
+            ]))
+            nvim-treesitter-textobjects
+            nvim-treesitter-context
             mini-nvim
             nvim-lspconfig
             lualine-nvim
             lualine-lsp-progress
             gitsigns-nvim
             which-key-nvim
-            # TODO: need these am i covered by lang specific lsps?
-            # nvim-lint
-            # conform-nvim
+
+            # telescope + extensions
+            plenary-nvim
+            nvim-web-devicons
+            telescope-nvim
+            telescope-fzf-native-nvim
+            telescope-ui-select-nvim
+            pkgs.neovimPlugins.telescope-recent-files
+            pkgs.neovimPlugins.telescope-switch
+            telescope-github-nvim
+            telescope-undo-nvim
+            pkgs.neovimPlugins.adjacent-nvim
+            octo-nvim
           ];
           lua = with pkgs.vimPlugins; [
             lazydev-nvim
@@ -98,7 +151,6 @@ in
       };
 
     packageDefinitions.replace = {
-      # named packages built from config above
       nvim =
         { pkgs, name, ... }:
         {
@@ -116,8 +168,12 @@ in
             nix = true;
             go = true;
             tf = true;
+            markdown = true;
+            shell = true;
+            yaml = true;
+            json = true;
+            cue = true;
           };
-          # anything else we want to pass to lua
           extra = {
             nixdExtras.nixpkgs = "import ${pkgs.path}";
           };

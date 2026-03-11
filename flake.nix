@@ -45,6 +45,20 @@
     # nvim frameworky thing
     nixCats.url = "github:BirdeeHub/nixCats-nvim";
 
+    # nvim plugins not in nixpkgs (picked up by nixCats standardPluginOverlay)
+    plugins-telescope-switch = {
+      url = "github:sshelll/telescope-switch.nvim";
+      flake = false;
+    };
+    plugins-adjacent-nvim = {
+      url = "github:MaximilianLloyd/adjacent.nvim";
+      flake = false;
+    };
+    plugins-telescope-recent-files = {
+      url = "github:smartpde/telescope-recent-files";
+      flake = false;
+    };
+
     # Non-flake inputs
     powerlevel10k = {
       url = "github:romkatv/powerlevel10k";
@@ -64,6 +78,7 @@
     }:
     let
       mkSystem = import ./lib/mksystem.nix { inherit inputs; };
+      mkChecks = import ./lib/mkchecks.nix { inherit inputs; };
     in
     {
       darwinConfigurations = {
@@ -79,5 +94,7 @@
         slugger = mkSystem "slugger";
         snake = mkSystem "snake";
       };
+
+      checks = mkChecks self.darwinConfigurations self.nixosConfigurations;
     };
 }
