@@ -2,6 +2,7 @@
 {
   imports = [
     ../../../modules/home-manager/go.nix
+    ./nvim
   ];
 
   home.packages = with pkgs; [
@@ -24,14 +25,28 @@
     d2
     asciinema
 
+    nb
+    w3m
+
+    # New tricks?
+    eza
+    silver-searcher
+    fd
+
     # Nix
-    niv # Nix sources manager
-    nixfmt-rfc-style
+    nixfmt
 
     (python3.withPackages
       # install pip because its not included with the python3 nixpkg by
       # default
-      (ps: with ps; [ pip pylint autopep8 ]))
+      (
+        ps: with ps; [
+          pip
+          pylint
+          autopep8
+        ]
+      )
+    )
 
     # Insert meme here
     kubectl

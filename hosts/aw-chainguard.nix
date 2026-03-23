@@ -15,16 +15,15 @@
       homebrew = {
         taps = [
           "chainguard-dev/tap"
-          "minamijoyo/hcledit"
         ];
         brews = [
           "gitsign"
           "chainctl"
           "melange"
-          "hcledit"
           "helm" # :[
         ];
         casks = [
+          "orbstack"
           "google-chrome"
         ];
       };
@@ -35,6 +34,8 @@
       config,
       lib,
       pkgs,
+      user,
+      inputs,
       ...
     }:
     {
@@ -86,11 +87,10 @@
       };
 
       # Set up SSH key for github.com authentication
-      programs.ssh.extraConfig = ''
-        Host github.com
-          AddKeysToAgent yes
-          IdentityFile ~/.ssh/id_ed25519
-      '';
+      programs.ssh.matchBlocks."github.com" = {
+        extraOptions.AddKeysToAgent = "yes";
+        identityFile = "~/.ssh/id_ed25519";
+      };
 
       # Configure `gh` CLI to use ssh when setting up repositories
       programs.gh = {
@@ -99,6 +99,7 @@
           git_protocol = "ssh";
         };
       };
+
       # TODO: patch home-manager to support defining host configuration
       # or at least generate from root settings, gh config story is dumb
       # enough to drop it
@@ -106,9 +107,48 @@
         github.com:
           git_protocol: ssh
           users:
-              shimmerjs:
+              ${user}:
                   git_protocol: ssh
-          user: shimmerjs
+          user: ${user}
       '';
+
+      programs.vscode.profiles.default = with pkgs; {
+        extensions =
+          with inputs.nix-vscode-extensions.extensions.${pkgs.stdenv.hostPlatform.system};
+          with vscode-marketplace;
+          [ hashicorp.terraform ];
+      };
+
+      programs.claude-code = {
+        enable = true;
+        settings = {
+          statusLine = {
+            type = "command";
+            "command" = "jq -r '\"\\(.context_window.used_percentage // 0)% context\"'";
+          };
+          enabledPlugins = {
+            "gopls-lsp@claude-plugins-official" = true;
+          };
+
+          spinnerVerbs = {
+            mode = "replace";
+            verbs = [
+              "pillagin'"
+              "cookin'"
+              "wildin'"
+              "burnin'"
+              "usurping"
+              "scheming"
+              "rippin"
+              "tokin"
+              "trippin"
+              "disassociating"
+              "spittin"
+              "commoditizin"
+              "overthrowing"
+            ];
+          };
+        };
+      };
     };
 }

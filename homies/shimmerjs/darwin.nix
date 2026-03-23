@@ -44,6 +44,12 @@
           static-only = true;
         };
 
+        WindowManager = {
+          # Rectangle has control of drag-edge-tiling-whatever
+          EnableTilingByEdgeDrag = false;
+          EnableTopTilingByEdgeDrag = false;
+        };
+
         spaces = {
           spans-displays = false;
         };
@@ -74,7 +80,7 @@
             # we can define the fractional values as strings.
             #
             # system.defaults.NSGlobalDomain counterpart is typed as int.
-            InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
+            # InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
             KeyRepeat = 0.5; # How quickly key repeats, default is 2 or 30ms
           };
 
@@ -94,10 +100,7 @@
       homebrew = {
         casks = [
           "flycut" # Clipboard manager
-          "spotify"
-          "docker"
           "bitwarden" # Bitwarden GUI
-          "keymapp" # Manage ergodox-ez keyboard graphically
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
         ];
@@ -107,6 +110,7 @@
   # home-manager config for this homie that is only applied to darwin hosts.
   home =
     {
+      inputs,
       pkgs,
       config,
       lib,
@@ -120,8 +124,13 @@
       ];
 
       home.packages = with pkgs; [
-        # telegram-desktop
-        wally-cli # Manage ergodox-ez keyboard
+        keymapp
+        # Telegram
+        telegram-desktop
+        inputs.spotatui.packages.${pkgs.stdenv.hostPlatform.system}.default
+        # tg
+        # Signal
+        signal-cli
       ];
 
       universe.home.rectangle = {

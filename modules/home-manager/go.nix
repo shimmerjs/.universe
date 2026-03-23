@@ -1,7 +1,7 @@
 { pkgs, config, ... }:
 {
   programs.go = {
-    package = pkgs.go_1_24;
+    package = pkgs.go;
     enable = true;
     env = {
       GOBIN = "${config.home.homeDirectory}/dev/go/bin";

@@ -24,19 +24,22 @@
       rebase.autosquash = "true";
       rebase.updateRefs = "true";
       rerere.enabled = "true";
-      worktree.useRelativePaths = "true";
 
       status.aheadBehind = "false";
       fetch.output = "compact";
 
-      aliases = {
+      alias = {
+        a = "add";
         c = "commit";
         cs = "commit -s";
         ammend = "commit --amend";
         fix = "commit --amend --no-edit";
         fixso = "commit --amend --no-edit --signoff";
+        pick = "cherry-pick";
 
         co = "checkout";
+        b = "branch";
+        nb = "checkout main -b";
         d = "diff";
         p = "push";
         pl = "pull";
@@ -45,7 +48,11 @@
         sync = "!git checkout main && git pull upstream main";
 
         sls = "stash list";
+        ss = "stash show";
+        spop = "stash pop";
+        sdrop = "stash drop";
 
+        w = "worktree";
         wls = "worktree list";
         wrm = "worktree remove";
         wprune = "worktree prune";
@@ -54,12 +61,12 @@
     };
   };
 
-  programs.zsh = {
+  home = {
+    shellAliases = {
+      g = "git";
+    };
     sessionVariables = {
       GIT_SSL_CAINFO = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    };
-    shellGlobalAliases = {
-      batdiff = "git diff --name-only --diff-filter=d | xargs bat --diff";
     };
   };
 }

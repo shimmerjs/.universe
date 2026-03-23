@@ -13,7 +13,7 @@
       # only put cwd on tab/window title
       export DISABLE_AUTO_TITLE="true"
       precmd () {print -Pn "\e]0;%~\a"}
-      
+
       # Configure keybindings to allow incremental history search
       # while using zsh-autosuggestions.
       bindkey "^[[A" history-beginning-search-backward
@@ -34,8 +34,10 @@
       # Shortcut for showing image rendered from default graphviz settings
       # for terminal friendly graphs
       idot = "tdot | icat";
-      # For pretty-fying streams of mixed garbage that contain JSON objects 
+      # For pretty-fying streams of mixed garbage that contain JSON objects
       jqmess = "jq -R 'fromjson? | .'";
+      # User-specific universe aliases
+      uedit = "code $UNIVERSE_PATH";
     };
     shellAliases = {
       ls = "ls -A --color=auto";

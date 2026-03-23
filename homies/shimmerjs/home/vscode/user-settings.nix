@@ -108,7 +108,7 @@
 
   # Editor settings
   # Helps deal with explorer font size
-  "window.zoomLevel" = 2.0;
+  "window.zoomLevel" = 1.2;
 
   # Color theme and configuration
   workbench.colorTheme = "Everforest Dark";

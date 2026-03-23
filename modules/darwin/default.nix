@@ -1,4 +1,4 @@
-# Default macOS system configuration applied to all macOS hosts. Additional 
+# Default macOS system configuration applied to all macOS hosts. Additional
 # modules are then layered on top or defined as part of the host definition.
 { user, hostname, ... }:
 {

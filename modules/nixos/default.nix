@@ -1,4 +1,9 @@
-{ pkgs, user, hostname, ... }:
+{
+  pkgs,
+  user,
+  hostname,
+  ...
+}:
 {
   imports = [
     ../nix.nix

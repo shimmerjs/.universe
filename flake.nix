@@ -14,26 +14,36 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    raspberry-pi-nix.url = "github:nix-community/raspberry-pi-nix";
+
     # Manage disk configuration with Nix
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Secret management
+    # Packages
     agenix = {
       url = "github:ryantm/agenix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.darwin.follows = "darwin";
     };
-
-    raspberry-pi-nix.url = "github:nix-community/raspberry-pi-nix";
-
-    # Helps address issue where Nix-intalled apps don't show up in Spotlight
-    # mac-app-util = {
-    #  url = "github:hraban/mac-app-util";
-    #  inputs.nixpkgs.follows = "nixpkgs";
-    # };
+    spotatui = {
+      url = "github:shimmerjs/spotatui";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # Utility to switch tabs in kitty terminal using fzf
+    kitty-tab-switcher = {
+      url = "github:OsiPog/kitty-tab-switcher";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # Automatically up-to-date vscode extensions for nix
+    nix-vscode-extensions = {
+      url = "github:nix-community/nix-vscode-extensions";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # nvim frameworky thing
+    nixCats.url = "github:BirdeeHub/nixCats-nvim";
 
     # Non-flake inputs
     powerlevel10k = {
@@ -42,7 +52,16 @@
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, home-manager, darwin, disko, agenix, ... }:
+  outputs =
+    inputs@{
+      self,
+      nixpkgs,
+      home-manager,
+      darwin,
+      disko,
+      agenix,
+      ...
+    }:
     let
       mkSystem = import ./lib/mksystem.nix { inherit inputs; };
     in
