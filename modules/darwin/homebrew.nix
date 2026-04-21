@@ -10,6 +10,7 @@
   homebrew = {
     enable = true;
 
+    onActivation.autoUpdate = true; # Update brew index during activation
     onActivation.cleanup = "zap"; # Clean up removed apps
 
     caskArgs = {
