@@ -22,7 +22,6 @@
     godef
     golint
     gocode-gomod
-    gotools
     golangci-lint
   ];
 }
