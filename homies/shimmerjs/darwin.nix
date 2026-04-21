@@ -82,6 +82,7 @@
             # system.defaults.NSGlobalDomain counterpart is typed as int.
             # InitialKeyRepeat = 10; # How soon key repeating starts, default is 15 or 225ms
             KeyRepeat = 0.5; # How quickly key repeats, default is 2 or 30ms
+            NSTrackingMouseShakeToLocate = true;
           };
 
           # Finder settings not covered by nix-darwin module...
@@ -103,6 +104,7 @@
           "bitwarden" # Bitwarden GUI
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
+          "telegram" # Telegram desktop client
         ];
       };
     };
@@ -125,8 +127,6 @@
 
       home.packages = with pkgs; [
         keymapp
-        # Telegram
-        telegram-desktop
         inputs.spotatui.packages.${pkgs.stdenv.hostPlatform.system}.default
         # tg
         # Signal
