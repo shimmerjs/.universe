@@ -122,6 +122,8 @@
       programs.claude-code = {
         enable = true;
         settings = {
+          effortLevel = "xhigh";
+          model = "claude-opus-4-6";
           statusLine = {
             type = "command";
             command = "~/.claude/statusline.sh";
@@ -129,6 +131,9 @@
           };
           enabledPlugins = {
             "gopls-lsp@claude-plugins-official" = true;
+          };
+          env = {
+            CLAUDE_CODE_ENABLE_TELEMETRY = 0;
           };
 
           spinnerVerbs = {
