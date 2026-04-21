@@ -2,7 +2,7 @@
 {
   system = "aarch64-darwin";
   user = "shimmerjs";
-  homie = import ../homies/shimmerjs;
+  homie = import ../../homies/shimmerjs;
 
   systemConfig =
     {
@@ -40,7 +40,7 @@
     }:
     {
       imports = [
-        ../modules/home-manager/gcloud.nix
+        ../../modules/home-manager/gcloud.nix
       ];
 
       home.packages = with pkgs; [
@@ -124,7 +124,8 @@
         settings = {
           statusLine = {
             type = "command";
-            "command" = "jq -r '\"\\(.context_window.used_percentage // 0)% context\"'";
+            command = "~/.claude/statusline.sh";
+            refreshInterval = 10;
           };
           enabledPlugins = {
             "gopls-lsp@claude-plugins-official" = true;
@@ -149,6 +150,10 @@
             ];
           };
         };
+      };
+      home.file.".claude/statusline.sh" = {
+        executable = true;
+        source = ./claude-statusline.sh;
       };
     };
 }
