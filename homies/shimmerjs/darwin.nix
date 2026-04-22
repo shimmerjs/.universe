@@ -135,7 +135,7 @@
 
       universe.home.rectangle = {
         enable = true;
-        configFile.source = ./home/prefs/com.knollsoft.Rectangle.plist;
+        configFile = ./home/prefs/com.knollsoft.Rectangle.plist;
       };
     };
 }
