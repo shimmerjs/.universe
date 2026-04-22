@@ -2,6 +2,7 @@
   pkgs,
   inputs,
   lib,
+  config,
   ...
 }:
 let
@@ -118,7 +119,7 @@ in
 
     settings = {
       # Ensure that Nix-managed binaries are available to kitty actions
-      env = "read_from_shell=PATH";
+      env = "PATH=${config.home.profileDirectory}/bin:$PATH";
       # Required to automate kitty
       allow_remote_control = "yes";
       # Dont update unless its via Nix
