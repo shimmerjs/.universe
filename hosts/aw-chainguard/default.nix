@@ -122,7 +122,7 @@
       programs.claude-code = {
         enable = true;
         settings = {
-          effortLevel = "xhigh";
+          effortLevel = "max";
           model = "claude-opus-4-6";
           statusLine = {
             type = "command";
@@ -132,6 +132,58 @@
           enabledPlugins = {
             "gopls-lsp@claude-plugins-official" = true;
           };
+
+          permissions = {
+            allow = [
+              "Bash(bash:*)"
+              "Bash(cargo check:*)"
+              "Bash(chmod +x:*)"
+              "Bash(curl:*)"
+              "Bash(file:*)"
+              "Bash(find:*)"
+              "Bash(git:*)"
+              "Bash(d2:*)"
+              "WebFetch(domain:d2lang.com)"
+              "WebFetch(domain:terrastruct.com)"
+              "Bash(go build:*)"
+              "Bash(go doc:*)"
+              "Bash(go mod:*)"
+              "Bash(go test:*)"
+              "Bash(go version:*)"
+              "Bash(go vet:*)"
+              "Bash(gh api:*)"
+              "Bash(gh issue:*)"
+              "Bash(gh pr:*)"
+              "Bash(gh search:*)"
+              "Bash(grep:*)"
+              "Bash(log show:*)"
+              "Bash(ls:*)"
+              "Bash(lsof:*)"
+              "Bash(nix:*)"
+              "Bash(nix build:*)"
+              "Bash(nix eval:*)"
+              "Bash(nix flake:*)"
+              "Bash(nix-shell:*)"
+              "Bash(open:*)"
+              "Bash(pkill:*)"
+              "Bash(python3:*)"
+              "Bash(sysctl security:*)"
+              "Bash(wc:*)"
+              "Bash(xargs sh:*)"
+              "WebFetch(domain:discourse.nixos.org)"
+              "WebFetch(domain:docs.rs)"
+              "WebFetch(domain:github.com)"
+              "WebFetch(domain:localhost)"
+              "WebFetch(domain:mynixos.com)"
+              "WebFetch(domain:nixos.org)"
+              "WebFetch(domain:private-user-images.githubusercontent.com)"
+              "WebFetch(domain:raw.githubusercontent.com)"
+              "WebFetch(domain:wiki.nixos.org)"
+              "WebSearch"
+              "mcp__claude_ai_Chainguard_Analytics__metrics"
+            ];
+          };
+
           env = {
             CLAUDE_CODE_ENABLE_TELEMETRY = 0;
           };
