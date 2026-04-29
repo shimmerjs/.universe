@@ -123,7 +123,13 @@
         enable = true;
         settings = {
           effortLevel = "max";
-          model = "claude-opus-4-6";
+          model = "claude-opus-4-7";
+          autoScrollEnabled = false;
+          attribution = {
+            # NOTE: in the future, i guess we dont have booleans
+            commit = "";
+            pr = "";
+          };
           statusLine = {
             type = "command";
             command = "~/.claude/statusline.sh";
@@ -134,7 +140,16 @@
           };
 
           permissions = {
+            defaultMode = "auto";
             allow = [
+              "Read(~/**)"
+              "Read(//tmp/**)"
+
+              "WebSearch"
+              "WebFetch(domain:localhost)"
+              "WebFetch(domain:private-user-images.githubusercontent.com)"
+              "WebFetch(domain:raw.githubusercontent.com)"
+
               "Bash(bash:*)"
               "Bash(cargo check:*)"
               "Bash(chmod +x:*)"
@@ -142,9 +157,22 @@
               "Bash(file:*)"
               "Bash(find:*)"
               "Bash(git:*)"
+              "Bash(gh:*)"
+              "Bash(grep:*)"
+              "Bash(log show:*)"
+              "Bash(ls:*)"
+              "Bash(lsof:*)"
+              "Bash(open:*)"
+              "Bash(pkill:*)"
+              "Bash(python3:*)"
+              "Bash(sysctl security:*)"
+              "Bash(wc:*)"
+              "Bash(xargs sh:*)"
+
               "Bash(d2:*)"
               "WebFetch(domain:d2lang.com)"
               "WebFetch(domain:terrastruct.com)"
+
               "Bash(go build:*)"
               "Bash(go doc:*)"
               "Bash(go mod:*)"
@@ -155,37 +183,31 @@
               "Bash(gh issue:*)"
               "Bash(gh pr:*)"
               "Bash(gh search:*)"
-              "Bash(grep:*)"
-              "Bash(log show:*)"
-              "Bash(ls:*)"
-              "Bash(lsof:*)"
+
               "Bash(nix:*)"
               "Bash(nix build:*)"
               "Bash(nix eval:*)"
               "Bash(nix flake:*)"
               "Bash(nix-shell:*)"
-              "Bash(open:*)"
-              "Bash(pkill:*)"
-              "Bash(python3:*)"
-              "Bash(sysctl security:*)"
-              "Bash(wc:*)"
-              "Bash(xargs sh:*)"
               "WebFetch(domain:discourse.nixos.org)"
               "WebFetch(domain:docs.rs)"
               "WebFetch(domain:github.com)"
-              "WebFetch(domain:localhost)"
               "WebFetch(domain:mynixos.com)"
               "WebFetch(domain:nixos.org)"
-              "WebFetch(domain:private-user-images.githubusercontent.com)"
-              "WebFetch(domain:raw.githubusercontent.com)"
               "WebFetch(domain:wiki.nixos.org)"
-              "WebSearch"
+
               "mcp__claude_ai_Chainguard_Analytics__metrics"
             ];
           };
 
           env = {
             CLAUDE_CODE_ENABLE_TELEMETRY = 0;
+            # Because I guess configurations don't matter in the future?
+            # https://code.claude.com/docs/en/model-config#adjust-effort-level
+            # >max provides the deepest reasoning with no constraint on token
+            # >spending and applies to the current session only, except when
+            # set through the CLAUDE_CODE_EFFORT_LEVEL environment variable.
+            CLAUDE_CODE_EFFORT_LEVEL = "max";
           };
 
           spinnerVerbs = {
