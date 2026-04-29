@@ -4,6 +4,8 @@
     package = git;
     enable = true;
 
+    signing.format = "openpgp";
+
     settings = {
       user.name = "alex weidner";
       user.email = "shimmerjs@dpu.sh";
