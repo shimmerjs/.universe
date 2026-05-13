@@ -122,6 +122,7 @@
       programs.claude-code = {
         enable = true;
         settings = {
+          apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
           effortLevel = "max";
           model = "claude-opus-4-7";
           autoScrollEnabled = false;
