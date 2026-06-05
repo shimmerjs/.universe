@@ -3,6 +3,7 @@
 #                        Managed by ~/.universe.
 #
 # Layout (lines appear/disappear with state — it grows when you're busy):
+#   line 0  session title         「name」  — ONLY when Claude has named the chat (lower kebab)
 #   line 1  identity + context   ◆ model effort  ⎇ branch  ⌥ worktree  ctx gauge  PR
 #   line 2  the spend tape        session odometer · burn rate · heat sparkline · today
 #   line 3  live activity         ⟳ N agents · M workflows  — ONLY while they're running
@@ -246,9 +247,18 @@ if   [ "$ctx_pct" -lt 60 ]; then C_CTX="$C_OK"
 elif [ "$ctx_pct" -lt 85 ]; then C_CTX="$C_WARN"
 else                             C_CTX="$C_HOT"; fi
 
+# ════════════════════════════ LINE 0 — session title (own line when Claude names the chat) ════════════════════════════
+# Lower kebab-case for a calmer, codename-y look — and so a long title gets its
+# own line instead of shoving model/branch/ctx off the right edge of line 1.
+L0=""
+if [ -n "$session_name" ]; then
+  session_disp="$(printf '%s' "$session_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  [ -z "$session_disp" ] && session_disp="$session_name"
+  L0="$(lbl "「")$(seg "$DIM" "$session_disp")$(lbl "」")"
+fi
+
 # ════════════════════════════ LINE 1 — identity + context ════════════════════════════
 L1=""
-[ -n "$session_name" ] && L1="${L1}$(lbl "「")$(seg "$DIM" "$session_name")$(lbl "」") "
 
 # model ◆ + effort + thinking
 m="$(seg "$C_MODEL" "◆ ${model_disp}")"
@@ -308,7 +318,7 @@ fi
 spin_b=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
 tick=$((now/5))
 read -r ses_int ses_cts < <(awk -v c="$ses_cost" 'BEGIN{ tc=int(c*100+0.5); printf "%d %02d", int(tc/100), tc%100 }')
-odo="$(fg "$C_SES")\$${ses_int}$(fg "$DIM2").${ses_cts}$(fg "$C_SES")${spin_b[$((tick%10))]}${R}"
+odo="$(fg "$C_SES")\$${ses_int}$(fg "$DIM2").${ses_cts} $(fg "$C_SES")${spin_b[$((tick%10))]}${R}"
 L2="$(lbl "spend ")${odo} $(lbl "session")"
 
 # is there any real spend in the tape window? (gates burn + sparkline)
@@ -359,6 +369,7 @@ if [ "$live_agents" -gt 0 ] || [ "$live_wf" -gt 0 ]; then
 fi
 
 # ───────────────── emit ─────────────────
+[ -n "$L0" ] && printf '%b\n' "$L0"
 printf '%b\n' "$L1"
 printf '%b\n' "$L2"
 [ -n "$L3" ] && printf '%b\n' "$L3"

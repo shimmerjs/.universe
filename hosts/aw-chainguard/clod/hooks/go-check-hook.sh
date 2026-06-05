@@ -46,11 +46,11 @@ for root in "${!pkgs_by_root[@]}"; do
   [[ ${#pkgs[@]} -eq 0 ]] && continue
 
   # build first: stricter ground truth than vet (catches build-tag/cgo breaks
-  # vet would skip). Build into a throwaway dir (-o "$out/") so a `main` package
-  # never drops a binary into the source tree. vet adds signal once it compiles.
-  out=$(mktemp -d)
-  build=$(cd "$root" && timeout 60 go build -o "$out/" "${pkgs[@]}" 2>&1) || true
-  rm -rf "$out"
+  # vet would skip). Output to /dev/null -- discards binaries (no source-tree
+  # pollution) and, unlike `-o <dir>/`, does NOT require a main package, so a
+  # library- or test-only batch compiles clean instead of failing with
+  # "go: no main packages to build". vet still covers the test files build skips.
+  build=$(cd "$root" && timeout 60 go build -o /dev/null "${pkgs[@]}" 2>&1) || true
   if [[ -n "$build" ]]; then
     output+="$build"$'\n'
     continue

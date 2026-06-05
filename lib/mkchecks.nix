@@ -3,6 +3,8 @@
 #   - nvim-<host>:            nvim startup check for hosts with nixCats/nvim.
 #   - clod-workflows-<host>:  JS syntax + agentType-wiring lint for hosts that
 #                             have a clod/workflows directory.
+#   - clod-statusline-<host>: bash syntax + session-title layout smoke test for
+#                             hosts that have a clod/statusline.sh.
 { inputs }:
 
 let
@@ -53,7 +55,19 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck ];
+  # Smoke-test a host's clod statusline (bash syntax + session-title layout).
+  # Returns null if the host has no clod/statusline.sh.
+  mkStatuslineCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    statuslineScript = ../hosts/${hostname}/clod/statusline.sh;
+  in if builtins.pathExists statuslineScript
+    then { inherit system; name = "clod-statusline-${hostname}";
+           value = import ./statusline-check.nix { inherit pkgs statuslineScript; }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkStatuslineCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
