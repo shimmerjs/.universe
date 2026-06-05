@@ -24,13 +24,13 @@
     graphviz
     d2
     asciinema
+    vhs
 
     nb
     w3m
 
     # New tricks?
     eza
-    silver-searcher
     fd
 
     # Nix

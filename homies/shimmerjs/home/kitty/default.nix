@@ -152,6 +152,7 @@ in
 
       font_size = "16.0";
       font_family = "FiraCode Nerd Font Mono";
+      disable_ligatures = "always"; # render ->, =>, !=, etc. as plain glyphs
 
       enabled_layouts = "splits:split_axis=vertical,fat:bias=50;full_size=2,vertical";
 

@@ -12,6 +12,10 @@
 
     onActivation.autoUpdate = true; # Update brew index during activation
     onActivation.cleanup = "zap"; # Clean up removed apps
+    # Modern Homebrew (>=~5.x) refuses a non-interactive destructive --cleanup
+    # without an explicit force flag. nix-darwin emits `brew bundle --cleanup --zap`
+    # with no force, so append it here.
+    onActivation.extraFlags = [ "--force-cleanup" ];
 
     caskArgs = {
       appdir = "~/Applications"; # Use non-global directory

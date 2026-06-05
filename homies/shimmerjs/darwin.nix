@@ -104,7 +104,6 @@
           "bitwarden" # Bitwarden GUI
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
-          "telegram" # Telegram desktop client
         ];
       };
     };
@@ -128,7 +127,7 @@
       home.packages = with pkgs; [
         keymapp
         inputs.spotatui.packages.${pkgs.stdenv.hostPlatform.system}.default
-        # tg
+        telegram-desktop
         # Signal
         signal-cli
       ];
