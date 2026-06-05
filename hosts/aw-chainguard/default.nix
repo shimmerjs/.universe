@@ -41,6 +41,7 @@
     {
       imports = [
         ../../modules/home-manager/gcloud.nix
+        ./clod
       ];
 
       home.packages = with pkgs; [
@@ -87,9 +88,9 @@
       };
 
       # Set up SSH key for github.com authentication
-      programs.ssh.matchBlocks."github.com" = {
-        extraOptions.AddKeysToAgent = "yes";
-        identityFile = "~/.ssh/id_ed25519";
+      programs.ssh.settings."github.com" = {
+        AddKeysToAgent = "yes";
+        IdentityFile = "~/.ssh/id_ed25519";
       };
 
       # Configure `gh` CLI to use ssh when setting up repositories
@@ -117,123 +118,6 @@
           with inputs.nix-vscode-extensions.extensions.${pkgs.stdenv.hostPlatform.system};
           with vscode-marketplace;
           [ hashicorp.terraform ];
-      };
-
-      programs.claude-code = {
-        enable = true;
-        settings = {
-          apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
-          effortLevel = "max";
-          model = "claude-opus-4-7";
-          autoScrollEnabled = false;
-          attribution = {
-            # NOTE: in the future, i guess we dont have booleans
-            commit = "";
-            pr = "";
-          };
-          statusLine = {
-            type = "command";
-            command = "~/.claude/statusline.sh";
-            refreshInterval = 10;
-          };
-          enabledPlugins = {
-            "gopls-lsp@claude-plugins-official" = true;
-          };
-
-          permissions = {
-            defaultMode = "auto";
-            allow = [
-              "Read(~/**)"
-              "Read(//tmp/**)"
-
-              "WebSearch"
-              "WebFetch(domain:localhost)"
-              "WebFetch(domain:private-user-images.githubusercontent.com)"
-              "WebFetch(domain:raw.githubusercontent.com)"
-
-              "Bash(bash:*)"
-              "Bash(cargo check:*)"
-              "Bash(chmod +x:*)"
-              "Bash(curl:*)"
-              "Bash(file:*)"
-              "Bash(find:*)"
-              "Bash(git:*)"
-              "Bash(gh:*)"
-              "Bash(grep:*)"
-              "Bash(log show:*)"
-              "Bash(ls:*)"
-              "Bash(lsof:*)"
-              "Bash(open:*)"
-              "Bash(pkill:*)"
-              "Bash(python3:*)"
-              "Bash(sysctl security:*)"
-              "Bash(wc:*)"
-              "Bash(xargs sh:*)"
-
-              "Bash(d2:*)"
-              "WebFetch(domain:d2lang.com)"
-              "WebFetch(domain:terrastruct.com)"
-
-              "Bash(go build:*)"
-              "Bash(go doc:*)"
-              "Bash(go mod:*)"
-              "Bash(go test:*)"
-              "Bash(go version:*)"
-              "Bash(go vet:*)"
-              "Bash(gh api:*)"
-              "Bash(gh issue:*)"
-              "Bash(gh pr:*)"
-              "Bash(gh search:*)"
-
-              "Bash(nix:*)"
-              "Bash(nix build:*)"
-              "Bash(nix eval:*)"
-              "Bash(nix flake:*)"
-              "Bash(nix-shell:*)"
-              "WebFetch(domain:discourse.nixos.org)"
-              "WebFetch(domain:docs.rs)"
-              "WebFetch(domain:github.com)"
-              "WebFetch(domain:mynixos.com)"
-              "WebFetch(domain:nixos.org)"
-              "WebFetch(domain:wiki.nixos.org)"
-
-              "mcp__claude_ai_Chainguard_Analytics__metrics"
-            ];
-          };
-
-          env = {
-            CLAUDE_CODE_ENABLE_TELEMETRY = 0;
-            # Because I guess configurations don't matter in the future?
-            # https://code.claude.com/docs/en/model-config#adjust-effort-level
-            # >max provides the deepest reasoning with no constraint on token
-            # >spending and applies to the current session only, except when
-            # set through the CLAUDE_CODE_EFFORT_LEVEL environment variable.
-            CLAUDE_CODE_EFFORT_LEVEL = "max";
-          };
-
-          spinnerVerbs = {
-            mode = "replace";
-            verbs = [
-              "pillagin'"
-              "cookin'"
-              "wildin'"
-              "burnin'"
-              "usurping"
-              "scheming"
-              "rippin"
-              "tokin"
-              "trippin"
-              "disassociating"
-              "spittin"
-              "commoditizin"
-              "overthrowing"
-            ];
-          };
-        };
-      };
-      home.file.".claude/statusline.sh" = {
-        executable = true;
-        source = ./claude-statusline.sh;
       };
     };
 }

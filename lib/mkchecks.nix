@@ -1,6 +1,8 @@
-# Generates flake `checks` for all hosts that have nvim configured via nixCats.
-# Automatically discovers eligible hosts from darwinConfigurations and
-# nixosConfigurations — no hardcoded host list required.
+# Generates flake `checks` for all hosts, discovered automatically from
+# darwinConfigurations and nixosConfigurations — no hardcoded host list.
+#   - nvim-<host>:            nvim startup check for hosts with nixCats/nvim.
+#   - clod-workflows-<host>:  JS syntax + agentType-wiring lint for hosts that
+#                             have a clod/workflows directory.
 { inputs }:
 
 let
@@ -30,11 +32,35 @@ let
     then { inherit system; name = "nvim-${hostname}"; value = import ./nvim-check.nix { inherit pkgs nvim; }; }
     else null;
 
+  # agentType names that always resolve regardless of user config.
+  builtinAgents = [ "claude" "Explore" "general-purpose" "Plan" "statusline-setup" "claude-code-guide" ];
+
+  # Lint a host's clod workflows: JS syntax + every agentType resolves to a
+  # built-in or an agent wired via programs.claude-code.agents. Returns null if
+  # the host has no clod/workflows directory.
+  mkWorkflowCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    workflowsDir = ../hosts/${hostname}/clod/workflows;
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+    wiredAgents = builtins.attrNames (hmUserCfg.programs.claude-code.agents or {});
+  in if builtins.pathExists workflowsDir
+    then { inherit system; name = "clod-workflows-${hostname}";
+           value = import ./workflow-check.nix {
+             inherit pkgs lib workflowsDir;
+             validAgents = builtinAgents ++ wiredAgents;
+           }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck ];
+
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
-    lib.pipe (lib.mapAttrsToList (name: sys: mkNvimCheck name sys.config) configs) [
-      (builtins.filter (x: x != null))
-    ];
+    builtins.filter (x: x != null)
+      (lib.concatMap
+        (builder: lib.mapAttrsToList (name: sys: builder name sys.config) configs)
+        checkBuilders);
 
 in
 
