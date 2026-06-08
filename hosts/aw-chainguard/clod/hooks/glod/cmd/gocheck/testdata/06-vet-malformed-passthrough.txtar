@@ -1,0 +1,9 @@
+# unparseable non-empty vet output surfaced verbatim
+-- kind --
+vet
+-- root --
+/ROOT
+-- vet_json --
+vet: internal error: something unexpected
+-- want --
+vet: internal error: something unexpected

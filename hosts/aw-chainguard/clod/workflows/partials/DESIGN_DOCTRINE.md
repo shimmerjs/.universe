@@ -24,7 +24,7 @@ When execution feels the urge to deviate, that is a signal to surface the confli
 ## NO LINTER DETOURS -- ONLY THE FINAL STATE MUST BE CLEAN
 A sweeping refactor is allowed to leave intermediate `.go` states red. Do not contort the change to keep every step green; verify against the FINAL state.
 
-CONFLICT to respect: the Stop hook (`go-check-hook.sh`, build+vet, exit 2) hard-gates on every turn end, so a mid-refactor red state will block. During a known refactor the hook is the thing that fights this principle -- make it advisory/suppressible for that window, or land the refactor in one turn so the final state is what the Stop hook sees. See `../workflows/CLAUDE.md`.
+CONFLICT to respect: the go-check Stop hook (build+vet, blocks the turn) hard-gates on every turn end, so a mid-refactor red state will block. During a known refactor the hook is the thing that fights this principle -- make it advisory/suppressible for that window, or land the refactor in one turn so the final state is what the Stop hook sees. See `../workflows/CLAUDE.md`.
 
 ## VERIFICATION IS A GATE, NOT A CLAUSE
-"Run tests/builds against the final state" is enforced by the Stop hook (`go-check-hook.sh`), not taken on good faith -- that is the wolf `architect` skill's soft spot and where this setup is ahead. A design-review stage treats a claim of "done/builds/passes" as UNVERIFIED until the compiler/test output backs it, same bar as `skeptic`. LSP is navigation only.
+"Run tests/builds against the final state" is enforced by the go-check Stop hook, not taken on good faith -- that is the wolf `architect` skill's soft spot and where this setup is ahead. A design-review stage treats a claim of "done/builds/passes" as UNVERIFIED until the compiler/test output backs it, same bar as `skeptic`. LSP is navigation only.

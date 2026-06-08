@@ -1,0 +1,5 @@
+# keep: real emoji in a commit message is not decorative
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"git commit -m \"fix 😀 rendering\""}}
+-- want --
+0

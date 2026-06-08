@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'understand',
-  description: 'Fan out read-only mappers over subsystem streams, each emitting a goal-relative summary, then synthesize a dependency-ordered plan flagging shared touch-points and human decisions. word=value flags.',
+  name: 'aw-understand',
+  description: '[root=. pivot= streams=4 depth=structural priorart= intensity=5 subagents=custom|stock] ' + 'Fan out read-only mappers over subsystem streams, each emitting a goal-relative summary, then synthesize a dependency-ordered plan flagging shared touch-points and human decisions. word=value flags.',
   whenToUse: 'Mapping a subsystem before committing; tune root, pivot, streams, depth',
   phases: [{ title: 'Slice' }, { title: 'Map' }, { title: 'Synthesize' }],
 }
@@ -27,6 +27,7 @@ function coerce(v, s) {
 }
 function parseFlags(raw, spec) {
   const flags = {}; for (const k in spec) flags[k] = spec[k].default
+  const set = new Set()
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   let i = 0
@@ -34,19 +35,38 @@ function parseFlags(raw, spec) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
     if (!m || !(m[1] in spec)) break
     flags[m[1]] = coerce(m[2], spec[m[1]])
+    set.add(m[1])
   }
-  return { flags, prompt: toks.slice(i).join(' ') }
+  return { flags, prompt: toks.slice(i).join(' '), set }
 }
 
-const { flags, prompt } = parseFlags(args, {
+const { flags, prompt, set } = parseFlags(args, {
   root: { type: 'str', default: '.' },
   pivot: { type: 'str', default: '' },              // the north-star subject; relevance is measured against it
   streams: { type: 'axes', default: { count: 4 } }, // slices to map, or N to auto-discover
   depth: { type: 'str', default: 'structural' },    // structural | deep
   priorart: { type: 'str', default: '' },           // priorart=on: fold in how the field builds this kind of subsystem
+  intensity: { type: 'int', default: 5, min: 0, max: 10 },
+  subagents: { type: 'str', default: 'custom' },
 })
 
-const MAPPER = 'mapper'
+// intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
+// knobs they did not set explicitly, so the tuned defaults stand otherwise.
+const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
+  fanout: Math.max(1, Math.round(1 + i * 1.5)),
+  votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+  passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
+} }
+if (set.has('intensity')) {
+  const k = fromIntensity(flags.intensity)
+  // map onto whichever of this workflow's knobs exist; only override the unset ones.
+  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
+    if (flag in flags && !set.has(flag)) flags[flag] = val
+  if (!set.has('streams') && flags.streams && flags.streams.count != null) flags.streams = { count: k.fanout }
+}
+const stock = flags.subagents === 'stock'
+
+const MAPPER = stock ? undefined : 'mapper'
 const pivot = flags.pivot || prompt || 'the subsystem as a whole'
 
 // Phase 0: discover the slices to map (never hardcode them).

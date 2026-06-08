@@ -1,0 +1,7 @@
+# block: em dash in a git commit message
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"git commit -m \"clod: add hook — really\""}}
+-- want --
+2
+-- want_stderr --
+commit messages

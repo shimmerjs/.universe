@@ -1,0 +1,5 @@
+# real Claude non-prose Bash command (not scanned)
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"grep -n \"ultracode\\|effortLevel\\|CLAUDE_CODE_EFFORT\\|programs.claude-code\\|settings = \" /Users/shimmerjs/.universe/hosts/aw-chainguard/default.nix"}}
+-- want --
+0

@@ -1,0 +1,5 @@
+# fail-open: unparseable hook input must not block
+-- input.json --
+{not valid json—
+-- want --
+0

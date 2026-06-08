@@ -1,0 +1,5 @@
+# scope: read-only gh pr view is not authored prose
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"gh pr view 5 --json title —"}}
+-- want --
+0

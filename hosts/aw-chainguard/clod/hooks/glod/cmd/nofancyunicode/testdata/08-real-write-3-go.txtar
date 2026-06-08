@@ -1,0 +1,5 @@
+# real Claude Write.content from a transcript (main.go)
+-- input.json --
+{"tool_name":"Write","tool_input":{"content":"package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n)\n\nfunc main() {\n\t// This is in a separate cmd just for sanity checking. Not part of `flotilla`.\n\thome, _ := os.UserHomeDir()\n\tdir := filepath.Join(home, \".claude\", \"jobs\")\n\tentries, err := os.ReadDir(dir)\n\tif err != nil {\n\t\tfmt.Fprintln(os.Stderr, err)\n\t\tos.Exit(1)\n\t}\n\tfmt.Printf(\"found %d entries in %s\\n\", len(entries), dir)\n\tfor _, e := range entries {\n\t\tfmt.Printf(\"  %s (dir=%v)\\n\", e.Name(), e.IsDir())\n\t}\n}\n"}}
+-- want --
+0

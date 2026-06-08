@@ -1,0 +1,7 @@
+# adversarial: non-breaking space in content
+-- input.json --
+{"tool_name":"Write","tool_input":{"content":"a b"}}
+-- want --
+2
+-- want_stderr --
+U+00A0

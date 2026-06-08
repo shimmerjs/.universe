@@ -1,0 +1,5 @@
+# real Claude Edit.new_string from a transcript (workflow-lint.py)
+-- input.json --
+{"tool_name":"Edit","tool_input":{"new_string":"        used.add(ref)\n    for ref in sorted(used):\n        if ref not in valid:\n            errors.append(\n                f\"{name}: agentType `{ref}` is not wired \"\n                f\"(valid: {', '.join(sorted(valid))})\"\n            )\n    summary.append(f\"{name}: agents={sorted(used) or '[generic]'}\")"}}
+-- want --
+0

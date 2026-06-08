@@ -1,0 +1,5 @@
+# real Claude non-prose Bash command (not scanned)
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"ls -la ~/.claude.json 2>/dev/null | head; echo \"---model drift check---\"; grep -o '\"model\"[^,]*' ~/.claude.json 2>/dev/null | head -5"}}
+-- want --
+0

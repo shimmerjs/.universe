@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'prior-art',
-  description: 'Fan out deep-dives over prior-art sources (local/dep/web), refute-verify the load-bearing claims, synthesize a cited report with a corrections section. word=value flags; the prompt is the question.',
+  name: 'aw-prior-art',
+  description: '[areas=5 verify-scope=load-bearing intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web), refute-verify the load-bearing claims, synthesize a cited report with a corrections section. word=value flags; the prompt is the question.',
   whenToUse: 'Researching how others solve X; tune areas, verify-scope',
   phases: [{ title: 'Plan' }, { title: 'Dig' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -27,6 +27,7 @@ function coerce(v, s) {
 }
 function parseFlags(raw, spec) {
   const flags = {}; for (const k in spec) flags[k] = spec[k].default
+  const set = new Set()
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   let i = 0
@@ -34,17 +35,36 @@ function parseFlags(raw, spec) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
     if (!m || !(m[1] in spec)) break
     flags[m[1]] = coerce(m[2], spec[m[1]])
+    set.add(m[1])
   }
-  return { flags, prompt: toks.slice(i).join(' ') }
+  return { flags, prompt: toks.slice(i).join(' '), set }
 }
 
-const { flags, prompt } = parseFlags(args, {
+const { flags, prompt, set } = parseFlags(args, {
   areas: { type: 'axes', default: { count: 5 } },                // investigation areas, or N to auto-derive
   'verify-scope': { type: 'str', default: 'load-bearing' },      // all | load-bearing | none
+  intensity: { type: 'int', default: 5, min: 0, max: 10 },
+  subagents: { type: 'str', default: 'custom' },
 })
 
-const RESEARCHER = 'researcher'
-const SKEPTIC = 'skeptic'
+// intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
+// knobs they did not set explicitly, so the tuned defaults stand otherwise.
+const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
+  fanout: Math.max(1, Math.round(1 + i * 1.5)),
+  votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+  passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
+} }
+if (set.has('intensity')) {
+  const k = fromIntensity(flags.intensity)
+  // map onto whichever of this workflow's knobs exist; only override the unset ones.
+  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
+    if (flag in flags && !set.has(flag)) flags[flag] = val
+  if (!set.has('areas') && flags.areas && flags.areas.count != null) flags.areas = { count: k.fanout }
+}
+const stock = flags.subagents === 'stock'
+
+const RESEARCHER = stock ? undefined : 'researcher'
+const SKEPTIC = stock ? undefined : 'skeptic'
 if (!prompt) { log('no research question given after the flags'); return }
 
 phase('Plan')

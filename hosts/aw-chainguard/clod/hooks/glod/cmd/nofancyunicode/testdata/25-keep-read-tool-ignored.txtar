@@ -1,0 +1,5 @@
+# scope: non-write/bash tools are ignored
+-- input.json --
+{"tool_name":"Read","tool_input":{"file_path":"/x —"}}
+-- want --
+0

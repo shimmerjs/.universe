@@ -1,0 +1,5 @@
+# real Claude non-prose Bash command (not scanned)
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"grep -n \"effort\\|ultra\\|EFFORT\\|ULTRA\\|xhigh\" ~/.claude/statusline.sh 2>/dev/null || echo \"(statusline does not reference effort/ultracode)\""}}
+-- want --
+0

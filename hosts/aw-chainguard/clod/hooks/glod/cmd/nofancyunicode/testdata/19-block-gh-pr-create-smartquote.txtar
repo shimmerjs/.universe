@@ -1,0 +1,7 @@
+# block: smart quote in a gh pr body
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body \"it’s done\""}}
+-- want --
+2
+-- want_stderr --
+U+2019

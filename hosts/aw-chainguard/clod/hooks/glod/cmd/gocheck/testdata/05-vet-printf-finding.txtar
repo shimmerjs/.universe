@@ -1,0 +1,19 @@
+# real `go vet -json ./vetbug` stdout; posn made root-relative
+-- kind --
+vet
+-- root --
+/ROOT
+-- vet_json --
+{
+	"example.com/probe/vetbug": {
+		"printf": [
+			{
+				"posn": "/ROOT/vetbug/v.go:3:25",
+				"end": "/ROOT/vetbug/v.go:3:27",
+				"message": "fmt.Printf format %d has arg \"x\" of wrong type string"
+			}
+		]
+	}
+}
+-- want --
+vetbug/v.go:3:25: fmt.Printf format %d has arg "x" of wrong type string (printf)

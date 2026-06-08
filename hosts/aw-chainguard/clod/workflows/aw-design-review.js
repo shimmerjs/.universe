@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'design-review',
-  description: 'Stress-test a design through heterogeneous lenses with a refute-default verifier; propose a candidate if given a problem; reconcile confirmed flaws into a prioritized change list. word=value flags.',
+  name: 'aw-design-review',
+  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart= intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses with a refute-default verifier; propose a candidate if given a problem; reconcile confirmed flaws into a prioritized change list. word=value flags.',
   whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked',
   phases: [{ title: 'Frame' }, { title: 'Critique' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -27,6 +27,7 @@ function coerce(v, s) {
 }
 function parseFlags(raw, spec) {
   const flags = {}; for (const k in spec) flags[k] = spec[k].default
+  const set = new Set()
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   let i = 0
@@ -34,21 +35,40 @@ function parseFlags(raw, spec) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
     if (!m || !(m[1] in spec)) break
     flags[m[1]] = coerce(m[2], spec[m[1]])
+    set.add(m[1])
   }
-  return { flags, prompt: toks.slice(i).join(' ') }
+  return { flags, prompt: toks.slice(i).join(' '), set }
 }
 
-const { flags, prompt } = parseFlags(args, {
+const { flags, prompt, set } = parseFlags(args, {
   design: { type: 'str', default: '' },                          // doc path OR a problem statement (falls back to the prompt)
   'code-root': { type: 'str', default: '.' },
   lenses: { type: 'axes', default: { list: ['feasibility', 'semantics', 'scale', 'hermeticity', 'ordering'] } },
   locked: { type: 'str', default: '' },                          // path to a CONSTRAINTS / LOCKED block
   votes: { type: 'int', default: 3, min: 1, max: 5 },            // skeptics per flaw (a fatal veto must not rest on one vote)
   priorart: { type: 'str', default: '' },                        // priorart=on: fold a prior-art pass into the critique
+  intensity: { type: 'int', default: 5, min: 0, max: 10 },
+  subagents: { type: 'str', default: 'custom' },
 })
 
-const DESIGNER = 'designer'
-const SKEPTIC = 'skeptic'
+// intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
+// knobs they did not set explicitly, so the tuned defaults stand otherwise.
+const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
+  fanout: Math.max(1, Math.round(1 + i * 1.5)),
+  votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+  passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
+} }
+if (set.has('intensity')) {
+  const k = fromIntensity(flags.intensity)
+  // map onto whichever of this workflow's knobs exist; only override the unset ones.
+  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
+    if (flag in flags && !set.has(flag)) flags[flag] = val
+  if (!set.has('lenses') && flags.lenses && flags.lenses.count != null) flags.lenses = { count: k.fanout }
+}
+const stock = flags.subagents === 'stock'
+
+const DESIGNER = stock ? undefined : 'designer'
+const SKEPTIC = stock ? undefined : 'skeptic'
 
 const designInput = flags.design || prompt || ''
 if (!designInput) { log('no design doc or problem given'); return }

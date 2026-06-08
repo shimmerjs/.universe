@@ -1,0 +1,7 @@
+# block: arrow in a gh issue comment body
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"gh issue comment 5 --body \"flow A → B\""}}
+-- want --
+2
+-- want_stderr --
+U+2192

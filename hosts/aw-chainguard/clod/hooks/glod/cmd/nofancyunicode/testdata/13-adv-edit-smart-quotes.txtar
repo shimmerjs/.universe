@@ -1,0 +1,7 @@
+# adversarial: smart double quotes in an edit
+-- input.json --
+{"tool_name":"Edit","tool_input":{"new_string":"say “hi”"}}
+-- want --
+2
+-- want_stderr --
+U+201C

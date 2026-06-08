@@ -30,6 +30,13 @@ in
       # dispatcher line) — keeps the machine-specific Go mechanics out of the lean
       # universal prompt.
       go = ./skills/go/SKILL.md;
+      # Deslop: a final scrub pass that strips AI-generated residue -- narrating
+      # comments, model-state leakage, attribution footers, prose filler, the
+      # decorative Unicode that escapes the file-write ASCII hook through the
+      # chat/commit/gh channels it never sees, and behavioral over-reach (scope
+      # creep, unrequested files, fabricated APIs). Guardrail-driven so it never
+      # strips real voice, real data, earned comments, or mutates behavior.
+      deslop = ./skills/deslop/SKILL.md;
     };
     mcpServers = {
       linear = {
@@ -58,14 +65,18 @@ in
       # Go hooks: format/syntax-gate on edit, build+vet gate on stop. Binaries are
       # nix-pinned (writeShellApplication runtimeInputs), so they never depend on PATH.
       hooks = {
-        # ASCII guard: deny decorative Unicode in anything clod writes, every project.
+        # ASCII guard: deny decorative Unicode in anything clod writes, every
+        # project. Bash is matched too so it also covers git-commit messages and
+        # gh pr/issue/release bodies -- prose channels that bypass the file-write
+        # matcher (the hook self-filters to those subcommands; ~26ms/Bash call,
+        # almost all of it python startup).
         PreToolUse = [
           {
-            matcher = "Write|Edit|MultiEdit";
+            matcher = "Write|Edit|MultiEdit|Bash";
             hooks = [
               {
                 type = "command";
-                command = "${hooks.noFancyUnicodeHook}/bin/clod-no-fancy-unicode";
+                command = "${hooks.glod}/bin/nofancyunicode";
               }
             ];
           }
@@ -95,7 +106,7 @@ in
             hooks = [
               {
                 type = "command";
-                command = "${hooks.goCheckHook}/bin/clod-go-check-hook";
+                command = "${hooks.glod}/bin/gocheck";
               }
             ];
           }
@@ -274,6 +285,7 @@ in
       source = ./subagent-statusline.sh;
     };
     ".claude/output-styles/ultra-concise.md".source = ./output-styles/ultra-concise.md;
+    ".claude/keybindings.json".source = ./keybindings.json;
   }
   // (import ./workflows { inherit lib; });
 }

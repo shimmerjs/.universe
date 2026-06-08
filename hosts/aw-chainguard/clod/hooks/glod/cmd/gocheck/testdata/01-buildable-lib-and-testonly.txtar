@@ -1,0 +1,56 @@
+# real `go list -e -json ./lib ./testonly`; test-only pkg (GoFiles null) must be dropped
+-- kind --
+buildable
+-- root --
+/ROOT
+-- pkgs --
+./lib ./testonly
+-- list_rc --
+0
+-- list_json --
+{
+	"Dir": "/ROOT/lib",
+	"ImportPath": "example.com/probe/lib",
+	"Name": "lib",
+	"Root": "/ROOT",
+	"Module": {
+		"Path": "example.com/probe",
+		"Main": true,
+		"Dir": "/ROOT",
+		"GoMod": "/ROOT/go.mod",
+		"GoVersion": "1.22"
+	},
+	"Match": [
+		"./lib"
+	],
+	"Stale": true,
+	"StaleReason": "build ID mismatch",
+	"GoFiles": [
+		"lib.go"
+	]
+}
+{
+	"Dir": "/ROOT/testonly",
+	"ImportPath": "example.com/probe/testonly",
+	"Name": "testonly",
+	"Root": "/ROOT",
+	"Module": {
+		"Path": "example.com/probe",
+		"Main": true,
+		"Dir": "/ROOT",
+		"GoMod": "/ROOT/go.mod",
+		"GoVersion": "1.22"
+	},
+	"Match": [
+		"./testonly"
+	],
+	"TestGoFiles": [
+		"x_test.go"
+	],
+	"TestImports": [
+		"testing"
+	]
+}
+
+-- want --
+./lib

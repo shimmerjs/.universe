@@ -254,7 +254,7 @@ L0=""
 if [ -n "$session_name" ]; then
   session_disp="$(printf '%s' "$session_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
   [ -z "$session_disp" ] && session_disp="$session_name"
-  L0="$(lbl "「")$(seg "$DIM" "$session_disp")$(lbl "」")"
+  L0="$(seg "$DIM" "$session_disp")"
 fi
 
 # ════════════════════════════ LINE 1 — identity + context ════════════════════════════
@@ -328,13 +328,15 @@ series_sum="$(awk -v s="$series_raw" 'BEGIN{n=split(s,a,/[ \t]+/); for(i=1;i<=n;
 if [ "$ses_first" -gt 0 ] 2>/dev/null; then
   burn="$(awk -v c="$ses_cost" -v f="$ses_first" -v now="$now" 'BEGIN{ d=now-f; if(d<120)d=120; printf "%.2f", c/(d/3600) }')"
   if awk -v b="$burn" 'BEGIN{exit !(b>0)}'; then
-    # acceleration: late third of the tape vs the prior third -> rising spend is the hot one
+    # acceleration: late third of the tape vs the prior third. Ticker convention:
+    # up is green, down is red (inverted from heat -- here the line going up reads
+    # positive, not as a warning).
     accel="$(awk -v s="$series_raw" 'BEGIN{ n=split(s,a,/[ \t]+/); if(n<6){print "flat"; exit}
       k=int(n/3); late=0; early=0; for(i=n-k+1;i<=n;i++)late+=a[i]; for(i=n-2*k+1;i<=n-k;i++)early+=a[i];
       if(late>early*1.15)print "up"; else if(late<early*0.85)print "down"; else print "flat" }')"
     case "$accel" in
-      up)   car="▲"; cc="$C_HOT" ;;
-      down) car="▼"; cc="$C_OK" ;;
+      up)   car="▲"; cc="$C_OK" ;;
+      down) car="▼"; cc="$C_HOT" ;;
       *)    car="▬"; cc="$DIM" ;;
     esac
     L2="${L2}   $(fg "$cc")${car} \$${burn}/hr${R}"

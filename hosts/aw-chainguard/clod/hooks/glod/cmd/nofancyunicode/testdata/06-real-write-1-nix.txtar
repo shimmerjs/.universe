@@ -1,0 +1,5 @@
+# real Claude Write.content from a transcript (workflow-check.nix)
+-- input.json --
+{"tool_name":"Write","tool_input":{"content":"# Lints clod workflow scripts: JS syntax + every agentType resolves to a wired\n# agent. Used by mkchecks.nix to produce a `clod-workflows-<host>` flake check.\n{ pkgs, lib, workflowsDir, validAgents }:\npkgs.runCommand \"clod-workflow-lint\"\n  {\n    nativeBuildInputs = [ pkgs.nodejs pkgs.python3 ];\n    inherit workflowsDir;\n    validAgents = lib.concatStringsSep \" \" validAgents;\n  }\n  ''\n    python3 ${./workflow-lint.py}\n    touch $out\n  ''\n"}}
+-- want --
+0

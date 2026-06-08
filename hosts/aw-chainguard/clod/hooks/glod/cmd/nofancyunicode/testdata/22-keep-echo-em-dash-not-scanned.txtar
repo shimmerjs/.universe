@@ -1,0 +1,5 @@
+# scope: non git/gh Bash is not scanned even with an em dash
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"echo \"spacing — here\""}}
+-- want --
+0

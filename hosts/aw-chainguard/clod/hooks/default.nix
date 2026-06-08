@@ -15,15 +15,26 @@
     text = builtins.readFile ./go-fmt-hook.sh;
   };
 
-  # Stop: batched `go build` then `go vet` on the edited packages (compiler is truth).
-  goCheckHook = pkgs.writeShellApplication {
-    name = "clod-go-check-hook";
-    runtimeInputs = with pkgs; [
-      go
-      jq
-      coreutils
-    ];
-    text = builtins.readFile ./go-check-hook.sh;
+  # One Go module (./glod) -> two hook binaries sharing an internal/txtar test
+  # helper:
+  #   bin/nofancyunicode  PreToolUse(Write|Edit|MultiEdit|Bash) ASCII guard --
+  #     blocks decorative Unicode in file writes and in git-commit / gh
+  #     pr/issue/release authored prose.
+  #   bin/gocheck         Stop gate -- `go build` + `go vet` the edited packages,
+  #     using `go list -e -json` metadata to pick the buildable ones and
+  #     `go vet -json` for structured findings; keeps the $GOCACHE cache.
+  # doCheck runs the txtar suites at build time; gocheck integration tests that
+  # spawn the toolchain are gated behind CLOD_GOCHECK_INTEGRATION and skip here.
+  # gocheck shells out to the go toolchain (path pinned via ldflags), so the
+  # output references ${pkgs.go} -- allowGoReference permits it.
+  glod = pkgs.buildGoModule {
+    pname = "glod";
+    version = "0";
+    src = ./glod;
+    vendorHash = null; # stdlib only
+    doCheck = true;
+    allowGoReference = true;
+    ldflags = [ "-X glod/cmd/gocheck.goBin=${pkgs.go}/bin/go" ];
   };
 
   # SessionEnd: deterministic git breadcrumb to the OS temp dir, so a session that
@@ -53,13 +64,5 @@
       coreutils
     ];
     text = builtins.readFile ./go-build-sweep.sh;
-  };
-
-  # PreToolUse(Write|Edit|MultiEdit): block decorative Unicode in new content.
-  # ASCII only, in every project.
-  noFancyUnicodeHook = pkgs.writeShellApplication {
-    name = "clod-no-fancy-unicode";
-    runtimeInputs = [ ];
-    text = "exec ${pkgs.python3}/bin/python3 ${./no-fancy-unicode.py}";
   };
 }

@@ -1,0 +1,5 @@
+# keep: CJK in file content is real data, allowed
+-- input.json --
+{"tool_name":"Write","tool_input":{"content":"label: 日本語"}}
+-- want --
+0

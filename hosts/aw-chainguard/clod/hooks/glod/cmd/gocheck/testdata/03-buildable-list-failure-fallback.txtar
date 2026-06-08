@@ -1,0 +1,13 @@
+# no parseable metadata AND non-zero rc -> fall back to building all pkgs
+-- kind --
+buildable
+-- root --
+/ROOT
+-- pkgs --
+./a ./b
+-- list_rc --
+1
+-- list_json --
+
+-- want --
+./a ./b

@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'audit',
-  description: 'Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf; refute-verify each; emit a p0/p1/p2 fix list. word=value flags.',
+  name: 'aw-audit',
+  description: '[repo=. lang=go lenses=bug,test-gap,perf votes=3 intensity=5 subagents=custom|stock] Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf; refute-verify each; emit a p0/p1/p2 fix list. word=value flags.',
   whenToUse: 'Auditing a rebuilt component; tune repo, lang, lenses, votes',
   phases: [{ title: 'Map' }, { title: 'Audit' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -26,6 +26,7 @@ function coerce(v, s) {
 }
 function parseFlags(raw, spec) {
   const flags = {}; for (const k in spec) flags[k] = spec[k].default
+  const set = new Set()
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   let i = 0
@@ -33,19 +34,38 @@ function parseFlags(raw, spec) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
     if (!m || !(m[1] in spec)) break
     flags[m[1]] = coerce(m[2], spec[m[1]])
+    set.add(m[1])
   }
-  return { flags, prompt: toks.slice(i).join(' ') }
+  return { flags, prompt: toks.slice(i).join(' '), set }
 }
 
-const { flags, prompt } = parseFlags(args, {
+const { flags, prompt, set } = parseFlags(args, {
   repo: { type: 'str', default: '.' },
   lang: { type: 'str', default: 'go' },
   lenses: { type: 'axes', default: { list: ['bug', 'test-gap', 'perf'] } },
   votes: { type: 'int', default: 3, min: 1, max: 5 },
+  intensity: { type: 'int', default: 5, min: 0, max: 10 },
+  subagents: { type: 'str', default: 'custom' },
 })
 
-const REVIEWER = 'reviewer'
-const SKEPTIC = 'skeptic'
+// intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
+// knobs they did not set explicitly, so the tuned defaults stand otherwise.
+const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
+  fanout: Math.max(1, Math.round(1 + i * 1.5)),
+  votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+  passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
+} }
+if (set.has('intensity')) {
+  const k = fromIntensity(flags.intensity)
+  // map onto whichever of this workflow's knobs exist; only override the unset ones.
+  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
+    if (flag in flags && !set.has(flag)) flags[flag] = val
+  if (!set.has('lenses') && flags.lenses && flags.lenses.count != null) flags.lenses = { count: k.fanout }
+}
+const stock = flags.subagents === 'stock'
+
+const REVIEWER = stock ? undefined : 'reviewer'
+const SKEPTIC = stock ? undefined : 'skeptic'
 
 // Phase 0: discover the package map (never hardcode it).
 phase('Map')

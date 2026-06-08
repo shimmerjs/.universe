@@ -1,0 +1,8 @@
+# go vet -json clean: stdout is `{}` -> no findings
+-- kind --
+vet
+-- root --
+/ROOT
+-- vet_json --
+{}
+-- want --

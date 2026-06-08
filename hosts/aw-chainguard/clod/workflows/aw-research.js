@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'research',
-  description: 'Fan-out research with loop-until-dry passes and adversarial verification; informal word=value flags',
+  name: 'aw-research',
+  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes and adversarial verification; informal word=value flags',
   whenToUse: 'Deep multi-source research; tune fanout, passes, verify, breadth',
   phases: [{ title: 'Search' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -20,6 +20,7 @@ function coerce(v, s) {
 }
 function parseFlags(raw, spec) {
   const flags = {}; for (const k in spec) flags[k] = spec[k].default
+  const set = new Set()
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   let i = 0
@@ -27,16 +28,33 @@ function parseFlags(raw, spec) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])  // word=value, no spaces
     if (!m || !(m[1] in spec)) break                          // first non-flag token -> prompt starts here
     flags[m[1]] = coerce(m[2], spec[m[1]])
+    set.add(m[1])
   }
-  return { flags, prompt: toks.slice(i).join(' ') }
+  return { flags, prompt: toks.slice(i).join(' '), set }
 }
 
-const { flags, prompt } = parseFlags(args, {
+const { flags, prompt, set } = parseFlags(args, {
   fanout:  { type: 'int',  default: 6, min: 1, max: 16 },        // parallel searchers
   passes:  { type: 'int',  default: 2, min: 1, max: 6  },        // loop-until-dry rounds
   verify:  { type: 'int',  default: 3, min: 0, max: 5  },        // skeptics per claim
   breadth: { type: 'list', default: ['web', 'code', 'docs'] },   // search angles (default ALL THREE)
+  intensity: { type: 'int', default: 5, min: 0, max: 10 },
+  subagents: { type: 'str', default: 'custom' },
 })
+// intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
+// knobs they did not set explicitly, so the tuned defaults stand otherwise.
+const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
+  fanout: Math.max(1, Math.round(1 + i * 1.5)),
+  votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+  passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
+} }
+if (set.has('intensity')) {
+  const k = fromIntensity(flags.intensity)
+  // map onto whichever of this workflow's knobs exist; only override the unset ones.
+  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
+    if (flag in flags && !set.has(flag)) flags[flag] = val
+}
+const stock = flags.subagents === 'stock'
 if (!prompt) { log('no question after the flags -- nothing to research'); return }
 log(`research: fanout=${flags.fanout} passes=${flags.passes} verify=${flags.verify} breadth=${flags.breadth.join('+')}`)
 
@@ -44,8 +62,8 @@ log(`research: fanout=${flags.fanout} passes=${flags.passes} verify=${flags.veri
 // SESSION START -- they only work in a fresh session after the nix rebuild that
 // deploys clod/agents/{researcher,skeptic}.md to ~/.claude/agents/. Set either to
 // undefined to fall back to the generic workflow subagent.
-const RESEARCHER = 'researcher'
-const SKEPTIC    = 'skeptic'
+const RESEARCHER = stock ? undefined : 'researcher'
+const SKEPTIC    = stock ? undefined : 'skeptic'
 
 const CLAIM   = { type: 'object', required: ['claims'], properties: { claims: { type: 'array', items: {
                   type: 'object', required: ['text'], properties: { text: { type: 'string' }, source: { type: 'string' } } } } } }

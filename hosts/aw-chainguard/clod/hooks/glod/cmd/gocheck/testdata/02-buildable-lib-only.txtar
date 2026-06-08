@@ -1,0 +1,34 @@
+# real `go list -e -json ./lib`
+-- kind --
+buildable
+-- root --
+/ROOT
+-- pkgs --
+./lib
+-- list_rc --
+0
+-- list_json --
+{
+	"Dir": "/ROOT/lib",
+	"ImportPath": "example.com/probe/lib",
+	"Name": "lib",
+	"Root": "/ROOT",
+	"Module": {
+		"Path": "example.com/probe",
+		"Main": true,
+		"Dir": "/ROOT",
+		"GoMod": "/ROOT/go.mod",
+		"GoVersion": "1.22"
+	},
+	"Match": [
+		"./lib"
+	],
+	"Stale": true,
+	"StaleReason": "build ID mismatch",
+	"GoFiles": [
+		"lib.go"
+	]
+}
+
+-- want --
+./lib
