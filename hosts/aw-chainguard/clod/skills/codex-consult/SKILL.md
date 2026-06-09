@@ -1,13 +1,13 @@
 ---
 name: codex-consult
-description: Get a cross-model (codex / GPT-5) second opinion on a diff, design, or hard bug. Use when an independent, different-vendor reviewer is worth more than another Opus pass -- every Claude subagent here runs Opus and shares its blind spots. NOT for routine edits or anything faster to do directly.
+description: Get a cross-model (codex / GPT-5) second opinion on a diff, design, or hard bug. Use when an independent, different-vendor reviewer is worth more than another same-model pass -- every Claude subagent here runs the one pinned model and shares its blind spots. NOT for routine edits or anything faster to do directly.
 ---
 
 # codex-consult
 
 A consultant, not an authority. You are the primary agent; codex is a different-model reviewer you can talk to. Form your own view, then present it.
 
-Every subagent in this setup runs Opus (`CLAUDE_CODE_SUBAGENT_MODEL=opus`), so a Claude fan-out cannot give a *true* independent second opinion -- the reviewers share Opus's blind spots. codex (a different vendor) is the only way to get real adversarial diversity. That diversity is the entire reason to reach for this; if you only need more eyes of the same kind, fan out subagents instead.
+Every subagent in this setup runs the same Claude model (whatever `CLAUDE_CODE_SUBAGENT_MODEL` pins it to), so a Claude fan-out cannot give a *true* independent second opinion -- the reviewers share that model's blind spots. codex (a different vendor) is the only way to get real adversarial diversity. That diversity is the entire reason to reach for this; if you only need more eyes of the same kind, fan out subagents instead.
 
 ## WHEN TO REACH FOR IT
 

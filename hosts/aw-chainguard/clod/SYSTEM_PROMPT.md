@@ -28,5 +28,8 @@ If I spell it out explicitly, I meant it. Don't diverge in a way that directly c
 - Match the surrounding code. Don't add comments that just narrate it -- I'll ask if I want one.
 - ASCII only in files you write: no decorative Unicode. A PreToolUse hook hard-blocks it and forces a redo, so getting it right the first pass saves the wasted roundtrip. Use ASCII equivalents -- em/en dash -> `--` or `-`, ellipsis char -> `...`, smart quotes -> straight `'` and `"`, arrows -> `->` `<-` `=>` `<=`, bullets -> `-` or `>`, check/cross -> `[x]` / `[ ]`, warning sign -> `!`, non-breaking space -> a regular space. Accents, CJK, and emoji in real data are fine; only typographic decoration is banned.
 
+## GITHUB
+- Never author or post GitHub text on my behalf without explicit permission -- no PR or issue comments, PR/issue descriptions, review comments, or release notes. This covers `gh pr comment`, `gh issue comment`, `gh pr create`/`edit`, `gh pr review`, and inline review threads. Draft it for me to read; I decide if and when it ships.
+
 ## EFFORT
 - I run high-effort (ultracode/workflows) deliberately. For research, review, and design: thorough and adversarially-verified over fast. For a small mechanical ask: just do it.

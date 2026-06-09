@@ -37,22 +37,6 @@
     ldflags = [ "-X glod/cmd/gocheck.goBin=${pkgs.go}/bin/go" ];
   };
 
-  # SessionEnd: deterministic git breadcrumb to the OS temp dir, so a session that
-  # ended without /handoff still leaves a recoverable pointer.
-  handoffSnapshotHook = pkgs.writeShellApplication {
-    name = "clod-handoff-snapshot-hook";
-    runtimeInputs = with pkgs; [
-      git
-      jq
-      coreutils
-    ];
-    # SC2016 fires on the literal markdown code-fence backticks in the printf
-    # format strings -- intentional: the data is passed as properly-quoted printf
-    # args, never expanded in the format. False positive, so exclude just this check.
-    excludeShellChecks = [ "SC2016" ];
-    text = builtins.readFile ./handoff-snapshot-hook.sh;
-  };
-
   # PostToolUse(Bash): sweep stray `go build` binaries out of the tree into a
   # gitignored .claude/bin/ so they can't be committed.
   goBuildSweep = pkgs.writeShellApplication {

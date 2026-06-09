@@ -15,7 +15,7 @@ Write to the OS temp dir, never the workspace -- a handoff is not source and mus
 "${TMPDIR:-/tmp}/clod-handoff-${session_id}.md"
 ```
 
-Use the real `session_id` (from the transcript path or the session). A `SessionEnd` hook writes a deterministic git snapshot to this same path as a fallback; your model-authored version is richer and supersedes it. After writing, print the absolute path back so it can be handed to the next session (`claude --resume`, or paste the file).
+Use the real `session_id` (from the transcript path or the session). After writing, print the absolute path back so it can be handed to the next session (`claude --resume`, or paste the file).
 
 ## RULES
 
@@ -44,7 +44,7 @@ Use the real `session_id` (from the transcript path or the session). A `SessionE
 
 ## ASSUMED / UNVERIFIED
 <each line: believed-but-not-confirmed. The next session must verify before trusting.>
-- e.g. handoff hook fires on SessionEnd -- wired in nix, not yet observed firing
+- e.g. `nix flake check` is green -- assumed from a local build, not run
 
 ## Next action
 <the single first thing to do, concretely>

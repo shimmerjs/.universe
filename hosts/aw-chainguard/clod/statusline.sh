@@ -8,21 +8,21 @@
 #   line 2  the spend tape        session odometer · burn rate · heat sparkline · today
 #   line 3  live activity         ⟳ N agents · M workflows  — ONLY while they're running
 #
-# Spend is the headline. Session spend is the real, comprehensive number: it scans
-# this session's transcripts INCLUDING subagents/ and workflows/ (so heavy fan-out is
-# counted), priced per-model from token usage. The payload's .cost.total_cost_usd is
-# used only as an instant fallback before the first scan lands, so the line is never
-# blank or wrong-low at session start. Only session + today are shown (no all-time
-# total), so there is no periodic full-history scan — just an 8-day recent window.
+# Spend is the headline, measured in raw tokens. Session spend is the real,
+# comprehensive number: it scans this session's transcripts INCLUDING subagents/ and
+# workflows/ (so heavy fan-out is counted), summing total token usage. Only session +
+# today are shown (no all-time total), so there is no periodic full-history scan --
+# just a 2-day recent window.
 #
-# Costs are estimates priced from transcript token usage (Claude doesn't ship costUSD).
+# Tokens (input+output+cache), not a dollar estimate -- exact, and immune to the
+# per-model price drift a hardcoded rate table would carry.
 #
 # Caching (so the line always renders instantly, scans happen in the background):
 #   ~/.claude/.statusline_cache/<session>.json   session/today/week + spend tape — TTL STATUSLINE_TTL
 # Live agent/workflow detection is done inline (cheap fs scan, ~LIVEWIN-second window).
 #
 # Tunables (env):
-#   STATUSLINE_TTL       seconds between session/today/week refreshes  (default 30)
+#   STATUSLINE_TTL       seconds between session/today/week refreshes  (default 60)
 #   STATUSLINE_LIVEWIN   seconds an agent counts as "live" after last write (default 25)
 #   STATUSLINE_SYNC      if set, compute synchronously (used for testing)
 
@@ -31,7 +31,7 @@ export PATH="/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:/opt/ho
 JQ="$(command -v jq || true)"
 PROJ="$HOME/.claude/projects"
 CACHE_DIR="$HOME/.claude/.statusline_cache"
-TTL="${STATUSLINE_TTL:-30}"
+TTL="${STATUSLINE_TTL:-60}"
 LIVEWIN="${STATUSLINE_LIVEWIN:-25}"
 
 input="$(cat)"
@@ -44,8 +44,8 @@ fi
 # ───────────────────────── payload ─────────────────────────
 get(){ printf '%s' "$input" | "$JQ" -r "$1" 2>/dev/null; }
 model_name="$(get '.model.display_name // .model.id // "Claude"')"
-# lower kebab-case the model display name, with a wink: opus -> opie
-model_disp="$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/opus/opie/')"
+# lower kebab-case the model display name, with a wink: opus -> opie, fable -> fabio
+model_disp="$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/opus/opie/; s/fable/fabio/')"
 [ -z "$model_disp" ] && model_disp="$model_name"
 session_id="$(get '.session_id // ""')"
 session_name="$(get '.session_name // empty')"
@@ -54,7 +54,6 @@ cwd="$(get '.workspace.current_dir // .cwd // "."')"
 effort="$(get '.effort.level // empty')"
 thinking="$(get '.thinking.enabled // empty')"
 worktree="$(get '.worktree.name // .workspace.git_worktree // empty')"
-cost_payload="$(get '.cost.total_cost_usd // empty')"
 ctx_pct_payload="$(get '.context_window.used_percentage // empty')"
 ctx_size="$(get '.context_window.context_window_size // empty')"
 over200k="$(get '.exceeds_200k_tokens // empty')"
@@ -81,7 +80,7 @@ week_start="$(epoch_at "$wsd 00:00:00")"
 # ───────────────── recent pass: session / today / week (+ ctx fallback, tallies, spend tape) ─────────────────
 compute_recent() {
   local now="$1"
-  find "$PROJ" -name '*.jsonl' -mtime -8 -print0 2>/dev/null \
+  find "$PROJ" -name '*.jsonl' -mtime -2 -print0 2>/dev/null \
   | xargs -0 "$JQ" -r '
       select(.type=="assistant" and (.message.usage != null)) |
       [ (.timestamp | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601),
@@ -95,27 +94,19 @@ compute_recent() {
         input_filename
       ] | @tsv' 2>/dev/null \
   | awk -F'\t' -v sid="$session_id" -v tp="$tpath" -v t0="$today_start" -v w0="$week_start" -v now="$now" '
-      function rate(m,k,   r){
-        if      (m ~ /opus/)   { r["in"]=15;  r["out"]=75; r["cr"]=1.5;  r["c5"]=18.75; r["c1"]=30 }
-        else if (m ~ /sonnet/) { r["in"]=3;   r["out"]=15; r["cr"]=0.30; r["c5"]=3.75;  r["c1"]=6  }
-        else if (m ~ /haiku/)  { r["in"]=1;   r["out"]=5;  r["cr"]=0.10; r["c5"]=1.25;  r["c1"]=2  }
-        else                   { r["in"]=15;  r["out"]=75; r["cr"]=1.5;  r["c5"]=18.75; r["c1"]=30 }
-        return r[k]
-      }
       { key=$2; if (seen[key]++) next
         ep=$1+0; m=$3; i=$4+0; o=$5+0; cr=$6+0; c5=$7+0; c1=$8+0; fn=$9
         tok = i+o+cr+c5+c1
-        cost = (i*rate(m,"in") + o*rate(m,"out") + cr*rate(m,"cr") + c5*rate(m,"c5") + c1*rate(m,"c1")) / 1e6
         isses = (sid != "" && index(fn,sid) > 0) || (sid == "" && fn == tp)
         if (isses) {
-          st+=tok; sc+=cost
-          np++; sep[np]=ep; sco[np]=cost                 # spend tape points (bucketed in END)
+          st+=tok
+          np++; sep[np]=ep; sco[np]=tok                  # token tape points (bucketed in END)
           if (sfirst==0 || ep<sfirst) sfirst=ep
           if (fn ~ /\/workflows\/wf_/)                        { s=fn; sub(/.*\/workflows\//,"",s); sub(/\/.*/,"",s); wfset[s]=1 }
           else if (fn ~ /\/subagents\// && fn ~ /\/agent-/)   { subset[fn]=1 }
         }
-        if (ep >= t0) { dt+=tok; dc+=cost }
-        if (ep >= w0) { wt+=tok; wc+=cost }
+        if (ep >= t0) { dt+=tok }
+        if (ep >= w0) { wt+=tok }
         if (fn == tp && ep > lastep) { lastep=ep; ctxp = i+cr+c5+c1 }
       }
       END {
@@ -127,10 +118,10 @@ compute_recent() {
         for (b=0;b<NB;b++) bk[b]=0
         for (j=1;j<=np;j++){ b=int((sep[j]-sfirst)/bw); if(b<0)b=0; if(b>=NB)b=NB-1; bk[b]+=sco[j] }
         series="["
-        for (b=0;b<NB;b++) series=series (b>0?",":"") sprintf("%.4f", bk[b]+0)
+        for (b=0;b<NB;b++) series=series (b>0?",":"") sprintf("%d", bk[b]+0)
         series=series "]"
-        printf "{\"ts\":%d,\"ses_tok\":%d,\"ses_cost\":%.4f,\"day_tok\":%d,\"day_cost\":%.4f,\"wk_tok\":%d,\"wk_cost\":%.4f,\"ctx_tok\":%d,\"n_sub\":%d,\"n_wf\":%d,\"ses_first\":%d,\"series\":%s}", \
-               now, st,sc, dt,dc, wt,wc, ctxp, ns, nw, sfirst, series
+        printf "{\"ts\":%d,\"ses_tok\":%d,\"day_tok\":%d,\"wk_tok\":%d,\"ctx_tok\":%d,\"n_sub\":%d,\"n_wf\":%d,\"ses_first\":%d,\"series\":%s}", \
+               now, st, dt, wt, ctxp, ns, nw, sfirst, series
       }'
 }
 
@@ -158,19 +149,16 @@ refresh() { # $1=cachefile  $2=ttl  $3=compute-fn
 refresh "$CF" "$TTL" compute_recent
 
 # ───────────────── read cache (zeros until first refresh lands) ─────────────────
-ses_tok=0; ses_cost=0; day_tok=0; day_cost=0; wk_tok=0; wk_cost=0; ctx_tok=0; n_sub=0; n_wf=0; ses_first=0
+ses_tok=0; day_tok=0; wk_tok=0; ctx_tok=0; n_sub=0; n_wf=0; ses_first=0
 series_raw=""
 if [ -f "$CF" ]; then
-  read -r ses_tok ses_cost day_tok day_cost wk_tok wk_cost ctx_tok n_sub n_wf ses_first \
-    < <("$JQ" -r '[.ses_tok,.ses_cost,.day_tok,.day_cost,.wk_tok,.wk_cost,.ctx_tok,.n_sub,.n_wf,.ses_first]|@tsv' "$CF" 2>/dev/null)
+  read -r ses_tok day_tok wk_tok ctx_tok n_sub n_wf ses_first \
+    < <("$JQ" -r '[.ses_tok,.day_tok,.wk_tok,.ctx_tok,.n_sub,.n_wf,.ses_first]|@tsv' "$CF" 2>/dev/null)
   series_raw="$("$JQ" -r '.series // [] | @tsv' "$CF" 2>/dev/null)"
 fi
-: "${ses_tok:=0}" "${ses_cost:=0}" "${day_tok:=0}" "${day_cost:=0}" "${wk_tok:=0}" "${wk_cost:=0}"
+: "${ses_tok:=0}" "${day_tok:=0}" "${wk_tok:=0}"
 : "${ctx_tok:=0}" "${n_sub:=0}" "${n_wf:=0}" "${ses_first:=0}"
 read -ra spend_series <<<"$series_raw"
-
-# session cost: prefer comprehensive scan, fall back to payload estimate so it's never wrong-low
-ses_cost="$(awk -v a="$ses_cost" -v b="${cost_payload:-0}" 'BEGIN{print (a>b?a:b)}')"
 
 # ───────────────── live agent/workflow detection (inline, cheap, ~LIVEWIN window) ─────────────────
 live_agents=0; live_wf=0
@@ -204,7 +192,6 @@ DOT=" $(fg "$DIM2")·${R} "                                        # separator
 
 # ───────────────── formatters ─────────────────
 fmt_tok(){ awk -v n="$1" 'BEGIN{ if(n>=1e9)printf "%.2fB",n/1e9; else if(n>=1e6)printf "%.1fM",n/1e6; else if(n>=1e3)printf "%.1fK",n/1e3; else printf "%d",n }'; }
-fmt_money(){ awk -v n="$1" 'BEGIN{ if(n>=10000)printf "$%.1fk",n/1000; else if(n>=1000)printf "$%.0f",n; else printf "$%.2f",n }'; }
 
 # spend tape: heat-colored sparkline, cool (green) -> hot (red) by relative magnitude
 heatfg(){ awk -v t="$1" 'BEGIN{ if(t<0)t=0; if(t>1)t=1;
@@ -314,20 +301,19 @@ if [ -n "$q5" ] || [ -n "$q7" ]; then
 fi
 
 # ════════════════════════════ LINE 2 — the spend tape ════════════════════════════
-# session odometer (dollars green, cents dim, a braille tick that rolls every refresh)
+# session odometer (token count green, a braille tick that rolls every refresh)
 spin_b=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
 tick=$((now/5))
-read -r ses_int ses_cts < <(awk -v c="$ses_cost" 'BEGIN{ tc=int(c*100+0.5); printf "%d %02d", int(tc/100), tc%100 }')
-odo="$(fg "$C_SES")\$${ses_int}$(fg "$DIM2").${ses_cts} $(fg "$C_SES")${spin_b[$((tick%10))]}${R}"
+odo="$(fg "$C_SES")$(fmt_tok "$ses_tok")$(fg "$DIM2") tok $(fg "$C_SES")${spin_b[$((tick%10))]}${R}"
 L2="$(lbl "spend ")${odo} $(lbl "session")"
 
 # is there any real spend in the tape window? (gates burn + sparkline)
 series_sum="$(awk -v s="$series_raw" 'BEGIN{n=split(s,a,/[ \t]+/); for(i=1;i<=n;i++)t+=a[i]; print (t>0?1:0)}')"
 
-# burn rate $/hr over the session so far — only meaningful with a real session start
+# burn rate tokens/hr over the session so far -- only meaningful with a real session start
 if [ "$ses_first" -gt 0 ] 2>/dev/null; then
-  burn="$(awk -v c="$ses_cost" -v f="$ses_first" -v now="$now" 'BEGIN{ d=now-f; if(d<120)d=120; printf "%.2f", c/(d/3600) }')"
-  if awk -v b="$burn" 'BEGIN{exit !(b>0)}'; then
+  burn="$(awk -v t="$ses_tok" -v f="$ses_first" -v now="$now" 'BEGIN{ d=now-f; if(d<120)d=120; printf "%d", t/(d/3600) }')"
+  if [ "$burn" -gt 0 ] 2>/dev/null; then
     # acceleration: late third of the tape vs the prior third. Ticker convention:
     # up is green, down is red (inverted from heat -- here the line going up reads
     # positive, not as a warning).
@@ -339,7 +325,7 @@ if [ "$ses_first" -gt 0 ] 2>/dev/null; then
       down) car="▼"; cc="$C_HOT" ;;
       *)    car="▬"; cc="$DIM" ;;
     esac
-    L2="${L2}   $(fg "$cc")${car} \$${burn}/hr${R}"
+    L2="${L2}   $(fg "$cc")${car} $(fmt_tok "$burn")/hr${R}"
   fi
 fi
 
@@ -349,7 +335,7 @@ if [ "$narrow" -eq 0 ] && [ "$cols" -ge 90 ] && [ "$series_sum" = "1" ]; then
 fi
 
 # today
-L2="${L2}${DOT}$(seg "$C_DAY" "$(fmt_money "$day_cost")") $(lbl "today")"
+L2="${L2}${DOT}$(seg "$C_DAY" "$(fmt_tok "$day_tok")") $(lbl "today")"
 
 # quiet tally of agents/workflows spawned this session (when not currently live)
 if { [ "$n_sub" -gt 0 ] || [ "$n_wf" -gt 0 ]; } && [ "$live_agents" -eq 0 ] && [ "$live_wf" -eq 0 ]; then

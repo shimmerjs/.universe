@@ -7,6 +7,21 @@ in
 {
   programs.claude-code = {
     enable = true;
+    # Temporary pin: Fable 5 (claude-fable-5) needs claude-code >= 2.1.170, but nixpkgs
+    # is still on 2.1.161 (bump tracked in nixpkgs#530023). Override with the upstream
+    # prebuilt binary until that lands, then delete this block and the package follows
+    # nixpkgs again. darwin-arm64 only -- this host is aarch64-darwin.
+    package =
+      let
+        v = "2.1.170";
+      in
+      pkgs.claude-code.overrideAttrs (_: {
+        version = v;
+        src = pkgs.fetchurl {
+          url = "https://downloads.claude.ai/claude-code-releases/${v}/darwin-arm64/claude";
+          hash = "sha256-6QNkbYt6MYgqgOzSdWmifYrFezcIdF80lwljLIQRf98=";
+        };
+      });
     context = ./SYSTEM_PROMPT.md;
     agents = {
       researcher = ./agents/researcher.md;
@@ -21,8 +36,7 @@ in
     skills = {
       # Cross-session/compaction continuity. Model-authored handoff with a fixed
       # schema (VERIFIED vs ASSUMED, next action), written to the OS temp dir and
-      # referencing artifacts by path. The SessionEnd hook below writes a
-      # deterministic git fallback to the same path.
+      # referencing artifacts by path.
       handoff = ./skills/handoff/SKILL.md;
       # Go tooling contract: documents the two-phase format/build/vet hooks wired
       # above, gates LSP to navigation-only, and carries the re-read-after-format
@@ -46,16 +60,17 @@ in
     };
     settings = {
       apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
-      model = "opus";
+      model = "fable";
       effortLevel = "xhigh";
-      autoScrollEnabled = false;
+      autoScrollEnabled = true;
       statusLine = {
         type = "command";
         command = "~/.claude/statusline.sh";
-        # Renders instantly from cache; lower interval keeps the spend ledger and
-        # the live agent/workflow row fresh while the session is idle (e.g. a
-        # background workflow running while you read).
-        refreshInterval = 5;
+        # Renders instantly from cache. The timer only matters while the session
+        # is idle (background workflow running, no events firing): it keeps the
+        # spend ledger and live agent/workflow row ticking. 30s balances that
+        # against render cost.
+        refreshInterval = 30;
       };
       # Rich per-agent rows in the subagent panel during fan-out / workflows.
       subagentStatusLine = {
@@ -107,18 +122,6 @@ in
               {
                 type = "command";
                 command = "${hooks.glod}/bin/gocheck";
-              }
-            ];
-          }
-        ];
-        # SessionEnd: drop a git breadcrumb for continuity. Not PreCompact — that
-        # event is block-only, can't add context, and fires repeatedly on auto-compact.
-        SessionEnd = [
-          {
-            hooks = [
-              {
-                type = "command";
-                command = "${hooks.handoffSnapshotHook}/bin/clod-handoff-snapshot-hook";
               }
             ];
           }
@@ -192,12 +195,13 @@ in
 
       env = {
         CLAUDE_CODE_ENABLE_TELEMETRY = "0";
-        # Force subagents onto Opus instead of the built-in Haiku default.
-        # Read first in the subagent model resolver (io()), so it overrides
-        # even the hardcoded-Haiku built-ins (Explore, claude-code-guide).
-        # "inherit" would follow the main loop model; an explicit id pins it.
-        # Tradeoff: Explore/doc-lookup fan-out gets ~15x pricier + slower.
-        CLAUDE_CODE_SUBAGENT_MODEL = "opus";
+        # "inherit" disables the force, so normal resolution applies: the custom agents
+        # (no model: frontmatter) follow the main loop (Fable 5) and per-spawn / per-
+        # workflow model overrides work again. Tradeoff: the hardcoded-Haiku built-ins
+        # (Explore, claude-code-guide) drop back to Haiku -- the thing the old "opus"
+        # pin existed to override. Set "fable"/"best" to put those on Fable too, or
+        # "opus" to cap all fan-out at the cheaper Opus 4.8 ($5/$25 vs $10/$50).
+        CLAUDE_CODE_SUBAGENT_MODEL = "inherit";
       };
 
       spinnerVerbs = {
