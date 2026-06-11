@@ -1,4 +1,9 @@
-{ lib, pkgs, ... }:
+{
+  lib,
+  pkgs,
+  inputs,
+  ...
+}:
 let
   # writeShellApplication-wrapped hook programs (nix-pinned binaries), defined in
   # ./hooks/default.nix alongside the scripts they wrap.
@@ -66,6 +71,13 @@ in
         url = "https://mcp.linear.app/mcp";
       };
     };
+    # worktrunk's in-repo claude plugin, pinned to the same flake input as the
+    # wt binary so hooks and CLI never skew. Loaded in place via --plugin-dir
+    # (no marketplace, no mutable plugin cache). Provides: activity markers in
+    # `wt list`, WorktreeCreate/Remove rerouted through `wt switch --create` /
+    # `wt remove`, and the worktrunk + wt-switch-create skills. Hook scripts
+    # resolve `wt` and `jq` from PATH (programs.worktrunk / home.packages).
+    plugins = [ "${inputs.worktrunk}/plugins/worktrunk" ];
     settings = {
       apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
       model = "fable";
