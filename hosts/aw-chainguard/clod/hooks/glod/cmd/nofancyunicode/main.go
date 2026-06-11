@@ -8,7 +8,8 @@
 //
 // Exit 2 + stderr denies the tool call and shows the message back, forcing an
 // ASCII redo. Malformed input exits 0. Only decorative typography is banned;
-// real-data accents, CJK, and emoji pass through.
+// real-data accents, CJK, and emoji pass through. Statusline sources are
+// exempt entirely: their glyphs are rendered UI data, not prose decoration.
 package main
 
 import (
@@ -63,9 +64,15 @@ func buildBanned() map[rune]string {
 // git/gh calls carry no authored text, so they are never scanned.
 var proseCmd = regexp.MustCompile(`\bgit\s+commit\b|\bgh\s+(?:pr|issue|release)\s+(?:create|edit|comment|review)\b`)
 
+// glyphSource matches file paths whose glyphs are rendered UI, not prose
+// decoration -- the statusline renderers maintained in ~/.universe draw status
+// marks and sparklines. Statusline-named files elsewhere are not exempt.
+var glyphSource = regexp.MustCompile(`(?i)/\.universe/.*statusline`)
+
 type hookInput struct {
 	ToolName  string `json:"tool_name"`
 	ToolInput struct {
+		FilePath  string `json:"file_path"`
 		Content   string `json:"content"`
 		NewString string `json:"new_string"`
 		Command   string `json:"command"`
@@ -81,6 +88,10 @@ type hookInput struct {
 func decide(stdin []byte) (code int, stderr string) {
 	var in hookInput
 	if err := json.Unmarshal(stdin, &in); err != nil {
+		return 0, ""
+	}
+
+	if in.ToolName != "Bash" && glyphSource.MatchString(in.ToolInput.FilePath) {
 		return 0, ""
 	}
 

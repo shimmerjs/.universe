@@ -3,6 +3,14 @@ let
   # writeShellApplication-wrapped hook programs (nix-pinned binaries), defined in
   # ./hooks/default.nix alongside the scripts they wrap.
   hooks = import ./hooks { inherit pkgs; };
+  # Agent-panel row renderer (settings.subagentStatusLine). Go: one process per
+  # refresh tick regardless of task count; unit tests run in the check phase.
+  subagentStatusline = pkgs.buildGoModule {
+    pname = "subagent-statusline";
+    version = "0.1.0";
+    src = ./subagent-statusline;
+    vendorHash = null;
+  };
 in
 {
   programs.claude-code = {
@@ -75,7 +83,7 @@ in
       # Rich per-agent rows in the subagent panel during fan-out / workflows.
       subagentStatusLine = {
         type = "command";
-        command = "~/.claude/subagent-statusline.sh";
+        command = "~/.claude/subagent-statusline";
       };
       # Go hooks: format/syntax-gate on edit, build+vet gate on stop. Binaries are
       # nix-pinned (writeShellApplication runtimeInputs), so they never depend on PATH.
@@ -284,10 +292,7 @@ in
       executable = true;
       source = ./statusline.sh;
     };
-    ".claude/subagent-statusline.sh" = {
-      executable = true;
-      source = ./subagent-statusline.sh;
-    };
+    ".claude/subagent-statusline".source = "${subagentStatusline}/bin/subagent-statusline";
     ".claude/output-styles/ultra-concise.md".source = ./output-styles/ultra-concise.md;
     ".claude/keybindings.json".source = ./keybindings.json;
   }

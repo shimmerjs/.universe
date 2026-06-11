@@ -15,14 +15,5 @@
     "$(go env GOBIN)"
   ];
 
-  # Go tools that are needed by editor tooling (gopls) or are just useful.
-  home.packages = with pkgs; [
-    gopls
-    gotools # goimports — used by the clod go hooks, and generally useful
-    gopkgs
-    godef
-    golint
-    gocode-gomod
-    golangci-lint
-  ];
+  home.packages = import ./go-tools.nix pkgs;
 }

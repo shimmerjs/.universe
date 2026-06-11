@@ -1,0 +1,8 @@
+# Same banned glyph outside a statusline path stays denied -- the exemption
+# must not leak.
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/Users/shimmerjs/dev/foo/main.go","content":"done = \"\u2713\"\n"}}
+-- want --
+2
+-- want_stderr --
+U+2713

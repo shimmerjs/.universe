@@ -1,0 +1,6 @@
+# Write to a statusline source carrying banned glyphs (check mark + bullet via
+# JSON \u escapes) -- statusline renderers are exempt, glyphs there are UI data.
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/Users/shimmerjs/.universe/hosts/aw-chainguard/clod/subagent-statusline/main.go","content":"glyphDone = \"\u2713\"\nglyphMisc = \"\u2022\"\n"}}
+-- want --
+0

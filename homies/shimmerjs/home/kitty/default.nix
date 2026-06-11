@@ -30,7 +30,7 @@ in
       "f1" = "show_kitty_doc conf";
       # Show current keybindings
       "f2" =
-        "launch --type=overlay --allow-remote-control sh -c \"kitty @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
+        "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
 
       # Clipboard
       "cmd+c" = "copy_or_noop";
@@ -70,7 +70,7 @@ in
       "ctrl+shift+r" = "layout_action rotate"; # Rotate orientation of active split
 
       # Tab management
-      "cmd+t" = "new_tab";
+      "cmd+t" = "new_tab_with_cwd";
       "cmd+shift+]" = "next_tab";
       "cmd+shift+[" = "previous_tab";
       "cmd+shift+w" = "close_tab";
@@ -95,7 +95,7 @@ in
       # TODO: leverage ability to clear into the scrollback?
       "cmd+k" = "clear_terminal clear active";
       "cmd+option+k" = "clear_terminal scroll active";
-      "cmd+l" = "clear_terminal last_command_active";
+      "cmd+l" = "clear_terminal last_command active";
 
       # Scrolling
       # TODO: use vim arrows?
@@ -119,7 +119,7 @@ in
 
     settings = {
       # Ensure that Nix-managed binaries are available to kitty actions
-      env = "PATH=${config.home.profileDirectory}/bin:$PATH";
+      env = "PATH=${config.home.profileDirectory}/bin:/run/current-system/sw/bin:$PATH";
       # Required to automate kitty
       allow_remote_control = "yes";
       # Dont update unless its via Nix
@@ -166,7 +166,7 @@ in
 
     quickAccessTerminalConfig = {
       edge = "left";
-      width = "180";
+      columns = "180";
       hide_on_focus_loss = "yes";
       background_opacity = "0.9";
     };
@@ -177,7 +177,7 @@ in
   # unless the bundle is signed with hardened runtime.
   home.activation.signKitty = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin (
     lib.hm.dag.entryAfter [ "linkGeneration" ] ''
-      /usr/bin/codesign --force --deep --sign - --options runtime \
+      run /usr/bin/codesign --force --deep --sign - --options runtime \
         "$HOME/Applications/Home Manager Apps/kitty.app"
     ''
   );
@@ -193,10 +193,10 @@ in
       source = ./kits;
     };
     ".config/kitty/choose-files.conf".text = ''
-      show_hidden = "true";
-      sort_by_last_modified = "true";
-      respect_ignores = "true";
-      show_preview = "true";
+      show_hidden true
+      sort_by_last_modified true
+      respect_ignores true
+      show_preview true
     '';
   };
 }

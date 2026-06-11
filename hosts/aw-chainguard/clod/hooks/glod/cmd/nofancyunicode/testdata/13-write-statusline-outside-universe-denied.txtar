@@ -1,0 +1,8 @@
+# A statusline-named file OUTSIDE ~/.universe stays denied -- the exemption is
+# scoped to the universe tree, not the filename.
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/Users/shimmerjs/dev/tui/statusline.go","content":"done = \"\u2713\"\n"}}
+-- want --
+2
+-- want_stderr --
+U+2713

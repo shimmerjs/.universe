@@ -32,6 +32,12 @@
       url = "github:shimmerjs/spotatui";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Git worktree manager; upstream flake because nixpkgs lags its
+    # weekly release cadence
+    worktrunk = {
+      url = "github:max-sixty/worktrunk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     # Utility to switch tabs in kitty terminal using fzf
     kitty-tab-switcher = {
       url = "github:OsiPog/kitty-tab-switcher";

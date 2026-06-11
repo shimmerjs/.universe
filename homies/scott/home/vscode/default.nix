@@ -1,5 +1,7 @@
 { pkgs, ... }:
 {
+  imports = [ ../../../../modules/home-manager/vscode-go.nix ];
+
   programs.vscode = with pkgs; {
     enable = true;
     mutableExtensionsDir = false;

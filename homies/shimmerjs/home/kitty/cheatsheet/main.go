@@ -129,7 +129,7 @@ func newSheet() (*kribNotes, error) {
 		default:
 			b := &bind{
 				mode:   x["mode"],
-				keys:   strings.Split(x["keys"], "+"),
+				keys:   splitKeys(x["keys"]),
 				action: x["action"],
 			}
 
@@ -147,4 +147,17 @@ func newSheet() (*kribNotes, error) {
 	}
 
 	return k, nil
+}
+
+// splitKeys splits a kitty key spec on '+', where the final key may itself be
+// a literal '+' (kitty renders cmd+plus as "cmd++").
+func splitKeys(s string) []string {
+	if !strings.HasSuffix(s, "+") {
+		return strings.Split(s, "+")
+	}
+	base := strings.TrimSuffix(s, "+")
+	if base == "" {
+		return []string{"+"}
+	}
+	return append(strings.Split(strings.TrimSuffix(base, "+"), "+"), "+")
 }
