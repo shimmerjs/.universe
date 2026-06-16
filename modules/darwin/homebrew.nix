@@ -17,6 +17,14 @@
     # with no force, so append it here.
     onActivation.extraFlags = [ "--force-cleanup" ];
 
+    # Homebrew >=6 refuses to load formulae from third-party taps unless trusted
+    # via `brew trust` (state in ~/.homebrew/trust.json). The Brewfile here is
+    # nix-generated, so skip the gate for the activation run only; hosts that use
+    # third-party taps interactively should also declare trust.json via
+    # home-manager. Deprecated upstream -- becomes a no-op when removed, at which
+    # point the declared trust.json carries it.
+    onActivation.extraEnv.HOMEBREW_NO_REQUIRE_TAP_TRUST = "1";
+
     caskArgs = {
       appdir = "~/Applications"; # Use non-global directory
     };

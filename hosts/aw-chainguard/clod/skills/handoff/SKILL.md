@@ -9,11 +9,13 @@ A handoff survives compaction by being a **pointer-index**, not a lossy re-summa
 
 ## WHERE IT GOES
 
-Write to the OS temp dir, never the workspace -- a handoff is not source and must not land in a diff or get treated as a doc later:
+Write to the work-docs home, never inside the workspace -- a handoff is not source and must not land in a diff. For a worktree-layout repo (worktrees as siblings under one root), that is the `docs/` dir next to the worktrees:
 
 ```
-"${TMPDIR:-/tmp}/clod-handoff-${session_id}.md"
+<worktree_root>/docs/handoffs/clod-handoff-${session_id}.md
 ```
+
+No worktree setup: fall back to the OS temp dir, `"${TMPDIR:-/tmp}/clod-handoff-${session_id}.md"`.
 
 Use the real `session_id` (from the transcript path or the session). After writing, print the absolute path back so it can be handed to the next session (`claude --resume`, or paste the file).
 

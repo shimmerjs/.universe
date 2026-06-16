@@ -18,6 +18,10 @@
     optimise.automatic = true;
     gc = {
       automatic = true;
+      # Without this, gc only collects unreachable paths -- and every old
+      # system generation keeps its whole closure reachable. 334 generations
+      # deep that is hundreds of GB of pinned dead worlds.
+      options = "--delete-older-than 30d";
     };
     # Trade disk space for cached builds
     extraOptions = ''

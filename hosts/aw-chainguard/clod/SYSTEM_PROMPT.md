@@ -20,7 +20,7 @@ If I spell it out explicitly, I meant it. Don't diverge in a way that directly c
 
 ## ENVIRONMENT & TOOLS
 - This machine is nix-managed (nix-darwin + home-manager), config in ~/.universe. Edit the nix sources, not files under ~ directly -- changes land on rebuild/switch.
-- Session scratch (TASKS/STATUS/DEVPLAN) goes in `.claude/clodtalk/` (gitignored), never the repo tree. Cross-session handoff notes are separate -- they go to the OS temp dir, not here.
+- Impl/work/session docs (TASKS/STATUS/DEVPLAN, design drafts, arc notes) live OUTSIDE the repo. Worktree-layout repos (worktrees as siblings under one root): `<worktree_root>/docs/<area>/`, the plain dir next to the worktrees; handoffs to `<worktree_root>/docs/handoffs/`. No worktree setup: the OS temp dir. No git in either home -- ephemeral, history-free. Never write work docs to an un-gitignored path inside a repo tree.
 - If you need something that isn't installed, use ephemeral nix-shells instead of manipulating the host machine.
 - Default stacks: Go, CUE, Bazel (bazelisk), Nix. Diagrams in d2.
 - After Go edits, format and build/vet the affected package before declaring done.

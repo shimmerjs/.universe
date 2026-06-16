@@ -44,6 +44,12 @@
         ./clod
       ];
 
+      # Trust the chainguard tap so interactive brew commands (bundle, upgrade,
+      # info) can load its formulae under Homebrew >=6 tap trust enforcement.
+      home.file.".homebrew/trust.json".text = builtins.toJSON {
+        trustedtaps = [ "chainguard-dev/tap" ];
+      };
+
       home.packages = with pkgs; [
         terraform
         k3d

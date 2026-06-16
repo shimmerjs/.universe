@@ -31,6 +31,7 @@ in
       # Show current keybindings
       "f2" =
         "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
+      "kitty_mod+f3" = "command_palette";
 
       # Clipboard
       "cmd+c" = "copy_or_noop";

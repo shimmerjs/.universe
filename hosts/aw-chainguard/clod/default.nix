@@ -20,21 +20,6 @@ in
 {
   programs.claude-code = {
     enable = true;
-    # Temporary pin: Fable 5 (claude-fable-5) needs claude-code >= 2.1.170, but nixpkgs
-    # is still on 2.1.161 (bump tracked in nixpkgs#530023). Override with the upstream
-    # prebuilt binary until that lands, then delete this block and the package follows
-    # nixpkgs again. darwin-arm64 only -- this host is aarch64-darwin.
-    package =
-      let
-        v = "2.1.170";
-      in
-      pkgs.claude-code.overrideAttrs (_: {
-        version = v;
-        src = pkgs.fetchurl {
-          url = "https://downloads.claude.ai/claude-code-releases/${v}/darwin-arm64/claude";
-          hash = "sha256-6QNkbYt6MYgqgOzSdWmifYrFezcIdF80lwljLIQRf98=";
-        };
-      });
     context = ./SYSTEM_PROMPT.md;
     agents = {
       researcher = ./agents/researcher.md;
@@ -48,8 +33,9 @@ in
     # plus a `codex` MCP server (or Bash(codex ...) perms) so the calls don't prompt.
     skills = {
       # Cross-session/compaction continuity. Model-authored handoff with a fixed
-      # schema (VERIFIED vs ASSUMED, next action), written to the OS temp dir and
-      # referencing artifacts by path.
+      # schema (VERIFIED vs ASSUMED, next action), written to the work-docs home
+      # (<worktree_root>/docs/handoffs/, OS temp dir fallback), referencing
+      # artifacts by path.
       handoff = ./skills/handoff/SKILL.md;
       # Go tooling contract: documents the two-phase format/build/vet hooks wired
       # above, gates LSP to navigation-only, and carries the re-read-after-format
@@ -80,7 +66,7 @@ in
     plugins = [ "${inputs.worktrunk}/plugins/worktrunk" ];
     settings = {
       apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
-      model = "fable";
+      model = "opus-4-8";
       effortLevel = "xhigh";
       autoScrollEnabled = true;
       statusLine = {
@@ -280,8 +266,9 @@ in
     };
   };
 
-  # Globally gitignore the stray-state homes: compiled binaries the go hooks sweep
-  # up, and session scratch docs (TASKS/STATUS/DEVPLAN) written to clodtalk.
+  # Globally gitignore the stray-state homes: compiled binaries the go hooks
+  # sweep up. (Work/session docs live outside repos entirely --
+  # <worktree_root>/docs/ or the OS temp dir -- so they need no ignore.)
   # **/ prefix on the .claude/ entries is load-bearing: .claude/ dirs nest below
   # repo roots (e.g. this repo's homies/.../kitty/.claude/), and a root-anchored
   # pattern (one with a mid-pattern slash) would only match at the repo top.
@@ -289,7 +276,6 @@ in
   # any depth and need no glob.
   programs.git.ignores = [
     "**/.claude/bin/" # compiled binaries the go hooks sweep up
-    "**/.claude/clodtalk/" # session scratch docs (TASKS/STATUS/DEVPLAN)
     "**/.claude/settings.local.json" # per-project local settings (machine/secret-bearing)
     # python detritus clod leaves when it runs or verifies scripts
     "__pycache__/"
