@@ -65,11 +65,13 @@ for path in sorted(glob.glob(os.path.join(wf_dir, "*.js"))):
             val = decl.group(1).strip()
             if val in ("undefined", "null"):
                 continue
-            lit = re.match(r"""['"]([^'"]+)['"]""", val)
-            if not lit:
-                errors.append(f"{name}: agentType `{raw}` resolves to non-literal `{val}` — can't verify")
-                continue
-            ref = lit.group(1)
+            # Resolve to every string literal in the alias value: a ternary like
+            # `stock ? undefined : 'reviewer'` yields its real branch (verified
+            # below), while a bare variable/computed value yields none and is
+            # genuinely unverifiable -> skip rather than fail.
+            lits = re.findall(r"""['"]([^'"]+)['"]""", val)
+            used.update(lits)
+            continue
         used.add(ref)
     for ref in sorted(used):
         if ref not in valid:

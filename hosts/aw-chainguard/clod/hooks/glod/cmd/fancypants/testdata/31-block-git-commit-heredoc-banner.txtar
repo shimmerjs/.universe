@@ -1,0 +1,7 @@
+# block: a comment-led banner on its own line in a multi-line commit body
+-- input.json --
+{"tool_name":"Bash","tool_input":{"command":"git commit -F - <<'EOF'\nfix: thing\n\n// -----------------------------\nbody\nEOF"}}
+-- want --
+2
+-- want_stderr --
+divider/banner

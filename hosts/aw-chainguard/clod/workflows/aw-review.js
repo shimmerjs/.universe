@@ -1,7 +1,7 @@
 export const meta = {
   name: 'aw-review',
-  description: '[scope=diff lenses=correctness,perf,security votes=3 severity-floor=med intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses, refute-verify every finding, synthesize one severity-ranked verdict. Informal word=value flags.',
-  whenToUse: 'Reviewing a diff or path; tune scope, lenses, votes, severity-floor',
+  description: '[scope=diff lenses=correctness,perf,security votes=3 passes=2 severity-floor=med intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags.',
+  whenToUse: 'Reviewing a diff or path; tune scope, lenses, votes, passes, severity-floor',
   phases: [{ title: 'Scope' }, { title: 'Review' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
 
@@ -44,6 +44,7 @@ const { flags, prompt, set } = parseFlags(args, {
   scope: { type: 'str', default: 'diff' },                       // PR ref, git range, or path
   lenses: { type: 'axes', default: { list: ['correctness', 'perf', 'security'] } },
   votes: { type: 'int', default: 3, min: 1, max: 5 },
+  passes: { type: 'int', default: 2, min: 1, max: 6 },           // loop-until-dry rounds (re-review for issues not yet found)
   'severity-floor': { type: 'str', default: 'med' },             // high|med|low: floor that gets verified
   intensity: { type: 'int', default: 5, min: 0, max: 10 },
   subagents: { type: 'str', default: 'custom' },
@@ -59,8 +60,8 @@ const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
 if (set.has('intensity')) {
   const k = fromIntensity(flags.intensity)
   // map onto whichever of this workflow's knobs exist; only override the unset ones.
-  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
-    if (flag in flags && !set.has(flag)) flags[flag] = val
+  for (const [flag, val] of [['votes', k.votes], ['passes', k.passes]])
+    if (!set.has(flag)) flags[flag] = val
   if (!set.has('lenses') && flags.lenses && flags.lenses.count != null) flags.lenses = { count: k.fanout }
 }
 const stock = flags.subagents === 'stock'
@@ -88,7 +89,7 @@ if (!lenses) {
     { label: 'derive-lenses', phase: 'Scope', agentType: REVIEWER, schema: L })
   lenses = d.lenses
 }
-log('review: scope=' + scoped.target + ' lenses=' + lenses.join('+') + ' votes=' + flags.votes + ' floor=' + flags['severity-floor'])
+log('review: scope=' + scoped.target + ' lenses=' + lenses.join('+') + ' votes=' + flags.votes + ' passes=' + flags.passes + ' floor=' + flags['severity-floor'])
 
 const FIND = { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
   type: 'object', required: ['file', 'desc', 'severity'], properties: {
@@ -96,43 +97,58 @@ const FIND = { type: 'object', required: ['findings'], properties: { findings: {
     severity: { type: 'string', enum: ['critical', 'high', 'med', 'low'] }, desc: { type: 'string' } } } } } }
 const VERDICT = { type: 'object', required: ['real'], properties: { real: { type: 'boolean' }, why: { type: 'string' } } }
 
-phase('Review')
-const found = (await parallel(lenses.map(lens => () => agent(
-  'Review ' + scoped.target + ' through the ' + lens + ' lens. Focus: ' + focus + '. Files:\n' + scoped.files.join('\n') + '\n' +
-  'Find real, specific issues (file:line). Be concrete; no style nits, no speculation.',
-  { label: 'review:' + lens, phase: 'Review', agentType: REVIEWER, schema: FIND }))))
-  .filter(Boolean).flatMap(r => r.findings || [])
-
-// dedup before verify (do not verify the same defect twice).
-const seen = new Set()
-const fresh = found.filter(f => {
-  const k = (f.file + ':' + f.line + ':' + (f.desc || '')).toLowerCase()
-  if (seen.has(k)) return false; seen.add(k); return true
-})
-
 // severity floor: below-floor findings are carried but tagged UNVERIFIED, never verified, never in the confirmed tally.
 const order = { low: 0, med: 1, high: 2, critical: 3 }
 const floor = order[flags['severity-floor']] != null ? order[flags['severity-floor']] : 1
-const toVerify = fresh.filter(f => (order[f.severity] || 0) >= floor)
-const belowFloor = fresh.filter(f => (order[f.severity] || 0) < floor).map(f => ({ ...f, verdict: 'UNVERIFIED' }))
-log('review: ' + found.length + ' found, ' + fresh.length + ' fresh, ' + toVerify.length + ' at/above floor, ' + belowFloor.length + ' below floor (carried, unverified)')
+const seen = new Set()                       // dedup across ALL rounds: never verify the same defect twice
+const confirmed = [], unverified = [], belowFloor = [], allJudged = []
+let foundTotal = 0, freshTotal = 0
 
-phase('Verify')
-const judged = (await parallel(toVerify.map(f => () =>
-  parallel(Array.from({ length: flags.votes }, (_, v) => () =>
-    agent('Skeptic ' + (v + 1) + ': is this a REAL ' + (f.lens || '') + ' issue, or a false positive? Default real=false unless you confirm by reading the code.\n' + f.file + ':' + f.line + ' - ' + f.desc,
-      { label: 'verify:' + f.file, phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
-    .then(votes => {
-      const vv = votes.filter(Boolean)
-      const quorum = Math.ceil(flags.votes / 2)
-      // sub-quorum (verifiers crashed) -> UNVERIFIED, never laundered into a verdict;
-      // majority is over flags.votes, so missing votes count against confirmation.
-      const verdict = vv.length < quorum ? 'UNVERIFIED'
-        : (vv.filter(x => x.real).length > flags.votes / 2 ? 'CONFIRMED' : 'REFUTED')
-      return { ...f, verdict, failed: flags.votes - vv.length }
-    })))).filter(Boolean)
-const confirmed = judged.filter(f => f.verdict === 'CONFIRMED')
-const unverified = judged.filter(f => f.verdict === 'UNVERIFIED')
+// Loop-until-dry: each round, reviewers hunt for issues NOT already surfaced.
+// Stop when a round finds nothing fresh, or passes is exhausted.
+for (let round = 0; round < flags.passes; round++) {
+  phase('Review')
+  const known = confirmed.concat(unverified, belowFloor).map(f => f.file + ':' + f.line + ' ' + f.desc).slice(0, 60)
+  const knownNote = known.length
+    ? '\nAlready found (do NOT re-report these; look for issues NOT in this list):\n' + known.join('\n')
+    : ''
+  const found = (await parallel(lenses.map(lens => () => agent(
+    'Round ' + (round + 1) + '. Review ' + scoped.target + ' through the ' + lens + ' lens. Focus: ' + focus + '. Files:\n' + scoped.files.join('\n') +
+    knownNote + '\n' +
+    'Find real, specific issues (file:line). Be concrete; no style nits, no speculation.',
+    { label: 'review:' + lens + ':r' + (round + 1), phase: 'Review', agentType: REVIEWER, schema: FIND }))))
+    .filter(Boolean).flatMap(r => r.findings || [])
+  foundTotal += found.length
+
+  const fresh = found.filter(f => {
+    const k = (f.file + ':' + f.line + ':' + (f.desc || '')).toLowerCase()
+    if (seen.has(k)) return false; seen.add(k); return true
+  })
+  freshTotal += fresh.length
+  if (!fresh.length) { log('round ' + (round + 1) + ': no fresh findings -- dry, stopping'); break }
+
+  const toVerify = fresh.filter(f => (order[f.severity] || 0) >= floor)
+  belowFloor.push(...fresh.filter(f => (order[f.severity] || 0) < floor).map(f => ({ ...f, verdict: 'UNVERIFIED' })))
+  log('round ' + (round + 1) + ': ' + found.length + ' found, ' + fresh.length + ' fresh, ' + toVerify.length + ' at/above floor')
+
+  phase('Verify')
+  const judged = (await parallel(toVerify.map(f => () =>
+    parallel(Array.from({ length: flags.votes }, (_, v) => () =>
+      agent('Skeptic ' + (v + 1) + ': is this a REAL ' + (f.lens || '') + ' issue, or a false positive? Default real=false unless you confirm by reading the code.\n' + f.file + ':' + f.line + ' - ' + f.desc,
+        { label: 'verify:' + f.file, phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
+      .then(votes => {
+        const vv = votes.filter(Boolean)
+        const quorum = Math.ceil(flags.votes / 2)
+        // sub-quorum (verifiers crashed) -> UNVERIFIED, never laundered into a verdict;
+        // majority is over flags.votes, so missing votes count against confirmation.
+        const verdict = vv.length < quorum ? 'UNVERIFIED'
+          : (vv.filter(x => x.real).length > flags.votes / 2 ? 'CONFIRMED' : 'REFUTED')
+        return { ...f, verdict, failed: flags.votes - vv.length }
+      })))).filter(Boolean)
+  allJudged.push(...judged)
+  confirmed.push(...judged.filter(f => f.verdict === 'CONFIRMED'))
+  unverified.push(...judged.filter(f => f.verdict === 'UNVERIFIED'))
+}
 
 phase('Synthesize')
 const report = await agent(
@@ -144,9 +160,9 @@ const report = await agent(
   { label: 'synthesize', phase: 'Synthesize' })
 
 const tally = {
-  found: found.length, fresh: fresh.length, confirmed: confirmed.length,
-  refuted: judged.filter(f => f.verdict === 'REFUTED').length,
+  found: foundTotal, fresh: freshTotal, confirmed: confirmed.length,
+  refuted: allJudged.filter(f => f.verdict === 'REFUTED').length,
   unverified: unverified.length + belowFloor.length,
-  failedVerifiers: judged.reduce((a, f) => a + (f.failed || 0), 0),
+  failedVerifiers: allJudged.reduce((a, f) => a + (f.failed || 0), 0),
 }
 return { scope: scoped.target, lenses, tally, confirmed, report }

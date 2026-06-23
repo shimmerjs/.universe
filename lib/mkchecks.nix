@@ -67,7 +67,21 @@ let
            value = import ./statusline-check.nix { inherit pkgs statuslineScript; }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkStatuslineCheck ];
+  # Behavioral test for the go-build-sweep hook (narrow to this-build's binary,
+  # leave unrelated/tracked binaries alone). Returns null if the host has no
+  # clod/hooks/go-build-sweep.sh.
+  mkHooksCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    sweepScript = ../hosts/${hostname}/clod/hooks/go-build-sweep.sh;
+    hooks = import ../hosts/${hostname}/clod/hooks { inherit pkgs; };
+  in if builtins.pathExists sweepScript
+    then { inherit system; name = "clod-hooks-${hostname}";
+           value = import ./hooks-check.nix { inherit pkgs; goBuildSweep = hooks.goBuildSweep; }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkStatuslineCheck mkHooksCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

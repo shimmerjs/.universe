@@ -1,0 +1,5 @@
+# keep: a rule run only MENTIONED mid-comment is not a banner
+-- input.json --
+{"tool_name":"Edit","tool_input":{"file_path":"/x/y.go","new_string":"// the separator between fields is \"----\" by convention"}}
+-- want --
+0

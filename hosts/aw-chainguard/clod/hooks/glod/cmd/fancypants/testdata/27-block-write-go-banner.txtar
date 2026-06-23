@@ -1,0 +1,7 @@
+# block: a Go section-banner comment in written content (real tic shape)
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/x/y.go","content":"package y\n\n// ---- constants ---------------------------------------------------------\nconst x = 1\n"}}
+-- want --
+2
+-- want_stderr --
+divider/banner

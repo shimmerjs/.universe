@@ -17,9 +17,9 @@
 
   # One Go module (./glod) -> two hook binaries sharing an internal/txtar test
   # helper:
-  #   bin/nofancyunicode  PreToolUse(Write|Edit|MultiEdit|Bash) ASCII guard --
-  #     blocks decorative Unicode in file writes and in git-commit / gh
-  #     pr/issue/release authored prose.
+  #   bin/fancypants      PreToolUse(Write|Edit|MultiEdit|Bash) style guard --
+  #     blocks decorative Unicode and banner/divider comments in file writes,
+  #     and decorative Unicode in git-commit / gh pr/issue/release prose.
   #   bin/gocheck         Stop gate -- `go build` + `go vet` the edited packages,
   #     using `go list -e -json` metadata to pick the buildable ones and
   #     `go vet -json` for structured findings; keeps the $GOCACHE cache.

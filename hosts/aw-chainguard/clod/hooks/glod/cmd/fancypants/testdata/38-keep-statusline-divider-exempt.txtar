@@ -1,0 +1,5 @@
+# keep: statusline sources are exempt entirely, even from the divider check
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/Users/x/.universe/homies/x/statusline.sh","content":"# ---- bar ----\necho hi\n"}}
+-- want --
+0

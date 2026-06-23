@@ -51,8 +51,8 @@ const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
 if (set.has('intensity')) {
   const k = fromIntensity(flags.intensity)
   // map onto whichever of this workflow's knobs exist; only override the unset ones.
-  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
-    if (flag in flags && !set.has(flag)) flags[flag] = val
+  for (const [flag, val] of [['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
+    if (!set.has(flag)) flags[flag] = val
 }
 const stock = flags.subagents === 'stock'
 if (!prompt) { log('no question after the flags -- nothing to research'); return }
@@ -83,7 +83,7 @@ for (let round = 0; round < flags.passes; round++) {
   log(`round ${round + 1}: ${found.length} claims, ${fresh.length} fresh`)
   if (!fresh.length) { log('dry round -- stopping early'); break }
 
-  if (flags.verify === 0) { confirmed.push(...fresh); continue }
+  if (flags.verify === 0) { unverified.push(...fresh); continue }  // verify disabled: unverified, not laundered into confirmed
   phase('Verify')
   const quorum = Math.ceil(flags.verify / 2)
   const judged = await parallel(fresh.map(c => () =>
@@ -93,7 +93,8 @@ for (let round = 0; round < flags.passes; round++) {
       .then(votes => {
         const vv = votes.filter(Boolean)
         if (vv.length < quorum) return { c, verdict: 'UNVERIFIED' }   // sub-quorum: not kept, not dropped
-        return { c, verdict: vv.filter(x => x.refuted).length > flags.verify / 2 ? 'REFUTED' : 'CONFIRMED' }
+        // ties -> REFUTED (refuted >= confirmed), per the workflows/CLAUDE.md reducer rule; over actual votes returned
+        return { c, verdict: vv.filter(x => x.refuted).length >= vv.length / 2 ? 'REFUTED' : 'CONFIRMED' }
       })))
   for (const j of judged.filter(Boolean)) {
     if (j.verdict === 'CONFIRMED') confirmed.push(j.c)
@@ -101,8 +102,14 @@ for (let round = 0; round < flags.passes; round++) {
   }
 }
 phase('Synthesize')
+// verify=0 disables verification, so claims land in `unverified`; synthesize from
+// those but label the whole answer unverified. Otherwise synthesize confirmed-only.
+const basis = confirmed.length ? confirmed : unverified
+const basisNote = confirmed.length
+  ? 'verified claims (each survived refutation)'
+  : 'UNVERIFIED claims -- verification was disabled (verify=0); flag the whole answer as unverified'
 const report = await agent(
-  `Synthesize a cited answer to: ${prompt}\nUse ONLY these verified claims:\n` +
-  confirmed.map((c, i) => `[${i + 1}] ${c.text} (${c.source || 'unsourced'})`).join('\n'),
+  `Synthesize a cited answer to: ${prompt}\nUse ONLY these ${basisNote}:\n` +
+  basis.map((c, i) => `[${i + 1}] ${c.text} (${c.source || 'unsourced'})`).join('\n'),
   { label: 'synthesize', phase: 'Synthesize', agentType: RESEARCHER })
 return { question: prompt, flags, verified: confirmed.length, unverified: unverified.length, report }

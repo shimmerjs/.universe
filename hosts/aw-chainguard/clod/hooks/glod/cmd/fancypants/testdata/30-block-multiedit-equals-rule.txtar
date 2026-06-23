@@ -1,0 +1,7 @@
+# block: pure equals-rule banner in the second of a MultiEdit
+-- input.json --
+{"tool_name":"MultiEdit","tool_input":{"edits":[{"new_string":"ok"},{"new_string":"// ===========================================================\n// lenses\n// ==========================================================="}]}}
+-- want --
+2
+-- want_stderr --
+divider/banner

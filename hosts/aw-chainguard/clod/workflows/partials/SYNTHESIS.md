@@ -1,6 +1,6 @@
 # Synthesis discipline -- the shared spine for every verdict workflow's final stage
 
-Deployed to `~/.claude/workflows/partials/SYNTHESIS.md` and cited by the synthesis stage of `review.js`, `audit.js`, and `design-review.js`. The synthesis agent reads it and applies it; the stage prompt keeps only the workflow-specific output shape (p0/p1/p2 vs severity groups vs go/no-go). The way `research.js` leans on the `researcher`/`skeptic` agents, a verdict stage leans on this. Cite it by its `~/.claude/...` path from the stage prompt; do not restate it in the `.js`.
+Deployed to `~/.claude/workflows/partials/SYNTHESIS.md` and cited by the synthesis stage of `aw-review.js`, `aw-audit.js`, and `aw-design-review.js`. The synthesis agent reads it and applies it; the stage prompt keeps only the workflow-specific output shape (p0/p1/p2 vs severity groups vs go/no-go). The way `aw-research.js` leans on the `researcher`/`skeptic` agents, a verdict stage leans on this. Cite it by its `~/.claude/...` path from the stage prompt; do not restate it in the `.js`.
 
 ## CONFIRMED-ONLY, AND SAY SO WHEN IT'S THIN
 Build the verdict from CONFIRMED findings only. Anything tagged UNVERIFIED -- verifiers crashed, below the severity floor, over a cap -- is not a finding: never launder it into the confirmed list, and never silently drop it either. If the confirmed set is empty, say it looks clean and name exactly what was checked, so "nothing found" can't be read as "nothing looked at."

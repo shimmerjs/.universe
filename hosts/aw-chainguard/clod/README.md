@@ -24,13 +24,12 @@ clod/
     CLAUDE.md            authoring rules for writing new workflows (not deployed)
     default.nix          deploys the *.js and partials to ~/.claude/workflows/
   hooks/                 guardrails, nix-pinned so they never depend on PATH
-    glod/                one Go module -> two binaries (ASCII guard, go build/vet gate)
+    glod/                one Go module -> two binaries (style guard, go build/vet gate)
     go-fmt-hook.sh       gofmt + goimports per Go edit
     go-build-sweep.sh    sweep stray go-build binaries out of the tree
     default.nix          builds the hook programs, imported by ../default.nix
   statusline.sh          the main dashboard (spend, model, context, branch, live work)
   subagent-statusline.sh per-agent rows shown during a fan-out
-  output-styles/         ultra-concise output style
   keybindings.json       a couple of scroll rebinds
 ```
 
@@ -65,7 +64,7 @@ The `aw-*` suite covers the recurring shapes:
 | `aw-review`        | scope a diff -> review per lens -> refute-verify each finding -> one ranked verdict |
 | `aw-audit`         | map packages -> audit per lens -> verify -> p0/p1/p2 fix list                       |
 | `aw-design-review` | frame + lock constraints -> critique per lens -> verify -> one recommendation       |
-| `aw-understand`    | slice a subsystem -> map each slice in parallel -> merged picture                   |
+| `aw-implement`     | lock a spec -> execute in a spec-only subagent -> verify vs acceptance -> review diff |
 
 **What this buys you over just asking the model to "review the diff":** explicit, encoded control over the things that make multi-agent work trustworthy instead of theater.
 
@@ -81,12 +80,12 @@ Two `partials/` (`SYNTHESIS.md`, `DESIGN_DOCTRINE.md`) hold the shared "how to w
 
 Hooks are the part that makes the honesty rules enforced rather than aspirational. All four are nix-pinned (built with `writeShellApplication` / `buildGoModule`), so they carry their own tools and never depend on `PATH`.
 
-- **nofancyunicode** (PreToolUse on Write/Edit/MultiEdit/Bash) -- blocks decorative Unicode in files, and in git-commit / `gh` pr/issue/release prose. Keeps em-dashes, smart quotes, and emoji out of the things that ship.
+- **fancypants** (PreToolUse on Write/Edit/MultiEdit/Bash) -- blocks decorative Unicode and banner/divider comments (`// ---- foo ----`, `# ====`) in files, plus decorative Unicode in git-commit / `gh` pr/issue/release prose. Keeps em-dashes, smart quotes, and ASCII-art section headers out of the things that ship.
 - **go-fmt-hook** (PostToolUse on Go edits) -- `gofmt -e` syntax-gates the file; on clean syntax `goimports -w` reformats in place. Queues the file for the Stop pass.
 - **go-build-sweep** (PostToolUse on Bash) -- sweeps stray `go build` binaries into a gitignored `.claude/bin/` so they can't be committed.
 - **gocheck** (Stop) -- `go build` + `go vet` the edited packages and *blocks the turn* on a failure. This is the teeth behind "verification is a gate": a claim of "it builds" has to survive the compiler before the turn can end.
 
-`glod/` is a single Go module that compiles to two of those binaries (`nofancyunicode`, `gocheck`) and runs its own txtar test suites at Nix build time.
+`glod/` is a single Go module that compiles to two of those binaries (`fancypants`, `gocheck`) and runs its own txtar test suites at Nix build time.
 
 ### Statuslines -- `statusline.sh`, `subagent-statusline.sh`
 
@@ -98,9 +97,9 @@ The main statusline is a flat, multiline dashboard that grows with activity: mod
 
 Skills are capability docs the model loads on its own when their description matches the work. Wired: **handoff** (continuity notes that survive compaction), **go** (the Go hook contract, so the agent works *with* the hooks above instead of fighting them), **deslop** (a final scrub pass for AI-tell residue). **codex-consult** (a cross-vendor second opinion) is present but intentionally not wired -- it needs codex configured first.
 
-### Output style + keybindings
+### Keybindings
 
-`output-styles/ultra-concise.md` is a maximum-signal output mode. `keybindings.json` rebinds scroll-to-bottom.
+`keybindings.json` rebinds scroll-to-bottom.
 
 ## How it fits together
 

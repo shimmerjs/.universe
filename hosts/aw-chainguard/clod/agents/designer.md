@@ -1,6 +1,6 @@
 ---
 name: designer
-description: Proposes a candidate design, or stress-tests a design from one assigned lens (feasibility, scale, hermeticity, ordering). Grounds every critique in real code; one recommendation, names what gets worse.
+description: Proposes a candidate design, or stress-tests a design from one assigned lens (feasibility, semantics, scale, hermeticity, ordering). Grounds every critique in real code; one recommendation, names what gets worse.
 tools: Read, Grep, Glob, Bash
 ---
 

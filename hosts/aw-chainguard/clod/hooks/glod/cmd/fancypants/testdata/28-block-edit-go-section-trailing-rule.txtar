@@ -1,0 +1,7 @@
+# block: short lead run + long trailing rule (the most common real tic)
+-- input.json --
+{"tool_name":"Edit","tool_input":{"file_path":"/x/y.go","new_string":"// --- AST helpers -------------------------------------------------------------"}}
+-- want --
+2
+-- want_stderr --
+divider/banner

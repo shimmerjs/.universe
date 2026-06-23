@@ -1,0 +1,7 @@
+# block: a "-- " comment that IS a banner (leader recognized, body starts w/ rule)
+-- input.json --
+{"tool_name":"Edit","tool_input":{"file_path":"/x/q.sql","new_string":"-- ====================  migrations  ===================="}}
+-- want --
+2
+-- want_stderr --
+divider/banner

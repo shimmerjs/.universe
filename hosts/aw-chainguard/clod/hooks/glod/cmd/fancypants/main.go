@@ -1,15 +1,19 @@
-// Command nofancyunicode is a PreToolUse(Write|Edit|MultiEdit|Bash) guard: it
-// blocks decorative Unicode in content clod writes, ASCII only.
+// Command fancypants is a PreToolUse(Write|Edit|MultiEdit|Bash) guard over
+// the text clod writes. It blocks two things: decorative Unicode (ASCII only)
+// and banner/divider comments (`// ---- foo ----`, `# ======`).
 //
 // For file writes it inspects only the new text (content/new_string), so
 // pre-existing characters are never flagged. For Bash it scans git-commit and gh
 // pr/issue/release authored prose -- the commit-message and PR/issue-body
 // channels a file guard never sees.
 //
-// Exit 2 + stderr denies the tool call and shows the message back, forcing an
-// ASCII redo. Malformed input exits 0. Only decorative typography is banned;
-// real-data accents, CJK, and emoji pass through. Statusline sources are
-// exempt entirely: their glyphs are rendered UI data, not prose decoration.
+// Exit 2 + stderr denies the tool call and shows the message back, forcing a
+// redo. Malformed input exits 0. Only decorative typography is banned;
+// real-data accents, CJK, and emoji pass through. The divider check is
+// comment-leader-anchored and excludes # and * from the rule alphabet, so
+// Markdown headings, bullets, frontmatter, and setext underlines are never
+// flagged. Statusline sources are exempt entirely: their glyphs are rendered UI
+// data, not prose decoration.
 package main
 
 import (
@@ -68,6 +72,70 @@ var proseCmd = regexp.MustCompile(`\bgit\s+commit\b|\bgh\s+(?:pr|issue|release)\
 // decoration -- the statusline renderers maintained in ~/.universe draw status
 // marks and sparklines. Statusline-named files elsewhere are not exempt.
 var glyphSource = regexp.MustCompile(`(?i)/\.universe/.*statusline`)
+
+// dividerRun matches a run of 4+ identical rule characters -- the spine of a
+// banner/divider comment. # and * are deliberately excluded from the alphabet:
+// # would catch Markdown headings (######) and is also a comment leader, * would
+// catch Markdown bullets and bold. Real divider tics here are dash/equals runs.
+var dividerRun = regexp.MustCompile(`[-=~_+]{4,}`)
+
+// commentBody returns the trimmed text after a recognized comment leader and
+// ok=true if line begins (after leading whitespace) with one. Only line-leading
+// leaders count, so a rule run inside code -- a string literal, a URL, a unified
+// diff header (--- a/file), an inline trailing comment -- is never treated as a
+// banner. "-- " requires the trailing space so a Markdown rule (----) or setext
+// underline is not mistaken for a SQL/Lua comment.
+func commentBody(line string) (string, bool) {
+	s := strings.TrimLeft(line, " \t")
+	switch {
+	case strings.HasPrefix(s, "<!--"):
+		s = s[4:]
+	case strings.HasPrefix(s, "//"), strings.HasPrefix(s, "/*"), strings.HasPrefix(s, "*/"):
+		s = s[2:]
+	case strings.HasPrefix(s, "-- "):
+		s = s[3:]
+	case strings.HasPrefix(s, "#"), strings.HasPrefix(s, ";"):
+		s = s[1:]
+	default:
+		return "", false
+	}
+	return strings.TrimSpace(s), true
+}
+
+// isDivider reports whether a comment body is a banner/divider: it starts or
+// ends with a rule run. A run only mentioned mid-comment (`the "----" sep`) is
+// not a divider, so genuine references to rule strings survive.
+func isDivider(body string) bool {
+	locs := dividerRun.FindAllStringIndex(body, -1)
+	if len(locs) == 0 {
+		return false
+	}
+	first, last := locs[0], locs[len(locs)-1]
+	return first[0] == 0 || last[1] == len(body)
+}
+
+// findDividers returns the banner/divider comment lines in text, deduped and
+// capped for a stable, bounded deny message.
+func findDividers(text string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(text, "\n") {
+		body, ok := commentBody(line)
+		if !ok || !isDivider(body) {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+		if len(out) == 5 {
+			break
+		}
+	}
+	return out
+}
 
 type hookInput struct {
 	ToolName  string `json:"tool_name"`
@@ -131,7 +199,10 @@ func decide(stdin []byte) (code int, stderr string) {
 			found = append(found, r)
 		}
 	}
-	if len(found) == 0 {
+
+	dividers := findDividers(text)
+
+	if len(found) == 0 && len(dividers) == 0 {
 		return 0, ""
 	}
 
@@ -140,9 +211,17 @@ func decide(stdin []byte) (code int, stderr string) {
 		where = "commit messages and PR/issue bodies"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "clod: ASCII only in %s. Decorative Unicode - replace and retry:\n", where)
-	for _, r := range found {
-		fmt.Fprintf(&b, "  U+%04X %q -> use %s\n", r, string(r), banned[r])
+	if len(found) > 0 {
+		fmt.Fprintf(&b, "clod: ASCII only in %s. Decorative Unicode - replace and retry:\n", where)
+		for _, r := range found {
+			fmt.Fprintf(&b, "  U+%04X %q -> use %s\n", r, string(r), banned[r])
+		}
+	}
+	if len(dividers) > 0 {
+		fmt.Fprintf(&b, "clod: divider/banner comments are slop in %s. Drop the rule -- name the section in prose, or split the file:\n", where)
+		for _, d := range dividers {
+			fmt.Fprintf(&b, "  %s\n", d)
+		}
 	}
 	return 2, b.String()
 }

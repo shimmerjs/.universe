@@ -1,0 +1,5 @@
+# keep: equality operators in a comment are runs of 3, below the rule threshold
+-- input.json --
+{"tool_name":"Edit","tool_input":{"file_path":"/x/y.go","new_string":"// returns true when a === b and c !== d"}}
+-- want --
+0

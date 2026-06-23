@@ -1,0 +1,5 @@
+# keep: command flags in a comment are double-dashes (run of 2), never a rule
+-- input.json --
+{"tool_name":"Edit","tool_input":{"file_path":"/x/y.go","new_string":"// run with --offline --no-daemon --keyring-append to harden the build"}}
+-- want --
+0

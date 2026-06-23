@@ -23,11 +23,11 @@ And: **a stylistic pass never changes behavior.** Deleting a comment, booster, o
 
 ## CHANNEL MAP (why this skill exists)
 
-The PreToolUse ASCII hook blocks decorative Unicode in file content (Write/Edit/MultiEdit) AND in git-commit / gh pr-issue-release authored prose (the Bash matcher). `includeCoAuthoredBy=false` strips the commit Co-authored-by trailer. What the hook still does NOT catch: decorative EMOJI (left unbanned so real-data emoji survive), the ASCII em-dash-CADENCE tic, attribution footers, ceremony/structure, and anything in chat replies or built-binary output. That residue is deslop's job:
+The PreToolUse hook blocks decorative Unicode AND banner/divider comments (`// ---- foo ----`, `# ====`) in file content (Write/Edit/MultiEdit), and decorative Unicode in git-commit / gh pr-issue-release authored prose (the Bash matcher). `includeCoAuthoredBy=false` strips the commit Co-authored-by trailer. What the hook still does NOT catch: decorative EMOJI (left unbanned so real-data emoji survive), the ASCII em-dash-CADENCE tic, gratuitous ALL-CAPS emphasis (a regex can't tell it from the user's own deliberate caps headers, so it is deliberately left to judgment here, not hard-blocked), attribution footers, ceremony/structure, and anything in chat replies or built-binary output. That residue is deslop's job:
 
 | Channel | Guarded? | Deslop focus |
 |---|---|---|
-| File content (Write/Edit/MultiEdit) | ASCII hook | semantic + structural slop; typography already handled |
+| File content (Write/Edit/MultiEdit) | ASCII hook | semantic + structural slop; ALL-CAPS emphasis; typography + divider comments already handled |
 | `git commit` message (Bash) | ASCII hook + trailer config | emoji, attribution footers, diff-narration, prefix theater (typography + Co-authored-by already handled) |
 | `gh pr`/`issue`/`release` body (Bash) | ASCII hook | emoji, footers, template scaffolding, "This PR..." (typography already handled) |
 | Chat replies | none | preamble, narration, sign-offs, Unicode, list-ification |
@@ -72,6 +72,7 @@ The PreToolUse ASCII hook blocks decorative Unicode in file content (Write/Edit/
 | Slop tell | Cut to | Keep |
 |---|---|---|
 | Booster / lexical tics: `powerful`, `seamless`, `robust`, `comprehensive`, `leverage`, `utilize`, `delve`; stacked `Furthermore,`/`Notably,`/`Moreover,`; `in today's fast-paced` | plain word or delete (`utilize`->`use`, `leverage`->`use`) | literal-technical uses -- a real test `harness`, a `robust` retry, `leverage` the noun |
+| Shouting caps: a plain word ALL-CAPS for emphasis mid-sentence (`do NOT`, `you MUST`, `this ALWAYS fails`), `IMPORTANT:`/`NOTE:`/`WARNING:` admonition labels. The hook deliberately does not block this (can't tell it from real caps), so it lands here. Applies to comments and docs you write, not just chat | lowercase it; let word choice or sentence shape carry the weight (`never edit X`, not `NEVER edit X`); drop the admonition label, just state the thing | acronyms/initialisms (HTTP, JSON, CAS, TUI), SCREAMING_SNAKE consts + env vars, a genuine status token (PASS/FAIL/TODO), the user's own deliberate caps headers and emphasis -- their register stays |
 | "Not just X, it's Y" + triads: `not only... but also`, `fast, reliable, and scalable`, every list landing on exactly 3 | drop the negated half; cut triads to the members carrying real content | a genuine contrast the reader needs; a factual list that really has 3 members |
 | Filler / throat-clearing: `essentially`, `basically`, `simply`; `it's worth noting that`, `let's dive in`, `with that out of the way` | delete; the sentence survives stronger | `just`/`only` with real scoping force, `typically` honestly quantifying, a load-bearing `because` |
 | Over-explanation: defining known terms (`CI (continuous integration)`), `in other words` restatement, explaining a code block then showing it | delete; trust the reader; explain only the non-obvious WHY | a genuinely ambiguous local acronym, a real WHY -- but don't pad correct jargon into a tutorial |

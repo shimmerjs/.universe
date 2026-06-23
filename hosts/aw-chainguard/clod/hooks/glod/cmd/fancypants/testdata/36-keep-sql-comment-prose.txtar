@@ -1,0 +1,5 @@
+# keep: a normal SQL/Lua "-- " comment with no rule run
+-- input.json --
+{"tool_name":"Edit","tool_input":{"file_path":"/x/q.sql","new_string":"-- select active users created before the cutoff"}}
+-- want --
+0

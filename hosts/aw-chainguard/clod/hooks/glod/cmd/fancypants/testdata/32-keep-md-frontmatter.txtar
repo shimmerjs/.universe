@@ -1,0 +1,5 @@
+# keep: Markdown frontmatter (--- is 3 chars, no comment leader) + an ATX heading
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/x/SKILL.md","content":"---\nname: foo\ndescription: bar\n---\n\n# Foo\n\nbody text\n"}}
+-- want --
+0

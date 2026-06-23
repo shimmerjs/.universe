@@ -57,9 +57,8 @@ const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
 } }
 if (set.has('intensity')) {
   const k = fromIntensity(flags.intensity)
-  // map onto whichever of this workflow's knobs exist; only override the unset ones.
-  for (const [flag, val] of [['votes', k.votes], ['verify', k.votes], ['fanout', k.fanout], ['passes', k.passes]])
-    if (flag in flags && !set.has(flag)) flags[flag] = val
+  // intensity scales votes (and the lenses count, below) -- this workflow's only knobs.
+  if (!set.has('votes')) flags.votes = k.votes
   if (!set.has('lenses') && flags.lenses && flags.lenses.count != null) flags.lenses = { count: k.fanout }
 }
 const stock = flags.subagents === 'stock'

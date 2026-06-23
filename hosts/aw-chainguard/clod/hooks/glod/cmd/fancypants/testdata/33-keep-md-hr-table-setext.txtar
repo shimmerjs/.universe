@@ -1,0 +1,6 @@
+# keep: a Markdown HR (------), a table separator (|---|), and a setext underline
+# (=====) all lack a comment leader, so none are flagged
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/x/doc.md","content":"## Section\n\n------\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nTitle\n=====\n"}}
+-- want --
+0

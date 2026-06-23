@@ -50,6 +50,10 @@ in
       # creep, unrequested files, fabricated APIs). Guardrail-driven so it never
       # strips real voice, real data, earned comments, or mutates behavior.
       deslop = ./skills/deslop/SKILL.md;
+      # Memory hygiene: audit the persistent memory index + per-fact files and
+      # prune one-off / superseded / repo-duplicated entries. Guardrailed
+      # (keep-when-unsure); answers the recurring manual "prune your memory" ask.
+      memory-prune = ./skills/memory-prune/SKILL.md;
     };
     mcpServers = {
       linear = {
@@ -66,7 +70,7 @@ in
     plugins = [ "${inputs.worktrunk}/plugins/worktrunk" ];
     settings = {
       apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
-      model = "opus-4-8";
+      model = "claude-opus-4-8[1m]";
       effortLevel = "xhigh";
       autoScrollEnabled = true;
       statusLine = {
@@ -86,18 +90,18 @@ in
       # Go hooks: format/syntax-gate on edit, build+vet gate on stop. Binaries are
       # nix-pinned (writeShellApplication runtimeInputs), so they never depend on PATH.
       hooks = {
-        # ASCII guard: deny decorative Unicode in anything clod writes, every
-        # project. Bash is matched too so it also covers git-commit messages and
-        # gh pr/issue/release bodies -- prose channels that bypass the file-write
-        # matcher (the hook self-filters to those subcommands; ~26ms/Bash call,
-        # almost all of it python startup).
+        # fancypants: deny decorative Unicode and banner/divider comments in
+        # anything clod writes, every project. Bash is matched too so it also
+        # covers git-commit messages and gh pr/issue/release bodies -- prose
+        # channels that bypass the file-write matcher (the hook self-filters to
+        # those subcommands).
         PreToolUse = [
           {
             matcher = "Write|Edit|MultiEdit|Bash";
             hooks = [
               {
                 type = "command";
-                command = "${hooks.glod}/bin/nofancyunicode";
+                command = "${hooks.glod}/bin/fancypants";
               }
             ];
           }
@@ -172,6 +176,9 @@ in
           "WebFetch(domain:d2lang.com)"
           "WebFetch(domain:terrastruct.com)"
 
+          "Bash(cue:*)"
+          "Bash(jq:*)"
+
           "Bash(go build:*)"
           "Bash(go doc:*)"
           "Bash(go mod:*)"
@@ -188,6 +195,8 @@ in
           "Bash(nix eval:*)"
           "Bash(nix flake:*)"
           "Bash(nix-shell:*)"
+          "Bash(darwin-rebuild:*)"
+          "Bash(home-manager:*)"
           "WebFetch(domain:discourse.nixos.org)"
           "WebFetch(domain:docs.rs)"
           "WebFetch(domain:github.com)"
@@ -202,11 +211,11 @@ in
       env = {
         CLAUDE_CODE_ENABLE_TELEMETRY = "0";
         # "inherit" disables the force, so normal resolution applies: the custom agents
-        # (no model: frontmatter) follow the main loop (Fable 5) and per-spawn / per-
-        # workflow model overrides work again. Tradeoff: the hardcoded-Haiku built-ins
-        # (Explore, claude-code-guide) drop back to Haiku -- the thing the old "opus"
-        # pin existed to override. Set "fable"/"best" to put those on Fable too, or
-        # "opus" to cap all fan-out at the cheaper Opus 4.8 ($5/$25 vs $10/$50).
+        # (no model: frontmatter) follow the main-loop model (the pin above, Opus 4.8)
+        # and per-spawn / per-workflow model: overrides work again. Tradeoff: the
+        # hardcoded-Haiku built-ins (Explore, claude-code-guide) drop back to Haiku --
+        # the thing a concrete model here would override. Set one to force all fan-out
+        # onto that model instead.
         CLAUDE_CODE_SUBAGENT_MODEL = "inherit";
       };
 
@@ -282,16 +291,15 @@ in
     "*.pyc"
   ];
 
-  # Statuslines and the ultra-concise output style, plus every workflow script
-  # auto-deployed from ./workflows (see ./workflows/default.nix). No native module
-  # option for workflows or output-styles, so home.file.
+  # Statuslines, keybindings, and every workflow script auto-deployed from
+  # ./workflows (see ./workflows/default.nix). No native module option for
+  # workflows, so home.file.
   home.file = {
     ".claude/statusline.sh" = {
       executable = true;
       source = ./statusline.sh;
     };
     ".claude/subagent-statusline".source = "${subagentStatusline}/bin/subagent-statusline";
-    ".claude/output-styles/ultra-concise.md".source = ./output-styles/ultra-concise.md;
     ".claude/keybindings.json".source = ./keybindings.json;
   }
   // (import ./workflows { inherit lib; });

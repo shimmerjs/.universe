@@ -1,0 +1,7 @@
+# block: a shell section banner; the shebang line must NOT trip the check
+-- input.json --
+{"tool_name":"Write","tool_input":{"file_path":"/x/bench.sh","content":"#!/usr/bin/env bash\n# ---- Section 1: daemon-free, COLD ----\necho hi\n"}}
+-- want --
+2
+-- want_stderr --
+divider/banner
