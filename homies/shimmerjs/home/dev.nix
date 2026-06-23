@@ -24,6 +24,7 @@
     graphviz
     d2
     asciinema
+    asciinema-agg # agg: render asciicasts to gif
     vhs
 
     nb
