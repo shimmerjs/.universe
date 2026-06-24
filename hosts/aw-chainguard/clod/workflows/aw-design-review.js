@@ -1,55 +1,53 @@
 export const meta = {
   name: 'aw-design-review',
-  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart= intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses with a refute-default verifier; propose a candidate if given a problem; reconcile confirmed flaws into a prioritized change list. word=value flags.',
+  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart= intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses with a refute-default verifier; propose a candidate if given a problem; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked',
   phases: [{ title: 'Frame' }, { title: 'Critique' }, { title: 'Verify' }, { title: 'Synthesize' }],
+  flags: {
+    design:      { short: 'd', type: 'str',  default: '', help: 'doc path OR a problem statement (else the prompt)' },
+    'code-root': { short: 'r', type: 'str',  default: '.', help: 'code root to ground flaws in' },
+    lenses:      { short: 'l', type: 'axes', default: { list: ['feasibility', 'semantics', 'scale', 'hermeticity', 'ordering'] }, help: 'stress-test lenses; a single N auto-derives N' },
+    locked:      { short: 'k', type: 'str',  default: '', help: 'path to a CONSTRAINTS / LOCKED block' },
+    votes:       { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per flaw' },
+    priorart:    { short: 'o', type: 'str',  default: '', help: 'priorart=on folds a prior-art pass into the critique' },
+    intensity:   { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
+    subagents:   { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
+  },
 }
 
 // Examples:
 //   design-review design=docs/DESIGN.md code-root=internal/can
 //   design-review code-root=internal/gaffe lenses=feasibility,scale should gaffe materialize lazily?
 
-// ── informal flags: <word>=<value> up front, then the optional focus prompt. ──
+// flags: <word>=<value> or <short>=<value>, pulled from ANYWHERE in the prompt;
+// remaining tokens (in order) are the focus prompt. unknown word=value stays verbatim.
+// canonical parser -- copied byte-for-byte into every aw-*.js (no runtime imports).
 function coerce(v, s) {
-  if (s.type === 'int') {
-    let n = parseInt(v, 10); if (isNaN(n)) n = s.default
-    if (s.min != null) n = Math.max(s.min, n)
-    if (s.max != null) n = Math.min(s.max, n)
-    return n
-  }
+  if (s.type === 'int')  { let n = parseInt(v, 10); if (isNaN(n)) n = s.default;
+                           if (s.min != null) n = Math.max(s.min, n);
+                           if (s.max != null) n = Math.min(s.max, n); return n }
   if (s.type === 'list') { const _p = String(v).split(',').map(x => x.trim()).filter(Boolean); return _p.length ? _p : s.default }
-  if (s.type === 'axes') {
-    const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
-    if (p.length === 0) return s.default
-    return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p }
-  }
+  if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
+                           if (!p.length) return s.default
+                           return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
   return String(v)
 }
 function parseFlags(raw, spec) {
-  const flags = {}; for (const k in spec) flags[k] = spec[k].default
-  const set = new Set()
+  const flags = {}, alias = {}
+  for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
+  const set = new Set(), keep = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
-  let i = 0
-  for (; i < toks.length; i++) {
-    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
-    if (!m || !(m[1] in spec)) break
-    flags[m[1]] = coerce(m[2], spec[m[1]])
-    set.add(m[1])
+  for (const t of toks) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
+    const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
+    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: toks.slice(i).join(' '), set }
+  return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, {
-  design: { type: 'str', default: '' },                          // doc path OR a problem statement (falls back to the prompt)
-  'code-root': { type: 'str', default: '.' },
-  lenses: { type: 'axes', default: { list: ['feasibility', 'semantics', 'scale', 'hermeticity', 'ordering'] } },
-  locked: { type: 'str', default: '' },                          // path to a CONSTRAINTS / LOCKED block
-  votes: { type: 'int', default: 3, min: 1, max: 5 },            // skeptics per flaw (a fatal veto must not rest on one vote)
-  priorart: { type: 'str', default: '' },                        // priorart=on: fold a prior-art pass into the critique
-  intensity: { type: 'int', default: 5, min: 0, max: 10 },
-  subagents: { type: 'str', default: 'custom' },
-})
+const { flags, prompt, set } = parseFlags(args, meta.flags)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.

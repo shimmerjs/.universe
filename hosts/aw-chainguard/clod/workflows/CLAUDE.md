@@ -3,9 +3,11 @@
 Saved dynamic workflows (`~/.claude/workflows/*.js`) are deployed from this directory via nix. When you write or edit one for me, follow these.
 
 ## HOUSE ARG CONVENTION
-- Informal `word=value` flags up front: no dashes, space-separated, comma-separated for lists. The prompt is everything from the first token that isn't a known `word=value`.
-- Keep to ~4 flags, each with a default and a clamp. Canonical parser: `aw-research.js` -- copy its `parseFlags`/`coerce`.
-- Example: `aw-research fanout=8 passes=3 breadth=web,code <question>`.
+- Informal flags as `word=value` (or `short=value`): no dashes, space-separated, comma-separated for lists. Flags are pulled from ANYWHERE in the prompt -- a known long name or registered short alias in any token is consumed; every other token (in original order) forms the prompt. An unknown `word=value` token stays in the prompt verbatim. There is no escape hatch, so a prose token that collides with a real flag name (`votes=high`) IS consumed and stripped -- accepted because the flag keys are a small, unusual closed set and you are the only caller.
+- Flag specs are the single source of truth and live in `meta.flags` (a pure literal: `{ <long>: { short, type, default, min, max, choices, help } }`). The inlined `parseFlags(args, meta.flags)` reads them at runtime; the cheatsheet generator extracts the same `meta` block, so the two never drift. Keep `meta` a pure literal whose closing `}` sits at column 0 -- the cheatsheet extractor terminates on the first newline-then-`}`.
+- Every flag carries a short AND a long form. Shared concepts share a letter across workflows (`intensity=i`, `subagents=s`, `lenses=l`, `votes`/`verify=v`, `passes=p`, `fanout=f`, `breadth=b`, `areas=a`); workflow-specific flags take a mnemonic letter that is unique WITHIN that workflow. The `clod-workflows-<host>` flake check fails on a within-workflow short collision or a flag missing its short.
+- Keep to ~4-8 flags, each with a default and a clamp. Canonical parser: `aw-research.js` -- copy its `parseFlags`/`coerce` verbatim (they are byte-identical across every aw-*.js).
+- Example: `aw-research fanout=8 passes=3 breadth=web,code <question>` (equivalently `f=8 p=3 b=web,code`).
 - Two cross-cutting flags every workflow carries: `intensity=0..10` (one knob that scales the explicit fan-out/vote/pass knobs you did not set; tuned defaults stand when omitted) and `subagents=custom|stock` (`stock` drops the custom agent types so every agent() falls back to the default workflow subagent).
 
 ## BUILD VERIFICATION IN -- THE ANTI-PATTERNS THAT KEEP BITING

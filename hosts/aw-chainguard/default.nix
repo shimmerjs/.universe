@@ -46,9 +46,21 @@
 
       # Trust the chainguard tap so interactive brew commands (bundle, upgrade,
       # info) can load its formulae under Homebrew >=6 tap trust enforcement.
-      home.file.".homebrew/trust.json".text = builtins.toJSON {
-        trustedtaps = [ "chainguard-dev/tap" ];
-      };
+      # Must be a plain user-owned file, not a home.file symlink into the nix store:
+      # Homebrew >=6 refuses to write its trust store when the containing dir isn't
+      # owned by the current user, and a read-only store symlink trips that check.
+      # An activation step installs it instead; the declared set wins on each switch.
+      home.activation.homebrewTrust =
+        let
+          trust = pkgs.writeText "homebrew-trust.json" (builtins.toJSON {
+            trustedtaps = [ "chainguard-dev/tap" ];
+          });
+        in
+        lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+          $DRY_RUN_CMD mkdir -p "$HOME/.homebrew"
+          $DRY_RUN_CMD rm -f "$HOME/.homebrew/trust.json"
+          $DRY_RUN_CMD install -m600 ${trust} "$HOME/.homebrew/trust.json"
+        '';
 
       home.packages = with pkgs; [
         terraform

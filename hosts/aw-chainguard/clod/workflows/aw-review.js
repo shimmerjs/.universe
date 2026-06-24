@@ -1,54 +1,53 @@
 export const meta = {
   name: 'aw-review',
-  description: '[scope=diff lenses=correctness,perf,security votes=3 passes=2 severity-floor=med intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags.',
-  whenToUse: 'Reviewing a diff or path; tune scope, lenses, votes, passes, severity-floor',
+  description: '[scope=diff lang=auto lenses=correctness,error-handling,concurrency,security votes=3 passes=2 severity-floor=med intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags (long or short, anywhere in the prompt).',
+  whenToUse: 'Reviewing a diff or path; tune scope, lang, lenses, votes, passes, severity-floor',
   phases: [{ title: 'Scope' }, { title: 'Review' }, { title: 'Verify' }, { title: 'Synthesize' }],
+  flags: {
+    scope:  { short: 'c', type: 'str',  default: 'diff', help: 'PR ref, git range, or path' },
+    lang:   { short: 'g', type: 'str',  default: 'auto', help: 'language for the idioms lens; auto-detected from the change' },
+    lenses: { short: 'l', type: 'axes', default: { list: ['correctness', 'error-handling', 'concurrency', 'security'] }, help: 'review dimensions; a single N auto-derives N lenses' },
+    votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
+    passes: { short: 'p', type: 'int',  default: 2, min: 1, max: 6, help: 'loop-until-dry re-review rounds' },
+    'severity-floor': { short: 'y', type: 'str', default: 'med', choices: ['low', 'med', 'high'], help: 'lowest severity that gets verified' },
+    intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/passes/lens-count' },
+    subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
+  },
 }
 
 // Examples:
 //   review scope=#41344 votes=3
 //   review scope=HEAD~5..HEAD lenses=correctness,security severity-floor=high
 
-// ── informal flags: <word>=<value> up front, then the optional focus prompt. ──
+// flags: <word>=<value> or <short>=<value>, pulled from ANYWHERE in the prompt;
+// remaining tokens (in order) are the focus prompt. unknown word=value stays verbatim.
+// canonical parser -- copied byte-for-byte into every aw-*.js (no runtime imports).
 function coerce(v, s) {
-  if (s.type === 'int') {
-    let n = parseInt(v, 10); if (isNaN(n)) n = s.default
-    if (s.min != null) n = Math.max(s.min, n)
-    if (s.max != null) n = Math.min(s.max, n)
-    return n
-  }
+  if (s.type === 'int')  { let n = parseInt(v, 10); if (isNaN(n)) n = s.default;
+                           if (s.min != null) n = Math.max(s.min, n);
+                           if (s.max != null) n = Math.min(s.max, n); return n }
   if (s.type === 'list') { const _p = String(v).split(',').map(x => x.trim()).filter(Boolean); return _p.length ? _p : s.default }
-  if (s.type === 'axes') {
-    const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
-    if (p.length === 0) return s.default
-    return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p }
-  }
+  if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
+                           if (!p.length) return s.default
+                           return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
   return String(v)
 }
 function parseFlags(raw, spec) {
-  const flags = {}; for (const k in spec) flags[k] = spec[k].default
-  const set = new Set()
+  const flags = {}, alias = {}
+  for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
+  const set = new Set(), keep = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
-  let i = 0
-  for (; i < toks.length; i++) {
-    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
-    if (!m || !(m[1] in spec)) break
-    flags[m[1]] = coerce(m[2], spec[m[1]])
-    set.add(m[1])
+  for (const t of toks) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
+    const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
+    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: toks.slice(i).join(' '), set }
+  return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, {
-  scope: { type: 'str', default: 'diff' },                       // PR ref, git range, or path
-  lenses: { type: 'axes', default: { list: ['correctness', 'perf', 'security'] } },
-  votes: { type: 'int', default: 3, min: 1, max: 5 },
-  passes: { type: 'int', default: 2, min: 1, max: 6 },           // loop-until-dry rounds (re-review for issues not yet found)
-  'severity-floor': { type: 'str', default: 'med' },             // high|med|low: floor that gets verified
-  intensity: { type: 'int', default: 5, min: 0, max: 10 },
-  subagents: { type: 'str', default: 'custom' },
-})
+const { flags, prompt, set } = parseFlags(args, meta.flags)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.
@@ -72,15 +71,18 @@ const SKEPTIC = stock ? undefined : 'skeptic'
 // Phase 0: derive the concrete change-set from scope (never hardcode a file list).
 phase('Scope')
 const SCOPE = { type: 'object', required: ['target', 'files'], properties: {
-  target: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } } }
+  target: { type: 'string' }, files: { type: 'array', items: { type: 'string' } },
+  lang: { type: 'string' } } }
 const scoped = await agent(
   'Resolve the review scope "' + flags.scope + '" into a concrete change-set. ' +
   'If it is a PR number or git range, run git to get the changed files; if a path, list the relevant source files (git ls-files). ' +
-  'Return the human label (target) and the file list.',
+  'Return the human label (target), the file list, and lang = the dominant source language of the change (e.g. go, rust, nix, cue, python, ts).',
   { label: 'scope', phase: 'Scope', agentType: REVIEWER, schema: SCOPE })
 const focus = prompt || 'the change as a whole'
+const lang = flags.lang !== 'auto' ? flags.lang : (scoped.lang || '')
 
-// Resolve lenses: explicit list, or derive N from the change-set.
+// Resolve lenses: explicit list, or derive N from the change-set. When the default
+// list stands (lenses not set by hand), append a language-specific idioms lens.
 let lenses = flags.lenses.list
 if (!lenses) {
   const L = { type: 'object', required: ['lenses'], properties: { lenses: { type: 'array', items: { type: 'string' } } } }
@@ -88,8 +90,10 @@ if (!lenses) {
     'Propose ' + flags.lenses.count + ' orthogonal review dimensions for this change (target: ' + scoped.target + '). Distinct angles, no overlap.',
     { label: 'derive-lenses', phase: 'Scope', agentType: REVIEWER, schema: L })
   lenses = d.lenses
+} else if (!set.has('lenses') && lang) {
+  lenses = lenses.concat(lang + ' idioms & footguns')
 }
-log('review: scope=' + scoped.target + ' lenses=' + lenses.join('+') + ' votes=' + flags.votes + ' passes=' + flags.passes + ' floor=' + flags['severity-floor'])
+log('review: scope=' + scoped.target + ' lang=' + (lang || 'n/a') + ' lenses=' + lenses.join('+') + ' votes=' + flags.votes + ' passes=' + flags.passes + ' floor=' + flags['severity-floor'])
 
 const FIND = { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
   type: 'object', required: ['file', 'desc', 'severity'], properties: {

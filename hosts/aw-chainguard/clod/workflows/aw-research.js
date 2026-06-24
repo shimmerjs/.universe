@@ -1,46 +1,51 @@
 export const meta = {
   name: 'aw-research',
-  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes and adversarial verification; informal word=value flags',
+  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes and adversarial verification; informal word=value flags (long or short, anywhere in the prompt)',
   whenToUse: 'Deep multi-source research; tune fanout, passes, verify, breadth',
   phases: [{ title: 'Search' }, { title: 'Verify' }, { title: 'Synthesize' }],
+  flags: {
+    fanout:    { short: 'f', type: 'int',  default: 6, min: 1, max: 16, help: 'parallel searchers' },
+    passes:    { short: 'p', type: 'int',  default: 2, min: 1, max: 6,  help: 'loop-until-dry rounds' },
+    verify:    { short: 'v', type: 'int',  default: 3, min: 0, max: 5,  help: 'skeptics per claim (0 disables verification)' },
+    breadth:   { short: 'b', type: 'list', default: ['web', 'code', 'docs'], help: 'search angles' },
+    intensity: { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset fanout/verify/passes' },
+    subagents: { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
+  },
 }
 
 // Examples:
 //   research how does gopls index large modules
 //   research fanout=8 passes=3 breadth=web,code how does X work
 
-// ── informal flags: <word>=<value> (no spaces), space-separated, up front.
-//    prompt begins at the first token that isn't a known <word>=<value>. ──
+// flags: <word>=<value> or <short>=<value>, pulled from ANYWHERE in the prompt;
+// remaining tokens (in order) are the prompt. unknown word=value stays verbatim.
+// canonical parser -- copied byte-for-byte into every aw-*.js (no runtime imports).
 function coerce(v, s) {
   if (s.type === 'int')  { let n = parseInt(v, 10); if (isNaN(n)) n = s.default;
                            if (s.min != null) n = Math.max(s.min, n);
                            if (s.max != null) n = Math.min(s.max, n); return n }
   if (s.type === 'list') { const _p = String(v).split(',').map(x => x.trim()).filter(Boolean); return _p.length ? _p : s.default }
+  if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
+                           if (!p.length) return s.default
+                           return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
   return String(v)
 }
 function parseFlags(raw, spec) {
-  const flags = {}; for (const k in spec) flags[k] = spec[k].default
-  const set = new Set()
+  const flags = {}, alias = {}
+  for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
+  const set = new Set(), keep = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
-  let i = 0
-  for (; i < toks.length; i++) {
-    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])  // word=value, no spaces
-    if (!m || !(m[1] in spec)) break                          // first non-flag token -> prompt starts here
-    flags[m[1]] = coerce(m[2], spec[m[1]])
-    set.add(m[1])
+  for (const t of toks) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
+    const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
+    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: toks.slice(i).join(' '), set }
+  return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, {
-  fanout:  { type: 'int',  default: 6, min: 1, max: 16 },        // parallel searchers
-  passes:  { type: 'int',  default: 2, min: 1, max: 6  },        // loop-until-dry rounds
-  verify:  { type: 'int',  default: 3, min: 0, max: 5  },        // skeptics per claim
-  breadth: { type: 'list', default: ['web', 'code', 'docs'] },   // search angles (default ALL THREE)
-  intensity: { type: 'int', default: 5, min: 0, max: 10 },
-  subagents: { type: 'str', default: 'custom' },
-})
+const { flags, prompt, set } = parseFlags(args, meta.flags)
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.
 const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {

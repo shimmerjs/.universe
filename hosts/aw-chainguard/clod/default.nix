@@ -2,6 +2,7 @@
   lib,
   pkgs,
   inputs,
+  config,
   ...
 }:
 let
@@ -16,6 +17,30 @@ let
     src = ./subagent-statusline;
     vendorHash = null;
   };
+  # clod-cheat: a --help-style dump of the workflow cheatsheet, rendered from
+  # ~/.claude/workflows/cheatsheet.json (generated from each workflow's meta.flags
+  # by ./workflows/cheatsheet.nix). Optional arg filters by workflow name. Bound to
+  # a kitty overlay key (see ../../../homies/shimmerjs/home/kitty/default.nix).
+  clodCheat = pkgs.writeShellApplication {
+    name = "clod-cheat";
+    runtimeInputs = [ pkgs.jq ];
+    text = ''
+      sheet="$HOME/.claude/workflows/cheatsheet.json"
+      [ -f "$sheet" ] || { echo "no cheatsheet at $sheet (rebuild clod)" >&2; exit 1; }
+      jq -r --arg f "''${1:-}" '
+        .workflows[]
+        | select($f == "" or (.name | ascii_downcase | contains($f | ascii_downcase)))
+        | "\(.name)  --  \(.description)",
+          "  when: \(.whenToUse)",
+          (.flags[] | "    \(.short)|\(.name)  \(.type)  default=[\(.default)]\(if .range != "" then "  \(.range)" else "" end)  \(.help)"),
+          (.examples[] | "    e.g. \(.)"),
+          ""
+      ' "$sheet"
+    '';
+  };
+  # Harness-variant experiment system: per-variant CLAUDE_CONFIG_DIR launchers +
+  # config dirs (clod-<name>) with segregated transcripts for cross-variant stats.
+  variants = import ./variants.nix { inherit lib pkgs config; };
 in
 {
   programs.claude-code = {
@@ -291,9 +316,11 @@ in
     "*.pyc"
   ];
 
-  # Statuslines, keybindings, and every workflow script auto-deployed from
-  # ./workflows (see ./workflows/default.nix). No native module option for
-  # workflows, so home.file.
+  home.packages = [ clodCheat ] ++ variants.launchers;
+
+  # Statuslines, keybindings, the generated workflow cheatsheet, and every workflow
+  # script auto-deployed from ./workflows (see ./workflows/default.nix). No native
+  # module option for workflows, so home.file.
   home.file = {
     ".claude/statusline.sh" = {
       executable = true;
@@ -301,6 +328,10 @@ in
     };
     ".claude/subagent-statusline".source = "${subagentStatusline}/bin/subagent-statusline";
     ".claude/keybindings.json".source = ./keybindings.json;
+    # cheatsheet.json: generated from every workflow's meta.flags at build time;
+    # consumed by `clod-cheat` and the kitty overlay key.
+    ".claude/workflows/cheatsheet.json".source = import ./workflows/cheatsheet.nix { inherit pkgs; };
   }
-  // (import ./workflows { inherit lib; });
+  // (import ./workflows { inherit lib; })
+  // variants.configDirs;
 }

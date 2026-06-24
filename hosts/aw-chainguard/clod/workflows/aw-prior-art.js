@@ -1,51 +1,49 @@
 export const meta = {
   name: 'aw-prior-art',
-  description: '[areas=5 verify-scope=load-bearing intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web), refute-verify the load-bearing claims, synthesize a cited report with a corrections section. word=value flags; the prompt is the question.',
+  description: '[areas=5 verify-scope=load-bearing intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web), refute-verify the load-bearing claims, synthesize a cited report with a corrections section. word=value flags (long or short, anywhere in the prompt); the prompt is the question.',
   whenToUse: 'Researching how others solve X; tune areas, verify-scope',
   phases: [{ title: 'Plan' }, { title: 'Dig' }, { title: 'Verify' }, { title: 'Synthesize' }],
+  flags: {
+    areas:          { short: 'a', type: 'axes', default: { count: 5 }, help: 'investigation areas, or N to auto-derive' },
+    'verify-scope': { short: 'c', type: 'str',  default: 'load-bearing', choices: ['all', 'load-bearing', 'none'], help: 'which claims get refuted' },
+    intensity:      { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling the unset area count' },
+    subagents:      { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
+  },
 }
 
 // Examples:
 //   prior-art how do build systems model remote CAS GC
 //   prior-art areas=bazel,buck2,nix verify-scope=load-bearing hermetic go test
 
-// ── informal flags: <word>=<value> up front, then the research question. ──
+// flags: <word>=<value> or <short>=<value>, pulled from ANYWHERE in the prompt;
+// remaining tokens (in order) are the research question. unknown word=value stays verbatim.
+// canonical parser -- copied byte-for-byte into every aw-*.js (no runtime imports).
 function coerce(v, s) {
-  if (s.type === 'int') {
-    let n = parseInt(v, 10); if (isNaN(n)) n = s.default
-    if (s.min != null) n = Math.max(s.min, n)
-    if (s.max != null) n = Math.min(s.max, n)
-    return n
-  }
+  if (s.type === 'int')  { let n = parseInt(v, 10); if (isNaN(n)) n = s.default;
+                           if (s.min != null) n = Math.max(s.min, n);
+                           if (s.max != null) n = Math.min(s.max, n); return n }
   if (s.type === 'list') { const _p = String(v).split(',').map(x => x.trim()).filter(Boolean); return _p.length ? _p : s.default }
-  if (s.type === 'axes') {
-    const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
-    if (p.length === 0) return s.default
-    return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p }
-  }
+  if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
+                           if (!p.length) return s.default
+                           return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
   return String(v)
 }
 function parseFlags(raw, spec) {
-  const flags = {}; for (const k in spec) flags[k] = spec[k].default
-  const set = new Set()
+  const flags = {}, alias = {}
+  for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
+  const set = new Set(), keep = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
-  let i = 0
-  for (; i < toks.length; i++) {
-    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
-    if (!m || !(m[1] in spec)) break
-    flags[m[1]] = coerce(m[2], spec[m[1]])
-    set.add(m[1])
+  for (const t of toks) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
+    const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
+    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: toks.slice(i).join(' '), set }
+  return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, {
-  areas: { type: 'axes', default: { count: 5 } },                // investigation areas, or N to auto-derive
-  'verify-scope': { type: 'str', default: 'load-bearing' },      // all | load-bearing | none
-  intensity: { type: 'int', default: 5, min: 0, max: 10 },
-  subagents: { type: 'str', default: 'custom' },
-})
+const { flags, prompt, set } = parseFlags(args, meta.flags)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.

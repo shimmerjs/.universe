@@ -1,52 +1,50 @@
 export const meta = {
   name: 'aw-audit',
-  description: '[repo=. lang=go lenses=bug,test-gap,perf votes=3 intensity=5 subagents=custom|stock] Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf; refute-verify each; emit a p0/p1/p2 fix list. word=value flags.',
+  description: '[repo=. lang=go lenses=bug,test-gap,perf votes=3 intensity=5 subagents=custom|stock] Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf; refute-verify each; emit a p0/p1/p2 fix list. word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Auditing a rebuilt component; tune repo, lang, lenses, votes',
   phases: [{ title: 'Map' }, { title: 'Audit' }, { title: 'Verify' }, { title: 'Synthesize' }],
+  flags: {
+    repo:   { short: 'r', type: 'str',  default: '.', help: 'repo or path root to audit' },
+    lang:   { short: 'g', type: 'str',  default: 'go', help: 'primary language' },
+    lenses: { short: 'l', type: 'axes', default: { list: ['bug', 'test-gap', 'perf'] }, help: 'audit dimensions; a single N auto-derives N lenses' },
+    votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
+    intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
+    subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
+  },
 }
 
 // Examples:
 //   audit repo=. lang=go lenses=bug,test-gap,perf votes=5
 
-// ── informal flags: <word>=<value> up front, then the optional focus prompt. ──
+// flags: <word>=<value> or <short>=<value>, pulled from ANYWHERE in the prompt;
+// remaining tokens (in order) are the focus prompt. unknown word=value stays verbatim.
+// canonical parser -- copied byte-for-byte into every aw-*.js (no runtime imports).
 function coerce(v, s) {
-  if (s.type === 'int') {
-    let n = parseInt(v, 10); if (isNaN(n)) n = s.default
-    if (s.min != null) n = Math.max(s.min, n)
-    if (s.max != null) n = Math.min(s.max, n)
-    return n
-  }
+  if (s.type === 'int')  { let n = parseInt(v, 10); if (isNaN(n)) n = s.default;
+                           if (s.min != null) n = Math.max(s.min, n);
+                           if (s.max != null) n = Math.min(s.max, n); return n }
   if (s.type === 'list') { const _p = String(v).split(',').map(x => x.trim()).filter(Boolean); return _p.length ? _p : s.default }
-  if (s.type === 'axes') {
-    const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
-    if (p.length === 0) return s.default
-    return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p }
-  }
+  if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
+                           if (!p.length) return s.default
+                           return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
   return String(v)
 }
 function parseFlags(raw, spec) {
-  const flags = {}; for (const k in spec) flags[k] = spec[k].default
-  const set = new Set()
+  const flags = {}, alias = {}
+  for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
+  const set = new Set(), keep = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
-  let i = 0
-  for (; i < toks.length; i++) {
-    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(toks[i])
-    if (!m || !(m[1] in spec)) break
-    flags[m[1]] = coerce(m[2], spec[m[1]])
-    set.add(m[1])
+  for (const t of toks) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
+    const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
+    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: toks.slice(i).join(' '), set }
+  return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, {
-  repo: { type: 'str', default: '.' },
-  lang: { type: 'str', default: 'go' },
-  lenses: { type: 'axes', default: { list: ['bug', 'test-gap', 'perf'] } },
-  votes: { type: 'int', default: 3, min: 1, max: 5 },
-  intensity: { type: 'int', default: 5, min: 0, max: 10 },
-  subagents: { type: 'str', default: 'custom' },
-})
+const { flags, prompt, set } = parseFlags(args, meta.flags)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.

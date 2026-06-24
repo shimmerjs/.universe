@@ -1,9 +1,9 @@
-# PostToolUse(Bash): after a `go build`, move the stray binary THIS build dropped
+# PostToolUse(Bash): after a `go build`, move the stray binary this build dropped
 # in the source tree into a gitignored .claude/bin/ so it can't be committed.
 #
 # Narrow on purpose: the candidate set is only the build's `-o` target, or (no -o)
-# the untracked executables at the TOP of the build's working dir -- where a bare
-# `go build` drops its default output. It is NOT a repo-wide sweep: an unrelated
+# the untracked executables at the top of the build's working dir -- where a bare
+# `go build` drops its default output. It is not a repo-wide sweep: an unrelated
 # untracked binary elsewhere in the tree is left alone. Only untracked, non-ignored
 # Mach-O/ELF executables are moved; a tracked or deliberately-ignored binary is
 # never touched. Non-blocking; reports what it moved. Tools (git, file, jq) come
@@ -17,7 +17,7 @@ cwd=$(jq -r '.cwd // empty' <<<"$input")
 [[ -n "$cwd" && -d "$cwd" ]] || cwd="$PWD"
 root=$(cd "$cwd" && git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
-# Candidates: only what THIS invocation could have produced.
+# Candidates: only what this invocation could have produced.
 candidates=()
 if [[ "$cmd" =~ -o[[:space:]=]+([^[:space:]]+) ]]; then
   # explicit output target, resolved relative to the build cwd

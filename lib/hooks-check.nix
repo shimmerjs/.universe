@@ -1,6 +1,6 @@
 # Behavioral test for the go-build-sweep PostToolUse hook. It must move the stray
-# binary THIS build dropped (the build cwd's default output, or an -o target) into
-# the gitignored .claude/bin/, and must NOT touch an unrelated untracked binary
+# binary this build dropped (the build cwd's default output, or an -o target) into
+# the gitignored .claude/bin/, and must not touch an unrelated untracked binary
 # elsewhere in the tree, nor a tracked binary. Wired by mkchecks.nix into a
 # `clod-hooks-<host>` flake check.
 { pkgs, goBuildSweep }:

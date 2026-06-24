@@ -32,6 +32,8 @@ in
       "f2" =
         "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
       "kitty_mod+f3" = "command_palette";
+      # clod workflow cheatsheet, rendered from each aw-*.js meta.flags
+      "f4" = ''launch --type=overlay sh -c "clod-cheat | less -R"'';
 
       # Clipboard
       "cmd+c" = "copy_or_noop";

@@ -55,6 +55,27 @@ let
            }; }
     else null;
 
+  # Build the host's workflow cheatsheet (cheatsheet.nix -> cheatsheet-gen.mjs)
+  # and assert one entry per aw-*.js, each with flags. Returns null if the host
+  # has no clod/workflows/cheatsheet.nix.
+  mkCheatsheetCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    workflowsDir = ../hosts/${hostname}/clod/workflows;
+    cheatsheetNix = workflowsDir + "/cheatsheet.nix";
+    expected = builtins.length (builtins.attrNames (lib.filterAttrs
+      (n: t: t == "regular" && lib.hasPrefix "aw-" n && lib.hasSuffix ".js" n)
+      (builtins.readDir workflowsDir)));
+  in if builtins.pathExists cheatsheetNix
+    then { inherit system; name = "clod-cheatsheet-${hostname}";
+           value = import ./cheatsheet-check.nix {
+             inherit pkgs;
+             cheatsheet = import cheatsheetNix { inherit pkgs; };
+             expected = toString expected;
+           }; }
+    else null;
+
   # Smoke-test a host's clod statusline (bash syntax + session-title layout).
   # Returns null if the host has no clod/statusline.sh.
   mkStatuslineCheck = hostname: config: let
@@ -81,7 +102,7 @@ let
            value = import ./hooks-check.nix { inherit pkgs; goBuildSweep = hooks.goBuildSweep; }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkStatuslineCheck mkHooksCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
