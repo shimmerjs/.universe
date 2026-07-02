@@ -41,6 +41,7 @@
     };
     shellAliases = {
       ls = "ls -A --color=auto";
+      clod = "claude";
     };
     history = {
       save = 1000000000;

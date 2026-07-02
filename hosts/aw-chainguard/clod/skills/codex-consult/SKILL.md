@@ -38,10 +38,10 @@ Bash fallback when MCP isn't available or you need a one-shot:
 codex review --base main         # or: --uncommitted | --commit <sha>
 
 # read-only consult, output to a file you then read and verify
-codex exec -s read-only -a never -o /tmp/codex-result.txt "<one-line intent + question>"
+codex exec -s read-only -o /tmp/codex-result.txt "<one-line intent + question>"
 ```
 
-Defaults: `-s read-only` (sandbox) and `-a never` (no auto-approval). Do NOT hand codex a workspace-write path on the strength of a prompt instruction -- if it needs to write, that's a real permission decision; surface it to me first. Effort rides on config (`-c model_reasoning_effort=high|xhigh`), there's no dedicated flag. Don't hardcode a model string in your invocation if a profile/default is configured -- let the configured default pick it.
+Default: `-s read-only` (sandbox). exec is non-interactive and has no approval flag -- the sandbox is the only guardrail, so keep it read-only. Do NOT hand codex a workspace-write path on the strength of a prompt instruction -- if it needs to write, that's a real permission decision; surface it to me first. Effort rides on config (`-c model_reasoning_effort=high|xhigh`), there's no dedicated flag. Don't hardcode a model string in your invocation if a profile/default is configured -- let the configured default pick it.
 
 ## THREAD HYGIENE
 

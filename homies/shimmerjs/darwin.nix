@@ -130,6 +130,7 @@
         telegram-desktop
         # Signal
         signal-cli
+        betterdisplay
       ];
 
       universe.home.rectangle = {

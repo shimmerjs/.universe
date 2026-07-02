@@ -38,14 +38,12 @@ let
       ' "$sheet"
     '';
   };
-  # Harness-variant experiment system: per-variant CLAUDE_CONFIG_DIR launchers +
-  # config dirs (clod-<name>) with segregated transcripts for cross-variant stats.
-  variants = import ./variants.nix { inherit lib pkgs config; };
 in
 {
   programs.claude-code = {
     enable = true;
     context = ./SYSTEM_PROMPT.md;
+
     agents = {
       researcher = ./agents/researcher.md;
       skeptic = ./agents/skeptic.md;
@@ -53,9 +51,7 @@ in
       designer = ./agents/designer.md;
       mapper = ./agents/mapper.md;
     };
-    # codex-consult skill lives at ./skills/codex-consult/SKILL.md but is NOT wired
-    # yet - codex isn't configured. To enable: add the `codex` skill line back here,
-    # plus a `codex` MCP server (or Bash(codex ...) perms) so the calls don't prompt.
+
     skills = {
       # Cross-session/compaction continuity. Model-authored handoff with a fixed
       # schema (VERIFIED vs ASSUMED, next action), written to the work-docs home
@@ -79,32 +75,58 @@ in
       # prune one-off / superseded / repo-duplicated entries. Guardrailed
       # (keep-when-unsure); answers the recurring manual "prune your memory" ask.
       memory-prune = ./skills/memory-prune/SKILL.md;
+      # Cross-model second opinion via codex (different vendor, so reviewers don't
+      # share the pinned Claude model's blind spots). Prefers the codex MCP tools
+      # below; bash fallback covered by the Bash(codex ...) perms.
+      codex-consult = ./skills/codex-consult/SKILL.md;
     };
+
     mcpServers = {
       linear = {
         type = "http";
         url = "https://mcp.linear.app/mcp";
       };
+      # codex as a stdio MCP server: `codex` starts a thread, `codex-reply`
+      # continues it -- the threaded path the codex-consult skill prefers. Binary
+      # is nix-pinned; auth is mutable state (`codex login`), not nix-managed.
+      codex = {
+        type = "stdio";
+        command = "${pkgs.codex}/bin/codex";
+        args = [ "mcp-server" ];
+      };
     };
-    # worktrunk's in-repo claude plugin, pinned to the same flake input as the
-    # wt binary so hooks and CLI never skew. Loaded in place via --plugin-dir
-    # (no marketplace, no mutable plugin cache). Provides: activity markers in
-    # `wt list`, WorktreeCreate/Remove rerouted through `wt switch --create` /
-    # `wt remove`, and the worktrunk + wt-switch-create skills. Hook scripts
-    # resolve `wt` and `jq` from PATH (programs.worktrunk / home.packages).
-    plugins = [ "${inputs.worktrunk}/plugins/worktrunk" ];
+
+    # Byte-for-byte what gopls-lsp@claude-plugins-official provides: that plugin is
+    # an empty dir whose whole definition is this lspServers block in the
+    # marketplace.json. Declaring it here drops the marketplace / mutable plugin
+    # cache dependency; the gopls binary comes from go-tools.nix.
+    lspServers = {
+      gopls = {
+        command = "gopls";
+        extensionToLanguage.".go" = "go";
+      };
+    };
+
+    plugins = [
+      # worktrunk's in-repo claude plugin, pinned to the same flake input as the
+      # wt binary so hooks and CLI never skew. Skips marketplace / mutable plugin
+      # cache by sideloading via --plugin-dir directly from nix inputs.
+      "${inputs.worktrunk}/plugins/worktrunk"
+    ];
+
     settings = {
       apiKeyHelper = "/usr/bin/security find-generic-password -s anthropic-api-key -w";
-      model = "claude-opus-4-8[1m]";
+      model = "claude-fable-5";
       effortLevel = "xhigh";
       autoScrollEnabled = true;
+      includeCoAuthoredBy = false;
+      # WebFetch sends the requested hostname to api.anthropic.com for a safety
+      # preflight on every fetch. The permission allowlist already scopes which
+      # domains are reachable, so the preflight is largely redundant.
+      skipWebFetchPreflight = true;
       statusLine = {
         type = "command";
         command = "~/.claude/statusline.sh";
-        # Renders instantly from cache. The timer only matters while the session
-        # is idle (background workflow running, no events firing): it keeps the
-        # spend ledger and live agent/workflow row ticking. 30s balances that
-        # against render cost.
         refreshInterval = 30;
       };
       # Rich per-agent rows in the subagent panel during fan-out / workflows.
@@ -161,10 +183,6 @@ in
             ];
           }
         ];
-      };
-      includeCoAuthoredBy = false;
-      enabledPlugins = {
-        "gopls-lsp@claude-plugins-official" = true;
       };
 
       permissions = {
@@ -230,17 +248,31 @@ in
           "WebFetch(domain:wiki.nixos.org)"
 
           "mcp__claude_ai_Chainguard_Analytics__metrics"
+
+          # codex-consult: threaded MCP path + one-shot bash fallback, promptless.
+          "mcp__codex__codex"
+          "mcp__codex__codex-reply"
+          "Bash(codex exec:*)"
+          "Bash(codex review:*)"
         ];
       };
 
       env = {
-        CLAUDE_CODE_ENABLE_TELEMETRY = "0";
-        # "inherit" disables the force, so normal resolution applies: the custom agents
-        # (no model: frontmatter) follow the main-loop model (the pin above, Opus 4.8)
-        # and per-spawn / per-workflow model: overrides work again. Tradeoff: the
-        # hardcoded-Haiku built-ins (Explore, claude-code-guide) drop back to Haiku --
-        # the thing a concrete model here would override. Set one to force all fan-out
-        # onto that model instead.
+        # Local OpenTelemetry master switch.
+        CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+
+        # Anthropic-bound non-inference telemetry: all off.
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+        DISABLE_TELEMETRY = "1";
+        DISABLE_ERROR_REPORTING = "1";
+        CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY = "1";
+        DO_NOT_TRACK = "1";
+
+        # "inherit": the custom agents (no model: frontmatter) follow the
+        # main-loop model.
+        # Tradeoff: the hardcoded-Haiku built-ins (Explore, claude-code-guide)
+        # drop back to Haiku. Change this to a specific model to force all
+        # agents to use a specific model unconditionally.
         CLAUDE_CODE_SUBAGENT_MODEL = "inherit";
       };
 
@@ -316,7 +348,12 @@ in
     "*.pyc"
   ];
 
-  home.packages = [ clodCheat ] ++ variants.launchers;
+  home.packages = [
+    clodCheat
+    # codex CLI on PATH for the codex-consult bash fallback (and direct use);
+    # same package the codex MCP server above is pinned to.
+    pkgs.codex
+  ];
 
   # Statuslines, keybindings, the generated workflow cheatsheet, and every workflow
   # script auto-deployed from ./workflows (see ./workflows/default.nix). No native
@@ -332,6 +369,5 @@ in
     # consumed by `clod-cheat` and the kitty overlay key.
     ".claude/workflows/cheatsheet.json".source = import ./workflows/cheatsheet.nix { inherit pkgs; };
   }
-  // (import ./workflows { inherit lib; })
-  // variants.configDirs;
+  // (import ./workflows { inherit lib; });
 }
