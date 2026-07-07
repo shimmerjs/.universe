@@ -1,0 +1,10 @@
+{
+  "script": "aw-research.js",
+  "kind": "helper",
+  "helper": "applyIntensity",
+  "input": [
+    { "intensity": 8, "verify": 5, "fanout": 6, "passes": 2 },
+    { "$set": ["intensity", "verify"] }
+  ],
+  "expect": { "intensity": 8, "verify": 5, "fanout": 13, "passes": 3 }
+}

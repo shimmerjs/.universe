@@ -1,0 +1,7 @@
+{
+  "script": "aw-research.js",
+  "kind": "helper",
+  "helper": "tallyVotes",
+  "input": [[{ "refuted": true }, { "refuted": false }], 2],
+  "expect": "REFUTED"
+}

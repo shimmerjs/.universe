@@ -1,0 +1,10 @@
+{
+  "script": "aw-design-review.js",
+  "kind": "parse",
+  "args": "design=\"two words\" rest of prompt",
+  "expect": {
+    "flags": { "design": "" },
+    "prompt": "words\" rest of prompt",
+    "errors": ["design: quoted value truncated by the whitespace tokenizer: design=\"two"]
+  }
+}

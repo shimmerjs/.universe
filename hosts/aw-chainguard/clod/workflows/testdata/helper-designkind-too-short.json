@@ -1,0 +1,7 @@
+{
+  "script": "aw-design-review.js",
+  "kind": "helper",
+  "helper": "designKind",
+  "input": ["", "short"],
+  "expect": { "error": "kind=proposed requires a non-trivial problem statement (>= 20 chars)" }
+}

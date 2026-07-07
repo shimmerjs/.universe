@@ -1,0 +1,10 @@
+{
+  "script": "aw-research.js",
+  "kind": "parse",
+  "args": "b=web,code",
+  "expect": {
+    "flags": { "breadth": ["web", "code"] },
+    "prompt": "",
+    "errors": []
+  }
+}

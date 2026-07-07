@@ -32,37 +32,65 @@ function coerce(v, s) {
   if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
                            if (!p.length) return s.default
                            return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
+  if (s.type === 'path') return String(v)
   return String(v)
 }
 function parseFlags(raw, spec) {
   const flags = {}, alias = {}
   for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
-  const set = new Set(), keep = []
+  const set = new Set(), keep = [], errors = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   for (const t of toks) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
     const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
-    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    if (key && (m[2][0] === "'" || m[2][0] === '"'))  // tripwire: quotes do not survive the whitespace tokenizer
+      errors.push(key + ': quoted value truncated by the whitespace tokenizer: ' + t)
+    else if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
     else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: keep.join(' '), set }
+  return { flags, prompt: keep.join(' '), set, errors }
 }
 
-const { flags, prompt, set } = parseFlags(args, FLAGS)
+const { flags, prompt, set, errors } = parseFlags(args, FLAGS)
+// phase-0 gate: a tokenizer-truncated flag value aborts before ANY agent spawns.
+if (errors.length) {
+  for (const e of errors) log('rejected: ' + e)
+  return { error: 'flag value truncated by the whitespace tokenizer', rejected: errors }
+}
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.
-const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
-  fanout: Math.max(1, Math.round(1 + i * 1.5)),
-  votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
-  passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
-} }
-if (set.has('intensity')) {
+// cap: the ceiling on findings entering the verify fan-out.
+function fromIntensity(i) {
+  i = Math.max(0, Math.min(10, i))
+  return {
+    fanout: Math.max(1, Math.round(1 + i * 1.5)),
+    votes:  i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+    passes: i === 0 ? 1 : Math.max(1, Math.round(i / 3)),
+    cap:    Math.max(4, 4 * (i + 1)),
+  }
+}
+function applyIntensity(flags, set) {
+  if (!set.has('intensity')) return flags
   const k = fromIntensity(flags.intensity)
-  // intensity scales votes (and the lenses count, below) -- this workflow's only knobs.
+  // intensity scales votes (and the lenses count) -- this workflow's only knobs.
   if (!set.has('votes')) flags.votes = k.votes
   if (!set.has('lenses') && flags.lenses && flags.lenses.count != null) flags.lenses = { count: k.fanout }
+  return flags
+}
+applyIntensity(flags, set)
+const DEFAULT_INTENSITY = 5
+const VERIFY_CAP = fromIntensity(set.has('intensity') ? flags.intensity : DEFAULT_INTENSITY).cap
+// loud cap split: callers log take/over and tag over UNVERIFIED -- never a silent slice.
+function capClaims(list, cap) {
+  return { take: list.slice(0, cap), over: list.slice(cap) }
+}
+// sub-quorum (verifiers crashed) -> UNVERIFIED, never laundered into a verdict;
+// majority is over the requested total, so missing votes count against confirmation.
+function tallyVotes(vv, total) {
+  if (vv.length < Math.ceil(total / 2)) return 'UNVERIFIED'
+  return vv.filter(x => x.real).length > total / 2 ? 'CONFIRMED' : 'REFUTED'
 }
 const stock = flags.subagents === 'stock'
 
@@ -71,10 +99,16 @@ const SKEPTIC = stock ? undefined : 'skeptic'
 
 // Phase 0: discover the package map (never hardcode it).
 phase('Map')
-const MAP = { type: 'object', required: ['packages'], properties: { packages: { type: 'array', items: { type: 'string' } } } }
+const MAP = { type: 'object', required: ['found', 'packages'], properties: {
+  found: { type: 'boolean' }, packages: { type: 'array', items: { type: 'string' } } } }
 const map = await agent(
-  'Map the package/source layout of ' + flags.repo + ' (lang ' + flags.lang + '). Use tree/glob/git ls-files - do not hardcode. Return the packages worth auditing.',
+  'Map the package/source layout of ' + flags.repo + ' (lang ' + flags.lang + '). Use tree/glob/git ls-files - do not hardcode. Return the packages worth auditing. ' +
+  'Return found=false if the repo/path does not exist or cannot be mapped.',
   { label: 'map', phase: 'Map', agentType: REVIEWER, schema: MAP })
+if (!map.found || !map.packages.length) {
+  log('repo unmappable: ' + flags.repo)
+  return { error: 'repo did not resolve to any packages', rejected: flags.repo }
+}
 
 let lenses = flags.lenses.list
 if (!lenses) {
@@ -108,21 +142,18 @@ const fresh = found.filter(f => {
 log('audit: ' + found.length + ' found, ' + fresh.length + ' fresh')
 
 phase('Verify')
-const judged = (await parallel(fresh.map(f => () =>
+const { take, over } = capClaims(fresh, VERIFY_CAP)
+if (over.length) log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
+const judged = (await parallel(take.map(f => () =>
   parallel(Array.from({ length: flags.votes }, (_, v) => () =>
     agent('Skeptic ' + (v + 1) + ': real ' + (f.lens || '') + ' issue or false positive? Default real=false unless you confirm by reading the code.\n' + f.file + ':' + f.line + ' - ' + f.desc,
       { label: 'verify:' + f.file, phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
     .then(votes => {
       const vv = votes.filter(Boolean)
-      const quorum = Math.ceil(flags.votes / 2)
-      // sub-quorum (verifiers crashed) -> UNVERIFIED, never laundered into a verdict;
-      // majority is over flags.votes, so missing votes count against confirmation.
-      const verdict = vv.length < quorum ? 'UNVERIFIED'
-        : (vv.filter(x => x.real).length > flags.votes / 2 ? 'CONFIRMED' : 'REFUTED')
-      return { ...f, verdict, failed: flags.votes - vv.length }
+      return { ...f, verdict: tallyVotes(vv, flags.votes), failed: flags.votes - vv.length }
     })))).filter(Boolean)
 const confirmed = judged.filter(f => f.verdict === 'CONFIRMED')
-const unverified = judged.filter(f => f.verdict === 'UNVERIFIED')
+const unverified = judged.filter(f => f.verdict === 'UNVERIFIED').concat(over.map(f => ({ ...f, verdict: 'UNVERIFIED' })))
 
 phase('Synthesize')
 const report = await agent(
@@ -137,5 +168,6 @@ const tally = {
   refuted: judged.filter(f => f.verdict === 'REFUTED').length,
   unverified: unverified.length,
   failedVerifiers: judged.reduce((a, f) => a + (f.failed || 0), 0),
+  overCap: over.length,
 }
 return { repo: flags.repo, lang: flags.lang, lenses, tally, confirmed, report }

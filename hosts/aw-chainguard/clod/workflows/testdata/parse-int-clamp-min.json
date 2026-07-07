@@ -1,0 +1,10 @@
+{
+  "script": "aw-research.js",
+  "kind": "parse",
+  "args": "verify=-1",
+  "expect": {
+    "flags": { "verify": 0 },
+    "prompt": "",
+    "errors": []
+  }
+}

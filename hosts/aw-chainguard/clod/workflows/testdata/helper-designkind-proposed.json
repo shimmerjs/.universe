@@ -1,0 +1,7 @@
+{
+  "script": "aw-design-review.js",
+  "kind": "helper",
+  "helper": "designKind",
+  "input": ["", "a sufficiently long problem statement"],
+  "expect": { "kind": "proposed" }
+}

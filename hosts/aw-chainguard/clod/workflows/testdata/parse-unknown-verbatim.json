@@ -1,0 +1,10 @@
+{
+  "script": "aw-research.js",
+  "kind": "parse",
+  "args": "foo=bar how does X work",
+  "expect": {
+    "flags": { "fanout": 6 },
+    "prompt": "foo=bar how does X work",
+    "errors": []
+  }
+}

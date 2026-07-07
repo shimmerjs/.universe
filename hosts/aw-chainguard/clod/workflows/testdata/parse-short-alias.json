@@ -1,0 +1,10 @@
+{
+  "script": "aw-research.js",
+  "kind": "parse",
+  "args": "f=8",
+  "expect": {
+    "flags": { "fanout": 8 },
+    "prompt": "",
+    "errors": []
+  }
+}

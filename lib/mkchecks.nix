@@ -5,6 +5,8 @@
 #                             have a clod/workflows directory.
 #   - clod-statusline-<host>: bash syntax + session-title layout smoke test for
 #                             hosts that have a clod/statusline.sh.
+#   - clod-workflow-tests-<host>: fixture unit tests (testdata/*.json) for the
+#                             workflow parser and pure helpers, under plain node.
 { inputs }:
 
 let
@@ -55,6 +57,20 @@ let
            }; }
     else null;
 
+  # Run the workflow fixture unit tests (testdata/*.json against the extracted
+  # parser/helper functions) under plain node. Deliberately does not touch
+  # config (no wiredAgents needed). Returns null if the host has no
+  # clod/workflows/testdata directory.
+  mkWorkflowTestsCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    workflowsDir = ../hosts/${hostname}/clod/workflows;
+  in if builtins.pathExists (workflowsDir + "/testdata")
+    then { inherit system; name = "clod-workflow-tests-${hostname}";
+           value = import ./workflow-tests-check.nix { inherit pkgs workflowsDir; }; }
+    else null;
+
   # Build the host's workflow cheatsheet (cheatsheet.nix -> cheatsheet-gen.mjs)
   # and assert one entry per aw-*.js, each with flags. Returns null if the host
   # has no clod/workflows/cheatsheet.nix.
@@ -102,7 +118,7 @@ let
            value = import ./hooks-check.nix { inherit pkgs; goBuildSweep = hooks.goBuildSweep; }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

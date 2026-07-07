@@ -1,0 +1,7 @@
+{
+  "script": "aw-design-review.js",
+  "kind": "helper",
+  "helper": "designKind",
+  "input": ["docs/x.md", ""],
+  "expect": { "kind": "doc" }
+}

@@ -11,7 +11,11 @@ Checks per *.js in $workflowsDir:
      resolved; `undefined`/`null` are skipped; anything unresolvable fails loud.
   3. no body `meta.` references -- the engine strips the meta export binding.
   4. flag spec -- parseFlags callers need an extractable `const FLAGS` literal
-     with unique short aliases.
+     with unique short aliases; flag types are int/list/axes/str/path, and a
+     'str' flag needs a choices list or the ALLOWED_STR single-token allowlist
+     (prose-capable inputs must be type 'path').
+  5. canonical parser -- `coerce` and `parseFlags` must be byte-identical
+     across every parseFlags caller (extracted with the same col-0 anchor).
 
 Inputs via env: $workflowsDir (a directory), $validAgents (space-separated).
 Exits non-zero with a report if anything fails.
@@ -26,6 +30,14 @@ import tempfile
 
 wf_dir = os.environ["workflowsDir"]
 valid = set(os.environ["validAgents"].split())
+
+# 'str' flags without choices that are documented single-token-by-construction
+# (paths, langs, git refs); anything prose-capable must be type 'path'.
+ALLOWED_STR = {"scope", "lang", "repo", "code-root"}
+
+COERCE_RE = re.compile(r"\nfunction coerce\(v, s\) \{[\s\S]*?\n\}")
+PARSEFLAGS_RE = re.compile(r"\nfunction parseFlags\(raw, spec\) \{[\s\S]*?\n\}")
+parser_variants = {"coerce": {}, "parseFlags": {}}
 
 errors = []
 summary = []
@@ -108,6 +120,18 @@ for path in sorted(glob.glob(os.path.join(wf_dir, "*.js"))):
     # slice the pure literal (closing brace at col 0), paren-wrap, eval.
     flag_note = ""
     if "parseFlags(" in src:
+        # 5) canonical parser: coerce/parseFlags must be byte-identical across
+        # every parseFlags caller (the extractors and fixture tests depend on
+        # the closing brace sitting at col 0). Collected here, compared below.
+        for fn_label, fn_re in (("coerce", COERCE_RE), ("parseFlags", PARSEFLAGS_RE)):
+            fn_m = fn_re.search(src)
+            if not fn_m:
+                errors.append(
+                    f"{name}: calls parseFlags but has no extractable "
+                    f"`function {fn_label}` (closing brace must be at col 0)"
+                )
+            else:
+                parser_variants[fn_label].setdefault(fn_m.group(0), []).append(name)
         node_extract = (
             "const fs=require('fs');const s=fs.readFileSync(process.argv[1],'utf8');"
             "const m=s.match(/\\nconst FLAGS = (\\{[\\s\\S]*?\\n\\})/);"
@@ -136,9 +160,26 @@ for path in sorted(glob.glob(os.path.join(wf_dir, "*.js"))):
                         errors.append(f"{name}: short `{sh}` collides ({shorts[sh]} vs {fname})")
                     else:
                         shorts[sh] = fname
+                    ftype = (fspec or {}).get("type")
+                    if ftype not in ("int", "list", "axes", "str", "path"):
+                        errors.append(f"{name}: flag `{fname}` has unsupported type `{ftype}`")
+                    elif ftype == "str" and not (fspec or {}).get("choices") and fname not in ALLOWED_STR:
+                        errors.append(
+                            f"{name}: 'str' flag `{fname}` has no choices and is not in the "
+                            f"single-token allowlist ({', '.join(sorted(ALLOWED_STR))}) -- "
+                            f"prose-capable inputs must be type 'path'"
+                        )
                 flag_note = f", flags={len(flags)}"
 
     summary.append(f"{name}: agents={sorted(used) or '[generic]'}{flag_note}")
+
+for fn_label, variants in parser_variants.items():
+    if len(variants) > 1:
+        groups = " vs ".join("[" + ", ".join(files) + "]" for files in variants.values())
+        errors.append(
+            f"parser drift: `function {fn_label}` is not byte-identical across "
+            f"workflows -- variants: {groups}"
+        )
 
 if errors:
     print("clod workflow lint FAILED:\n", file=sys.stderr)

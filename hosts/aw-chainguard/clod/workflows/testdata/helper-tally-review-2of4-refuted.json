@@ -1,0 +1,7 @@
+{
+  "script": "aw-review.js",
+  "kind": "helper",
+  "helper": "tallyVotes",
+  "input": [[{ "real": true }, { "real": true }, { "real": false }, { "real": false }], 4],
+  "expect": "REFUTED"
+}

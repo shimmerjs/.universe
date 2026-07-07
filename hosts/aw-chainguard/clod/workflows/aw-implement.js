@@ -10,7 +10,7 @@ export const meta = {
 // Lives OUTSIDE meta: the Workflow runtime strips the meta export before
 // running the body, so the body can only reach a plain const.
 const FLAGS = {
-  spec:      { short: 'e', type: 'str', default: '', help: 'path to a written spec/design doc; else the prompt is the task' },
+  spec:      { short: 'e', type: 'path', default: '', help: 'path to a written spec/design doc; else the prompt is the task' },
   verify:    { short: 'v', type: 'int', default: 3, min: 1, max: 5, help: 'skeptics judging the diff against the spec' },
   review:    { short: 'r', type: 'str', default: 'on', choices: ['on', 'off'], help: 'adversarial correctness review of the diff' },
   isolation: { short: 'n', type: 'str', default: 'inplace', choices: ['inplace', 'worktree'], help: 'where execution writes' },
@@ -34,32 +34,51 @@ function coerce(v, s) {
   if (s.type === 'axes') { const p = String(v).split(',').map(x => x.trim()).filter(Boolean)
                            if (!p.length) return s.default
                            return (p.length === 1 && /^\d+$/.test(p[0])) ? { count: Math.max(1, parseInt(p[0], 10)) } : { list: p } }
+  if (s.type === 'path') return String(v)
   return String(v)
 }
 function parseFlags(raw, spec) {
   const flags = {}, alias = {}
   for (const k in spec) { flags[k] = spec[k].default; if (spec[k].short) alias[spec[k].short] = k }
-  const set = new Set(), keep = []
+  const set = new Set(), keep = [], errors = []
   const text = (typeof raw === 'string' ? raw : (raw && raw.prompt) || '').trim()
   const toks = text.length ? text.split(/\s+/) : []
   for (const t of toks) {
     const m = /^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/.exec(t)
     const key = m && (m[1] in spec ? m[1] : (m[1] in alias ? alias[m[1]] : null))
-    if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
+    if (key && (m[2][0] === "'" || m[2][0] === '"'))  // tripwire: quotes do not survive the whitespace tokenizer
+      errors.push(key + ': quoted value truncated by the whitespace tokenizer: ' + t)
+    else if (key) { flags[key] = coerce(m[2], spec[key]); set.add(key) }  // known long/short, anywhere
     else keep.push(t)                                                // unknown word=value or prose -> prompt
   }
-  return { flags, prompt: keep.join(' '), set }
+  return { flags, prompt: keep.join(' '), set, errors }
 }
 
-const { flags, prompt, set } = parseFlags(args, FLAGS)
+const { flags, prompt, set, errors } = parseFlags(args, FLAGS)
+// phase-0 gate: a tokenizer-truncated flag value aborts before ANY agent spawns.
+if (errors.length) {
+  for (const e of errors) log('rejected: ' + e)
+  return { error: 'flag value truncated by the whitespace tokenizer', rejected: errors }
+}
 
-const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
-  votes: i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
-} }
-if (set.has('intensity')) {
+function fromIntensity(i) {
+  i = Math.max(0, Math.min(10, i))
+  return {
+    votes: i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,
+  }
+}
+function applyIntensity(flags, set) {
+  if (!set.has('intensity')) return flags
   const k = fromIntensity(flags.intensity)
   // intensity scales only the verify quorum -- this workflow's one numeric knob.
   if (!set.has('verify')) flags.verify = k.votes
+  return flags
+}
+applyIntensity(flags, set)
+// sub-quorum (skeptics crashed) -> UNVERIFIED; ties -> GAPS (needs a majority to clear).
+function tallySpecVotes(vv, total) {
+  if (vv.length < Math.ceil(total / 2)) return 'UNVERIFIED'
+  return vv.filter(v => v.meetsSpec).length > total / 2 ? 'MEETS' : 'GAPS'
 }
 
 const stock = flags.subagents === 'stock'
@@ -68,7 +87,12 @@ const REVIEWER = stock ? undefined : 'reviewer'
 const SKEPTIC  = stock ? undefined : 'skeptic'
 const iso = flags.isolation === 'worktree' ? 'worktree' : undefined
 
-if (!prompt && !flags.spec) { log('no task or spec=path given -- nothing to implement'); return }
+// spec= set -> validated by the found-checked read below; unset -> the prompt is
+// the task and must be a real task statement.
+if (!flags.spec && prompt.trim().length < 20) {
+  log('rejected: "' + prompt + '" -- no spec= and no non-trivial task prompt')
+  return { error: 'no spec= given and the prompt task is too thin (>= 20 chars required)', rejected: prompt }
+}
 log('implement: ' + (flags.spec ? 'spec=' + flags.spec : 'task from prompt') + ' verify=' + flags.verify + ' review=' + flags.review + ' isolation=' + flags.isolation)
 
 // Phase 1: lock a written spec -- the execution anchor (DESIGN_DOCTRINE: the spec
@@ -79,11 +103,21 @@ const SPEC = { type: 'object', required: ['spec', 'acceptance'], properties: {
   files: { type: 'array', items: { type: 'string' } },
   acceptance: { type: 'array', items: { type: 'string' } },   // build/test commands that must pass
   risks: { type: 'array', items: { type: 'string' } } } }
+const SPEC_FILE = { type: 'object', required: ['found', 'spec', 'acceptance'], properties: {
+  found: { type: 'boolean' },                                 // false when the spec file is missing/unreadable
+  spec: { type: 'string' },
+  files: { type: 'array', items: { type: 'string' } },
+  acceptance: { type: 'array', items: { type: 'string' } },   // build/test commands that must pass
+  risks: { type: 'array', items: { type: 'string' } } } }
 const spec = flags.spec
-  ? await agent('Read the spec at ' + flags.spec + '. Restate it as a concrete implementation spec: exact files/symbols to change, the target state, acceptance criteria (the build/test commands that must pass), and known risks. Do not design anew -- faithfully tighten what is written.',
-      { label: 'spec', phase: 'Spec', agentType: DESIGNER, schema: SPEC })
+  ? await agent('Read the spec at ' + flags.spec + '. Restate it as a concrete implementation spec: exact files/symbols to change, the target state, acceptance criteria (the build/test commands that must pass), and known risks. Do not design anew -- faithfully tighten what is written. If the file does not exist or cannot be read, return found=false and empty spec.',
+      { label: 'spec', phase: 'Spec', agentType: DESIGNER, schema: SPEC_FILE })
   : await agent('Produce a concrete implementation spec for this task: ' + prompt + '\nGround it in the real repo (cite files at path:line). State the target state exactly (files/symbols), the migration path, the acceptance criteria (build/test commands that must pass), and what gets harder. One approach, not a menu.',
       { label: 'spec', phase: 'Spec', agentType: DESIGNER, schema: SPEC })
+if (flags.spec && (!spec.found || !(spec.spec || '').trim())) {
+  log('spec file unreadable: ' + flags.spec)
+  return { error: 'spec= file missing or unreadable', rejected: flags.spec }
+}
 log('spec locked: ' + (spec.files || []).length + ' files, ' + (spec.acceptance || []).length + ' acceptance criteria')
 
 // Phase 2: fork execution into a fresh subagent seeded ONLY by the spec.
@@ -113,10 +147,8 @@ const votes = (await parallel(Array.from({ length: flags.verify }, (_, i) => () 
     '\nSPEC:\n' + spec.spec + '\nACCEPTANCE: ' + (spec.acceptance || []).join(' ; ') +
     '\nEXECUTION SUMMARY: ' + exec.summary + '\nFiles: ' + (exec.filesChanged || []).join(', ') + where,
     { label: 'verify:' + (i + 1), phase: 'Verify', agentType: SKEPTIC, schema: VERDICT }))) ).filter(Boolean)
-const quorum = Math.ceil(flags.verify / 2)
 const meets = votes.filter(v => v.meetsSpec).length
-// sub-quorum (skeptics crashed) -> UNVERIFIED; ties -> GAPS (needs a majority to clear).
-const specVerdict = votes.length < quorum ? 'UNVERIFIED' : (meets > flags.verify / 2 ? 'MEETS' : 'GAPS')
+const specVerdict = tallySpecVotes(votes, flags.verify)
 const gaps = votes.flatMap(v => v.gaps || [])
 log('verify: ' + specVerdict + ' (' + meets + '/' + votes.length + ' meets-spec)')
 

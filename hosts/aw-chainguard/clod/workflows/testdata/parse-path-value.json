@@ -1,0 +1,10 @@
+{
+  "script": "aw-design-review.js",
+  "kind": "parse",
+  "args": "design=docs/x.md review this",
+  "expect": {
+    "flags": { "design": "docs/x.md" },
+    "prompt": "review this",
+    "errors": []
+  }
+}
