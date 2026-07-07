@@ -1,11 +1,14 @@
 // Build-time cheatsheet extractor. Reads every aw-*.js in <workflowsDir>, slices
-// the pure-literal `meta` block (its closing brace sits at column 0, so a
-// non-greedy match to the first newline-then-brace captures the whole literal),
-// paren-wraps and evals it, scrapes the `// Examples:` comment block, and emits
-// one cheatsheet.json. Single source of truth = each workflow's meta.flags, so the
-// cheatsheet can never drift from what parseFlags actually accepts. Not deployed
-// (named .mjs so workflows/default.nix's *.js deploy glob ignores it); run only by
-// cheatsheet.nix at build time:  node cheatsheet-gen.mjs <workflowsDir> > out.json
+// the pure-literal `meta` block AND the body-level `const FLAGS` block (each
+// closing brace sits at column 0, so a non-greedy match to the first
+// newline-then-brace captures the whole literal), paren-wraps and evals them,
+// scrapes the `// Examples:` comment block, and emits one cheatsheet.json.
+// Single source of truth = each workflow's `const FLAGS` (outside meta: the
+// Workflow runtime strips the meta export, so bodies can't read meta.flags),
+// so the cheatsheet can never drift from what parseFlags actually accepts.
+// Not deployed (named .mjs so workflows/default.nix's *.js deploy glob ignores
+// it); run only by cheatsheet.nix at build time:
+//   node cheatsheet-gen.mjs <workflowsDir> > out.json
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -39,8 +42,15 @@ for (const f of readdirSync(dir).filter((f) => /^aw-.*\.js$/.test(f)).sort()) {
     if (t) examples.push(t)
   }
 
+  let flagSpec = meta.flags || {}
+  const fm = src.match(/\nconst FLAGS = (\{[\s\S]*?\n\})/)
+  if (fm) {
+    try { flagSpec = (0, eval)('(' + fm[1] + ')') }
+    catch (e) { console.error(`${f}: FLAGS eval failed: ${e.message}`); process.exit(2) }
+  }
+
   const flags = []
-  for (const [name, s] of Object.entries(meta.flags || {})) {
+  for (const [name, s] of Object.entries(flagSpec)) {
     let range = ''
     if (s.min != null || s.max != null) range = `${s.min ?? ''}..${s.max ?? ''}`
     else if (Array.isArray(s.choices)) range = s.choices.join('|')

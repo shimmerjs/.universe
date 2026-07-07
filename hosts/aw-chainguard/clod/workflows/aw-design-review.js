@@ -3,16 +3,21 @@ export const meta = {
   description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart= intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses with a refute-default verifier; propose a candidate if given a problem; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked',
   phases: [{ title: 'Frame' }, { title: 'Critique' }, { title: 'Verify' }, { title: 'Synthesize' }],
-  flags: {
-    design:      { short: 'd', type: 'str',  default: '', help: 'doc path OR a problem statement (else the prompt)' },
-    'code-root': { short: 'r', type: 'str',  default: '.', help: 'code root to ground flaws in' },
-    lenses:      { short: 'l', type: 'axes', default: { list: ['feasibility', 'semantics', 'scale', 'hermeticity', 'ordering'] }, help: 'stress-test lenses; a single N auto-derives N' },
-    locked:      { short: 'k', type: 'str',  default: '', help: 'path to a CONSTRAINTS / LOCKED block' },
-    votes:       { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per flaw' },
-    priorart:    { short: 'o', type: 'str',  default: '', help: 'priorart=on folds a prior-art pass into the critique' },
-    intensity:   { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
-    subagents:   { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
-  },
+}
+
+// Flag specs: single source of truth for parseFlags AND the lint/cheatsheet
+// extractors, which slice this literal textually (closing brace at col 0).
+// Lives OUTSIDE meta: the Workflow runtime strips the meta export before
+// running the body, so the body can only reach a plain const.
+const FLAGS = {
+  design:      { short: 'd', type: 'str',  default: '', help: 'doc path OR a problem statement (else the prompt)' },
+  'code-root': { short: 'r', type: 'str',  default: '.', help: 'code root to ground flaws in' },
+  lenses:      { short: 'l', type: 'axes', default: { list: ['feasibility', 'semantics', 'scale', 'hermeticity', 'ordering'] }, help: 'stress-test lenses; a single N auto-derives N' },
+  locked:      { short: 'k', type: 'str',  default: '', help: 'path to a CONSTRAINTS / LOCKED block' },
+  votes:       { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per flaw' },
+  priorart:    { short: 'o', type: 'str',  default: '', help: 'priorart=on folds a prior-art pass into the critique' },
+  intensity:   { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
+  subagents:   { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
 
 // Examples:
@@ -47,7 +52,7 @@ function parseFlags(raw, spec) {
   return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, meta.flags)
+const { flags, prompt, set } = parseFlags(args, FLAGS)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.

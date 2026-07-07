@@ -3,12 +3,17 @@ export const meta = {
   description: '[areas=5 verify-scope=load-bearing intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web), refute-verify the load-bearing claims, synthesize a cited report with a corrections section. word=value flags (long or short, anywhere in the prompt); the prompt is the question.',
   whenToUse: 'Researching how others solve X; tune areas, verify-scope',
   phases: [{ title: 'Plan' }, { title: 'Dig' }, { title: 'Verify' }, { title: 'Synthesize' }],
-  flags: {
-    areas:          { short: 'a', type: 'axes', default: { count: 5 }, help: 'investigation areas, or N to auto-derive' },
-    'verify-scope': { short: 'c', type: 'str',  default: 'load-bearing', choices: ['all', 'load-bearing', 'none'], help: 'which claims get refuted' },
-    intensity:      { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling the unset area count' },
-    subagents:      { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
-  },
+}
+
+// Flag specs: single source of truth for parseFlags AND the lint/cheatsheet
+// extractors, which slice this literal textually (closing brace at col 0).
+// Lives OUTSIDE meta: the Workflow runtime strips the meta export before
+// running the body, so the body can only reach a plain const.
+const FLAGS = {
+  areas:          { short: 'a', type: 'axes', default: { count: 5 }, help: 'investigation areas, or N to auto-derive' },
+  'verify-scope': { short: 'c', type: 'str',  default: 'load-bearing', choices: ['all', 'load-bearing', 'none'], help: 'which claims get refuted' },
+  intensity:      { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling the unset area count' },
+  subagents:      { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
 
 // Examples:
@@ -43,7 +48,7 @@ function parseFlags(raw, spec) {
   return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, meta.flags)
+const { flags, prompt, set } = parseFlags(args, FLAGS)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.

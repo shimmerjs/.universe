@@ -61,6 +61,9 @@ model_disp="$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]' | sed -E 's
 [ -z "$model_disp" ] && model_disp="$model_name"
 session_id="$(get '.session_id // ""')"
 session_name="$(get '.session_name // empty')"
+
+# (khudson's claude-sessions spool is now module-owned: it is populated by
+# UserPromptSubmit/SessionEnd hooks in homies/shimmerjs/home/khudson, not here.)
 tpath="$(get '.transcript_path // ""')"
 cwd="$(get '.workspace.current_dir // .cwd // "."')"
 repo_name="$(get '.workspace.repo.name // empty')"

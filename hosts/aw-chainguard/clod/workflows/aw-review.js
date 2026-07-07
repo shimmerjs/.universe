@@ -3,16 +3,21 @@ export const meta = {
   description: '[scope=diff lang=auto lenses=correctness,error-handling,concurrency,security votes=3 passes=2 severity-floor=med intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Reviewing a diff or path; tune scope, lang, lenses, votes, passes, severity-floor',
   phases: [{ title: 'Scope' }, { title: 'Review' }, { title: 'Verify' }, { title: 'Synthesize' }],
-  flags: {
-    scope:  { short: 'c', type: 'str',  default: 'diff', help: 'PR ref, git range, or path' },
-    lang:   { short: 'g', type: 'str',  default: 'auto', help: 'language for the idioms lens; auto-detected from the change' },
-    lenses: { short: 'l', type: 'axes', default: { list: ['correctness', 'error-handling', 'concurrency', 'security'] }, help: 'review dimensions; a single N auto-derives N lenses' },
-    votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
-    passes: { short: 'p', type: 'int',  default: 2, min: 1, max: 6, help: 'loop-until-dry re-review rounds' },
-    'severity-floor': { short: 'y', type: 'str', default: 'med', choices: ['low', 'med', 'high'], help: 'lowest severity that gets verified' },
-    intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/passes/lens-count' },
-    subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
-  },
+}
+
+// Flag specs: single source of truth for parseFlags AND the lint/cheatsheet
+// extractors, which slice this literal textually (closing brace at col 0).
+// Lives OUTSIDE meta: the Workflow runtime strips the meta export before
+// running the body, so the body can only reach a plain const.
+const FLAGS = {
+  scope:  { short: 'c', type: 'str',  default: 'diff', help: 'PR ref, git range, or path' },
+  lang:   { short: 'g', type: 'str',  default: 'auto', help: 'language for the idioms lens; auto-detected from the change' },
+  lenses: { short: 'l', type: 'axes', default: { list: ['correctness', 'error-handling', 'concurrency', 'security'] }, help: 'review dimensions; a single N auto-derives N lenses' },
+  votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
+  passes: { short: 'p', type: 'int',  default: 2, min: 1, max: 6, help: 'loop-until-dry re-review rounds' },
+  'severity-floor': { short: 'y', type: 'str', default: 'med', choices: ['low', 'med', 'high'], help: 'lowest severity that gets verified' },
+  intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/passes/lens-count' },
+  subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
 
 // Examples:
@@ -47,7 +52,7 @@ function parseFlags(raw, spec) {
   return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, meta.flags)
+const { flags, prompt, set } = parseFlags(args, FLAGS)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.

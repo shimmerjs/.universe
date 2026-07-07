@@ -3,14 +3,19 @@ export const meta = {
   description: '[spec= verify=3 review=on isolation=inplace intensity=5 subagents=custom|stock] Spec-driven execution: lock a written spec, implement it in a fresh subagent seeded ONLY by the spec, build/verify, then adversarially review the diff. Informal word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Executing a well-scoped change end-to-end; tune spec, verify, review, isolation',
   phases: [{ title: 'Spec' }, { title: 'Execute' }, { title: 'Verify' }, { title: 'Review' }],
-  flags: {
-    spec:      { short: 'e', type: 'str', default: '', help: 'path to a written spec/design doc; else the prompt is the task' },
-    verify:    { short: 'v', type: 'int', default: 3, min: 1, max: 5, help: 'skeptics judging the diff against the spec' },
-    review:    { short: 'r', type: 'str', default: 'on', choices: ['on', 'off'], help: 'adversarial correctness review of the diff' },
-    isolation: { short: 'n', type: 'str', default: 'inplace', choices: ['inplace', 'worktree'], help: 'where execution writes' },
-    intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling the unset verify quorum' },
-    subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
-  },
+}
+
+// Flag specs: single source of truth for parseFlags AND the lint/cheatsheet
+// extractors, which slice this literal textually (closing brace at col 0).
+// Lives OUTSIDE meta: the Workflow runtime strips the meta export before
+// running the body, so the body can only reach a plain const.
+const FLAGS = {
+  spec:      { short: 'e', type: 'str', default: '', help: 'path to a written spec/design doc; else the prompt is the task' },
+  verify:    { short: 'v', type: 'int', default: 3, min: 1, max: 5, help: 'skeptics judging the diff against the spec' },
+  review:    { short: 'r', type: 'str', default: 'on', choices: ['on', 'off'], help: 'adversarial correctness review of the diff' },
+  isolation: { short: 'n', type: 'str', default: 'inplace', choices: ['inplace', 'worktree'], help: 'where execution writes' },
+  intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling the unset verify quorum' },
+  subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
 
 // Examples:
@@ -46,7 +51,7 @@ function parseFlags(raw, spec) {
   return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, meta.flags)
+const { flags, prompt, set } = parseFlags(args, FLAGS)
 
 const fromIntensity = (i) => { i = Math.max(0, Math.min(10, i)); return {
   votes: i <= 1 ? 1 : i <= 4 ? 2 : i <= 7 ? 3 : i <= 9 ? 4 : 5,

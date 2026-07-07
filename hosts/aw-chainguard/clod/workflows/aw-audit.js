@@ -3,14 +3,19 @@ export const meta = {
   description: '[repo=. lang=go lenses=bug,test-gap,perf votes=3 intensity=5 subagents=custom|stock] Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf; refute-verify each; emit a p0/p1/p2 fix list. word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Auditing a rebuilt component; tune repo, lang, lenses, votes',
   phases: [{ title: 'Map' }, { title: 'Audit' }, { title: 'Verify' }, { title: 'Synthesize' }],
-  flags: {
-    repo:   { short: 'r', type: 'str',  default: '.', help: 'repo or path root to audit' },
-    lang:   { short: 'g', type: 'str',  default: 'go', help: 'primary language' },
-    lenses: { short: 'l', type: 'axes', default: { list: ['bug', 'test-gap', 'perf'] }, help: 'audit dimensions; a single N auto-derives N lenses' },
-    votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
-    intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
-    subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
-  },
+}
+
+// Flag specs: single source of truth for parseFlags AND the lint/cheatsheet
+// extractors, which slice this literal textually (closing brace at col 0).
+// Lives OUTSIDE meta: the Workflow runtime strips the meta export before
+// running the body, so the body can only reach a plain const.
+const FLAGS = {
+  repo:   { short: 'r', type: 'str',  default: '.', help: 'repo or path root to audit' },
+  lang:   { short: 'g', type: 'str',  default: 'go', help: 'primary language' },
+  lenses: { short: 'l', type: 'axes', default: { list: ['bug', 'test-gap', 'perf'] }, help: 'audit dimensions; a single N auto-derives N lenses' },
+  votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
+  intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
+  subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
 
 // Examples:
@@ -44,7 +49,7 @@ function parseFlags(raw, spec) {
   return { flags, prompt: keep.join(' '), set }
 }
 
-const { flags, prompt, set } = parseFlags(args, meta.flags)
+const { flags, prompt, set } = parseFlags(args, FLAGS)
 
 // intensity: one 0-10 knob. Applied ONLY when the user passes it, and only to
 // knobs they did not set explicitly, so the tuned defaults stand otherwise.
