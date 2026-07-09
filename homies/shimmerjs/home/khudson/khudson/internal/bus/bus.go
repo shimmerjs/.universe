@@ -77,6 +77,10 @@ type Bus struct {
 	snapshots   chan snapshotResult
 	natives     chan nativeResult
 	input       chan proto.Msg
+	// repoll asks the scheduler to poll a native widget on its next tick
+	// (module-handled row acts must land on glass now, not at the poll
+	// cadence). Nil on bare test buses; pokes are best-effort drops.
+	repoll chan string
 	// execStart is the row-act/action exec seam: start argv, return its
 	// waiter. nil runs the real exec.Command; tests stub it to observe (or
 	// suppress) process starts.
@@ -129,6 +133,7 @@ func Run(ctx context.Context, opts Options) error {
 		snapshots:   make(chan snapshotResult, 16),
 		natives:     make(chan nativeResult, 16),
 		input:       make(chan proto.Msg, 32),
+		repoll:      make(chan string, 16),
 	}
 	b.caff = newCaffeinator(cfg.CaffeinateOn(), opts.Paths)
 	b.setGrid(0, 0)

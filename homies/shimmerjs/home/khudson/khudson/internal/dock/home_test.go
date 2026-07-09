@@ -99,19 +99,19 @@ func TestHomeRegionGeometry(t *testing.T) {
 	// hit table order: regions in peel order, chrome tiles ahead of their
 	// region's consume-all area. Rail tiles are a two-column bordered grid:
 	// width (20-1)/2 = 9, one gap column between, railTileH rows tall. The
-	// caffeinate cup toggle pins to the tray bottom (15-row tray: y 13).
+	// caffeinate cup toggle pins to the tray bottom (17-row tray: y 14).
 	want := []rect{
-		{1, 1, 9, 3},      // rail button: Safari (col 0)
-		{11, 1, 9, 3},     // rail button: Mail (col 1)
-		{1, 1, 20, 15},    // rail area
-		{307, 1, 12, 3},   // tray: home
-		{307, 4, 12, 3},   // tray: hub
-		{307, 7, 12, 3},   // tray: keyboard
-		{307, 13, 12, 3},  // tray toggle: caffeinate cup
-		{307, 1, 12, 15},  // tray area
-		{21, 1, 286, 10},  // claude-hud
-		{21, 11, 143, 5},  // cpumem
-		{164, 11, 143, 5}, // disk
+		{0, 0, 9, 3},      // rail button: Safari (col 0)
+		{10, 0, 9, 3},     // rail button: Mail (col 1)
+		{0, 0, 20, 17},    // rail area
+		{308, 0, 12, 3},   // tray: home
+		{308, 3, 12, 3},   // tray: hub
+		{308, 6, 12, 3},   // tray: keyboard
+		{308, 14, 12, 3},  // tray toggle: caffeinate cup
+		{308, 0, 12, 17},  // tray area
+		{20, 0, 288, 10},  // claude-hud
+		{20, 10, 144, 7},  // cpumem
+		{164, 10, 144, 7}, // disk
 	}
 	if len(m.hits) != len(want) {
 		t.Fatalf("hits = %d, want %d", len(m.hits), len(want))
@@ -125,10 +125,9 @@ func TestHomeRegionGeometry(t *testing.T) {
 
 // The home-no-kb variant (the strip flip's collapsed layout, region math
 // mirroring edge.cue at the Edge's 196x24): no kb-live region anywhere,
-// claude-panel takes the freed width (148 = home's 73 + kb's 75). Wrapped
-// geometry is load-bearing: home-no-kb is home-kind but NOT the config
-// default, so View() wraps it in the renderNonHome return strip
-// (homeStripW=3) and the layout runs at a 191-col interior, not 194.
+// claude-panel takes the freed width (148 = home's 73 + kb's 75). Both
+// layouts run at the full 196-col body -- no outer frame, no per-view
+// return column.
 func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 	m := &model{
 		cfg: &config.Config{
@@ -175,14 +174,14 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 		return false
 	}
 
-	// expanded home (the config default, unwrapped): 194x20 interior, kb
-	// column 75 cols, claude 73
+	// expanded home (the config default): 196x22 body, kb column 75 cols,
+	// claude 73
 	v := m.View()
 	if lines := strings.Split(v.Content, "\n"); len(lines) != 24 {
 		t.Fatalf("home view lines = %d, want 24", len(lines))
 	}
-	kbRegion := rect{120, 1, 75, 20}
-	claudeExpanded := rect{47, 1, 73, 20}
+	kbRegion := rect{121, 0, 75, 22}
+	claudeExpanded := rect{48, 0, 73, 22}
 	if !hasHit(kbRegion) {
 		t.Fatalf("expanded home missing the kb region rect %+v", kbRegion)
 	}
@@ -190,8 +189,7 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 		t.Fatalf("expanded home missing the claude rect %+v", claudeExpanded)
 	}
 
-	// collapsed variant: return strip on the right, 191-col interior,
-	// claude at 148 cols, no kb region
+	// collapsed variant: claude at 148 cols, no kb region
 	m.layout = "home-no-kb"
 	m.resetLayout()
 	v = m.View()
@@ -204,12 +202,9 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 			t.Errorf("line %d width = %d, want 196", i, w)
 		}
 	}
-	claudeCollapsed := rect{44, 1, 148, 20}
+	claudeCollapsed := rect{48, 0, 148, 22}
 	if !hasHit(claudeCollapsed) {
 		t.Fatalf("home-no-kb missing the widened claude rect %+v", claudeCollapsed)
-	}
-	if !hasHit(rect{193, 0, 3, 22}) {
-		t.Fatal("home-no-kb missing the return strip rect")
 	}
 	if hasHit(kbRegion) {
 		t.Fatal("home-no-kb still places the kb region")
@@ -269,15 +264,15 @@ func TestRailTwoColumnBands(t *testing.T) {
 	widenRail(m, 22)
 	m.widgetData["dock-rail"] = railData()
 	lines := strings.Split(m.renderHome(17), "\n")
-	// rail band 0 occupies interior rows 1..3; the name row is the middle
-	mid := ansi.Strip(lines[2])
+	// rail band 0 occupies body rows 0..2; the name row is the middle
+	mid := ansi.Strip(lines[1])
 	if !strings.Contains(mid, "safari") || !strings.Contains(mid, "mail") {
 		t.Fatalf("band 0 name row = %q, want safari and mail side by side", mid)
 	}
-	if strings.Contains(ansi.Strip(lines[1]), "safari") {
+	if strings.Contains(ansi.Strip(lines[0]), "safari") {
 		t.Error("name leaked onto the button's border row")
 	}
-	if !strings.Contains(lines[1], lipgloss.RoundedBorder().TopLeft) {
+	if !strings.Contains(lines[0], lipgloss.RoundedBorder().TopLeft) {
 		t.Error("band 0 border row missing the button frame")
 	}
 }
@@ -479,21 +474,21 @@ func TestRailMinimizedSectionAndNote(t *testing.T) {
 
 	// band 0 = running names on its middle row; band 1's middle row carries
 	// the minimized title, dim-labeled (running labels carry identity hue)
-	if mid := ansi.Strip(lines[2]); !strings.Contains(mid, "safari") || !strings.Contains(mid, "mail") {
+	if mid := ansi.Strip(lines[1]); !strings.Contains(mid, "safari") || !strings.Contains(mid, "mail") {
 		t.Fatalf("band 0 = %q, want the running tiles first", mid)
 	}
-	if !strings.Contains(ansi.Strip(lines[5]), "scratch") {
-		t.Fatalf("band 1 = %q, want the minimized title", ansi.Strip(lines[5]))
+	if !strings.Contains(ansi.Strip(lines[4]), "scratch") {
+		t.Fatalf("band 1 = %q, want the minimized title", ansi.Strip(lines[4]))
 	}
-	if !strings.Contains(lines[5], "\x1b[90mscratch") {
+	if !strings.Contains(lines[4], "\x1b[90mscratch") {
 		t.Error("minimized label not dim")
 	}
-	if strings.Contains(lines[2], "\x1b[90msafari") {
+	if strings.Contains(lines[1], "\x1b[90msafari") {
 		t.Error("running label dimmed")
 	}
 	// the note fitCells to the rail width, so match its surviving prefix
 	note := false
-	for _, l := range lines[7:] {
+	for _, l := range lines[6:] {
 		if strings.Contains(ansi.Strip(l), "minimized: grant") {
 			note = true
 		}
@@ -512,13 +507,13 @@ func TestRailMinimizedSectionAndNote(t *testing.T) {
 	if len(buttons) != 3 {
 		t.Fatalf("tile hits = %d, want 3 (note row is not a tile)", len(buttons))
 	}
-	if want := (rect{1, 4, 10, 3}); buttons[2] != want {
+	if want := (rect{0, 3, 10, 3}); buttons[2] != want {
 		t.Fatalf("minimized tile rect = %+v, want %+v", buttons[2], want)
 	}
 
 	// tap on the minimized tile activates the owning app
 	got := attachFakeBus(t, m)
-	if !m.resolveTap(2, 5) {
+	if !m.resolveTap(1, 4) {
 		t.Fatal("tap on the minimized tile not consumed")
 	}
 	msg := wantBusMsg(t, got)
@@ -747,8 +742,8 @@ func TestHomeTapContentRowAct(t *testing.T) {
 	_ = m.renderHome(17)
 	got := attachFakeBus(t, m)
 
-	// claude region content starts at (22,2); row 0 carries the act
-	if !m.resolveTap(25, 2) {
+	// claude region content starts at (21,1); row 0 carries the act
+	if !m.resolveTap(25, 1) {
 		t.Fatal("tap inside the claude region not consumed")
 	}
 	msg := wantBusMsg(t, got)
@@ -852,29 +847,21 @@ func TestChromeWithoutRendererIsLoud(t *testing.T) {
 	}
 }
 
-// Kind drives the engine, name drives the affordance: a home-KIND layout
-// whose NAME is not the home layout renders through renderNonHome with the
-// home strip, and the strip tap navigates home (bus absent: local switch).
-func TestHomeKindNonHomeNameCarriesHomeStrip(t *testing.T) {
+// Kind drives the engine: a home-KIND layout whose NAME is not the home
+// layout renders full-width (no per-view affordance); the strip's
+// persistent home icon is the way back (bus absent: local switch).
+func TestHomeKindNonHomeNameReturnsViaStripIcon(t *testing.T) {
 	m := newHomeModel(320, 18)
 	m.layout = "hub"
 	m.View()
 
-	strip := rect{317, 0, 3, 16}
-	found := false
 	for _, h := range m.hits {
-		if h.area == strip {
-			found = true
+		if h.area.y < 16 && h.area.w == 3 && h.area.x == 317 {
+			t.Fatalf("hub still carries an affordance column at %+v", h.area)
 		}
 	}
-	if !found {
-		t.Fatalf("home strip rect %+v missing from the hub hit table", strip)
-	}
-	if m.resolveTap(316, 10) {
-		t.Fatal("tap on the border column consumed")
-	}
-	if !m.resolveTap(318, 10) {
-		t.Fatal("tap on the home strip not consumed")
+	if !m.resolveTap(1, 17) {
+		t.Fatal("tap on the strip home icon not consumed")
 	}
 	if m.layout != "home" {
 		t.Fatalf("layout = %q, want home", m.layout)
@@ -887,9 +874,9 @@ func TestHomeTapSendsCtlWhenBusConnected(t *testing.T) {
 	m.View()
 	got := attachFakeBus(t, m)
 
-	// through the real gesture dispatch: the strip rides the hit table
+	// through the real gesture dispatch: the strip icon rides the hit table
 	m.handleBusMsg(proto.Msg{Type: proto.TypeGesture,
-		Gesture: &proto.Gesture{Kind: proto.GestureTap, Col: 318, Row: 10}})
+		Gesture: &proto.Gesture{Kind: proto.GestureTap, Col: 1, Row: 17}})
 	if m.layout != "hub" {
 		t.Fatalf("bus-connected home tap switched locally to %q", m.layout)
 	}
@@ -910,8 +897,8 @@ func TestHomeTapResolvesHomeByKind(t *testing.T) {
 	m.layout = "skew"
 	m.View()
 
-	if !m.resolveTap(318, 10) {
-		t.Fatal("tap on the home strip not consumed")
+	if !m.resolveTap(1, 17) {
+		t.Fatal("tap on the strip home icon not consumed")
 	}
 	if m.layout != "hub" {
 		t.Fatalf("layout = %q, want hub (home by kind)", m.layout)
@@ -1278,6 +1265,99 @@ func TestAttentionOffByteIdenticalToTitledBox(t *testing.T) {
 	lines, _ := renderChromeRows(d, rr.w-2, rr.h-2, m.rowStyles())
 	if got != renderTitledBox("claude 0/1", lines, rr.w, rr.h) {
 		t.Fatal("attention-less region diverged from renderTitledBox")
+	}
+}
+
+// The border ramp leads with a pure-warn plateau: a solid head on the
+// crawl, then the fade to dim.
+func TestAttentionRampPlateau(t *testing.T) {
+	m := newHomeModel(320, 18)
+	m.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
+	ramp := m.attentionRamp()
+	if len(ramp) != attentionRampLen {
+		t.Fatalf("ramp len = %d, want %d", len(ramp), attentionRampLen)
+	}
+	for i := 1; i < attentionPlateau; i++ {
+		if ramp[i] != ramp[0] {
+			t.Errorf("ramp[%d] = %v, want the plateau tone %v", i, ramp[i], ramp[0])
+		}
+	}
+	// the plateau is EXACTLY attentionPlateau cells: Blend1D re-emits the
+	// warn endpoint, which must not stretch it
+	if ramp[attentionPlateau] == ramp[0] {
+		t.Error("ramp did not fade immediately after the plateau")
+	}
+	if ramp[attentionRampLen-1] == ramp[0] {
+		t.Error("ramp tail did not fade off the plateau")
+	}
+}
+
+// An attention row renders over a STEADY mid-blend background wash:
+// truecolor bg SGRs across the FULL region width, plain text and act
+// intact, frames identical between renders (no animation -- text must stay
+// readable). Without a palette the row renders plain (the border still
+// calls out the widget).
+func TestAttentionRowWash(t *testing.T) {
+	r := module.SpansRow(
+		module.Span{Text: "name", Style: module.StyleTitle},
+		module.Span{Text: " needs input", Style: module.StyleWarn},
+	)
+	r.Attention = true
+	r.Act = []string{"open"}
+	ss := newRowStyles(busPalette())
+	if ss.attnBG == nil {
+		t.Fatal("attnBG not derived from a full palette")
+	}
+	lines, acts := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, ss)
+	if len(lines) != 1 || len(acts[0]) != 1 {
+		t.Fatalf("attention row lines/acts = %d/%v", len(lines), acts)
+	}
+	if !strings.Contains(lines[0], "48;2;") {
+		t.Error("attention row carries no truecolor background")
+	}
+	if w := lipgloss.Width(lines[0]); w != 60 {
+		t.Errorf("attention row width = %d, want the full 60 (the whole row washes)", w)
+	}
+	if plain := ansi.Strip(lines[0]); !strings.Contains(plain, "name") || !strings.Contains(plain, "needs input") {
+		t.Errorf("attention row plain text = %q", plain)
+	}
+
+	// steady, not animated: two renders are byte-identical
+	lines2, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, ss)
+	if lines2[0] != lines[0] {
+		t.Error("attention wash changed between renders; it must be steady")
+	}
+
+	// no palette: plain render, byte-identical to the attention-less row
+	calm := r
+	calm.Attention = false
+	withAttn, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, chromeRowStyles)
+	without, _ := renderChromeRows(module.Data{Rows: []module.Row{calm}}, 60, 5, chromeRowStyles)
+	if withAttn[0] != without[0] {
+		t.Error("palette-less attention row diverged from the plain render")
+	}
+
+	// wide runes straddling the right edge still yield an exact-width row
+	// (CJK prompts ride session lines)
+	wide := module.SpansRow(module.Span{Text: strings.Repeat("\u4f1a", 8), Style: module.StyleDim})
+	wide.Attention = true
+	for _, cols := range []int{10, 11, 12} {
+		lines, _ := renderChromeRows(module.Data{Rows: []module.Row{wide}}, cols, 5, ss)
+		if w := lipgloss.Width(lines[0]); w != cols {
+			t.Errorf("wide-rune attention row width = %d, want %d", w, cols)
+		}
+	}
+
+	// combining marks survive (the wash path shares the plain path's
+	// fitCell semantics)
+	marked := module.SpansRow(module.Span{Text: "cafe\u0301", Style: module.StyleDim})
+	marked.Attention = true
+	lines, _ = renderChromeRows(module.Data{Rows: []module.Row{marked}}, 20, 5, ss)
+	if plain := ansi.Strip(lines[0]); !strings.Contains(plain, "cafe\u0301") {
+		t.Errorf("attention row dropped the combining mark: %q", plain)
+	}
+	if w := lipgloss.Width(lines[0]); w != 20 {
+		t.Errorf("marked attention row width = %d, want 20", w)
 	}
 }
 

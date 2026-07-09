@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
 
@@ -34,15 +35,25 @@ func (b *Bus) inputWorker() {
 // only argv the bus itself published: the widget's last successful poll's
 // row acts, or a config gesture's "run" argv. khudson.sock being 0600 keeps
 // strangers out, but a misbehaving peer on it must not turn the bus into an
-// arbitrary exec service, so anything else is refused loudly.
+// arbitrary exec service, so anything else is refused loudly. A vetted act
+// is offered to the widget's own module first (module.ActHandler:
+// in-process view state like the panel's fleet-tree folds); a handled act
+// never execs, and the widget repolls on the next scheduler tick so the
+// flip lands on glass immediately.
 func (b *Bus) handleRowAct(m proto.Msg) {
 	if len(m.Argv) == 0 {
 		return
 	}
-	if !b.rowActAllowed(m) {
+	allowed, handler := b.vetRowAct(m)
+	if !allowed {
 		log.Printf("khudson bus: row act %s: argv %v not published by the bus; refused", m.Widget, m.Argv)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("row act %s: argv refused (not published by the bus)", m.Widget)})
+		return
+	}
+	if handler != nil && handler.HandleAct(m.Argv) {
+		log.Printf("khudson bus: row act %s handled in-process: %v", m.Widget, m.Argv)
+		b.pokePoll(m.Widget)
 		return
 	}
 	wait, err := b.startArgv(m.Argv)
@@ -57,29 +68,45 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 	go b.reapCmd("row act", m.Argv, wait)
 }
 
-// rowActAllowed reports whether m.Argv matches a row act from the widget's
+// pokePoll asks the scheduler to poll widget on its next tick. Best-effort:
+// a full (or nil, on bare test buses) channel drops the poke and the widget
+// falls back to its poll cadence.
+func (b *Bus) pokePoll(widget string) {
+	select {
+	case b.repoll <- widget:
+	default:
+	}
+}
+
+// vetRowAct reports whether m.Argv matches a row act from the widget's
 // last successful poll or a "run" gesture in its config -- the two argv
-// sources the bus itself vetted.
-func (b *Bus) rowActAllowed(m proto.Msg) bool {
+// sources the bus itself vetted -- and resolves the widget module's
+// ActHandler capability under the SAME config snapshot, so a reload
+// swapping b.cfg between the vet and the dispatch cannot route a
+// stale-config act into a new-config module.
+func (b *Bus) vetRowAct(m proto.Msg) (allowed bool, handler module.ActHandler) {
 	b.mu.Lock()
 	reg := b.reg
 	w, cfgOK := b.cfg.Widgets[m.Widget]
 	b.mu.Unlock()
+	if cfgOK && w.Render.Kind == "native" {
+		handler, _ = b.mods[w.Render.Module].(module.ActHandler)
+	}
 	if st, ok := reg.Get(m.Widget); ok {
 		for _, act := range st.acts() {
 			if slices.Equal(act, m.Argv) {
-				return true
+				return true, handler
 			}
 		}
 	}
 	if cfgOK {
 		for _, a := range w.Gestures {
 			if a.Verb == "run" && slices.Equal(a.Argv, m.Argv) {
-				return true
+				return true, handler
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // startArgv starts argv through the exec seam; the returned wait reaps it.

@@ -63,7 +63,8 @@ func TestResourcesChromeRendererRegistered(t *testing.T) {
 
 // Leading resource rows become side-by-side live cells: name, gauge, bold
 // value stacked per cell, every metric's segments starting at its cell
-// column. Region content starts two lines in (home border + region border).
+// column. Region content starts one line in (the region border; the home
+// body draws no outer frame).
 func TestResourcesCellsSideBySide(t *testing.T) {
 	m := resourcesModel(80, 16)
 	m.widgetData["res"] = resourcesData()
@@ -81,7 +82,7 @@ func TestResourcesCellsSideBySide(t *testing.T) {
 		t.Fatal("resources fell through to the warn box")
 	}
 
-	names, values := ansi.Strip(lines[2]), ansi.Strip(lines[4])
+	names, values := ansi.Strip(lines[1]), ansi.Strip(lines[3])
 	for _, n := range []string{"cpu", "mem", "/"} {
 		if !strings.Contains(names, n) {
 			t.Errorf("cell name %q missing from %q", n, names)
@@ -96,15 +97,15 @@ func TestResourcesCellsSideBySide(t *testing.T) {
 	}
 	// gauge row: ANSI-16 fill + track backgrounds; live cells carry no spark
 	for _, sgr := range []string{"\x1b[42m", "\x1b[100m"} {
-		if !strings.Contains(lines[3], sgr) {
+		if !strings.Contains(lines[2], sgr) {
 			t.Errorf("gauge row missing SGR %q", sgr)
 		}
 	}
-	if hasBraille(lines[3]) || hasBraille(lines[2]) || hasBraille(lines[4]) {
+	if hasBraille(lines[2]) || hasBraille(lines[1]) || hasBraille(lines[3]) {
 		t.Error("live cells must not carry a sparkline")
 	}
 	// big current value = bold
-	if !strings.Contains(lines[4], "\x1b[1m") {
+	if !strings.Contains(lines[3], "\x1b[1m") {
 		t.Error("current value not bold")
 	}
 }
@@ -163,7 +164,7 @@ func TestResourcesHistoryRows(t *testing.T) {
 
 	sparkAt := -1
 	for i, name := range []string{"cpu", "mem", "/"} {
-		plain := ansi.Strip(lines[5+i])
+		plain := ansi.Strip(lines[4+i])
 		if !strings.Contains(plain, name) {
 			t.Errorf("history row %d missing label %q: %q", i, name, plain)
 		}
@@ -272,10 +273,10 @@ func TestResourcesProcessTableAligned(t *testing.T) {
 	m.widgetData["res"] = resourcesData()
 	lines := strings.Split(m.renderHome(15), "\n")
 
-	if !strings.Contains(ansi.Strip(lines[8]), "----") {
-		t.Errorf("divider row missing: %q", ansi.Strip(lines[8]))
+	if !strings.Contains(ansi.Strip(lines[7]), "----") {
+		t.Errorf("divider row missing: %q", ansi.Strip(lines[7]))
 	}
-	p1, p2 := ansi.Strip(lines[9]), ansi.Strip(lines[10])
+	p1, p2 := ansi.Strip(lines[8]), ansi.Strip(lines[9])
 	if !strings.Contains(p1, "kernel_task") || !strings.Contains(p2, "windowserver") {
 		t.Fatalf("process rows missing: %q / %q", p1, p2)
 	}

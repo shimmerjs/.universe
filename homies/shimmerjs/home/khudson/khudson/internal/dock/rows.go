@@ -24,6 +24,10 @@ type rowStyles struct {
 	// gaugeStops, when set, shade gauge fills cool -> hot across the bar
 	// extent instead of the flat gaugeFill
 	gaugeStops []color.Color
+	// attnBG, when set, is the input-requested row treatment: a steady
+	// mid-blend background wash (style.go attnRowBG) across the whole row.
+	// Nil renders attention rows plain.
+	attnBG color.Color
 }
 
 func dividerLine(cols int, ss rowStyles) string {
@@ -73,6 +77,17 @@ func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][
 	barW := min(cols/3, 40)
 	for _, r := range d.Rows {
 		var line string
+		if r.Attention && ss.attnBG != nil && cols > 0 &&
+			(r.Kind == module.RowSpans || r.Kind == module.RowText || r.Kind == "") {
+			line = attentionLine(r, cols, ss)
+			lines = append(lines, line)
+			acts = append(acts, r.Act)
+			for extra := 1; extra < r.MinHeight; extra++ {
+				lines = append(lines, "")
+				acts = append(acts, r.Act)
+			}
+			continue
+		}
 		switch r.Kind {
 		case module.RowDivider:
 			line = dividerLine(cols, ss)
@@ -109,6 +124,28 @@ func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][
 		}
 	}
 	return lines, acts
+}
+
+// attentionLine renders an input-requested row: its spans (or text) over a
+// steady mid-blend background wash padded to the full width, so the row
+// reads highlighted without drowning the text (an animated per-cell comet
+// did; glass-verified). fitCell handles wide runes and combining marks
+// exactly like the plain path. Only spans/text rows carry attention today.
+func attentionLine(r module.Row, cols int, ss rowStyles) string {
+	var b strings.Builder
+	b.WriteString(ss.styleFor(r.Style).Background(ss.attnBG).Render(" "))
+	if r.Kind == module.RowSpans {
+		for _, s := range r.Spans {
+			b.WriteString(ss.spanStyle(r, s).Background(ss.attnBG).Render(s.Text))
+		}
+	} else {
+		b.WriteString(ss.styleFor(r.Style).Background(ss.attnBG).Render(r.Text))
+	}
+	line := fitCell(b.String(), cols)
+	if pad := cols - lipgloss.Width(line); pad > 0 {
+		line += lipgloss.NewStyle().Background(ss.attnBG).Render(strings.Repeat(" ", pad))
+	}
+	return line
 }
 
 // gaugeBar is a w-cell fill bar; frac arrives unclamped off the wire. With

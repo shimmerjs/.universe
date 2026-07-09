@@ -251,11 +251,11 @@ const (
 	stripExpandGlyph   = "\U000F0143" // nf-md-chevron_up
 )
 
-// panelRegion is the home content area in cells (inside the border); the bus
-// receives it via hello/grid so the recognizer and any scraped windows size
-// to the same grid.
+// panelRegion is the home content area in cells (the whole body -- the base
+// HUD draws no outer frame); the bus receives it via hello/grid so the
+// recognizer and any scraped windows size to the same grid.
 func (m *model) panelRegion() (cols, rows int) {
-	return m.width - 2, m.height - stripH - 2
+	return m.width, m.height - stripH
 }
 
 func tick() tea.Cmd {
@@ -575,8 +575,8 @@ func (m *model) navigateTo(target string) {
 }
 
 // homeTap navigates to the home-kind layout; no-op when already there or
-// when none is configured. The home strip's hit region consumes the tap
-// either way.
+// when none is configured. Reached from the status strip's home icon (the
+// one persistent return affordance).
 func (m *model) homeTap(int, int) {
 	if t, ok := m.homeLayout(); ok && m.layout != t {
 		m.navigateTo(t)
@@ -612,41 +612,36 @@ func (m *model) View() tea.View {
 	bodyH := m.height - stripH
 
 	var body string
-	// kind drives the ENGINE (which renderer runs); name drives the
-	// AFFORDANCE (only the home layout itself skips the return strip)
+	// kind drives the ENGINE (which renderer runs); the strip's persistent
+	// home icon is the way back from every layout, so no per-view return
+	// affordance wraps the body
 	switch m.layoutKind() {
 	case "home":
-		render := m.renderHome
-		if t, ok := m.homeLayout(); ok && m.layout != t {
-			// a home-kind layout that is not THE home layout (e.g. the
-			// fullscreen claude panel) still needs a way back
-			render = func(h int) string { return m.renderNonHome(h, m.renderHome) }
-		}
 		if m.trayFlashLive() || m.attentionLive() {
 			// clock-driven frame: render fresh until the flash expires or
 			// the attention border stops marching
 			m.homeCache.ok = false
-			body = render(bodyH)
+			body = m.renderHome(bodyH)
 		} else if m.homeCache.ok {
 			body = m.homeCache.body
 			m.hits = m.homeCache.hits
 		} else {
-			body = render(bodyH)
+			body = m.renderHome(bodyH)
 			m.homeCache = homeCache{body: body, hits: slices.Clone(m.hits), ok: true}
 		}
 	case "keyboard":
 		if m.trayFlashLive() {
 			m.homeCache.ok = false
-			body = m.renderNonHome(bodyH, m.renderKeyboard)
+			body = m.renderKeyboard(bodyH)
 		} else if m.homeCache.ok {
 			body = m.homeCache.body
 			m.hits = m.homeCache.hits
 		} else {
-			body = m.renderNonHome(bodyH, m.renderKeyboard)
+			body = m.renderKeyboard(bodyH)
 			m.homeCache = homeCache{body: body, hits: slices.Clone(m.hits), ok: true}
 		}
 	default:
-		body = m.renderNonHome(bodyH, m.renderSkewStub)
+		body = m.renderSkewStub(bodyH)
 	}
 
 	// renderStrip appends the strip hits onto whichever body table is live;
@@ -666,55 +661,6 @@ func (m *model) renderSkewStub(bodyH int) string {
 	return renderTitledBox("",
 		[]string{chromeWarn.Render(" layout " + m.layout + ": kind " + m.layoutKind() + " has no renderer")},
 		m.width, bodyH)
-}
-
-// homeStripW is the home affordance column: a slim strip of always-on chrome
-// on the right edge of every non-home layout, tap = back to home.
-const homeStripW = 3
-
-// renderNonHome renders a non-home layout with the home affordance strip on
-// its right edge. The layout renderer reads its width off the model (the
-// kb.go contract), so the reserved columns are a scoped width override
-// around the call; the hit regions the renderer appends are absolute cells
-// and stay valid in the narrower region. A dock too small to share keeps the
-// layout full-width; `khudson ctl layout` is the return path there.
-func (m *model) renderNonHome(bodyH int, render func(int) string) string {
-	if m.width-homeStripW < 8 {
-		return render(bodyH)
-	}
-	w := m.width
-	m.width = w - homeStripW
-	body := render(bodyH)
-	m.width = w
-	return lipgloss.JoinHorizontal(lipgloss.Top, body, m.renderHomeStrip(bodyH))
-}
-
-// renderHomeStrip draws the affordance column and registers its tap target:
-// the whole strip navigates to the home-kind layout (homeTap). The label
-// reads top-to-bottom in the brand tone (discoverable), the border
-// stays dim chrome. lipgloss v2 Width/Height are frame-inclusive, so the
-// style yields exactly homeStripW x bodyH cells; fixedBlock re-asserts the
-// geometry per the ambiguous-width convention.
-func (m *model) renderHomeStrip(bodyH int) string {
-	m.hits = append(m.hits, hitRegion{
-		area: rect{m.width - homeStripW, 0, homeStripW, bodyH},
-		do:   m.homeTap,
-	})
-	letters := "home"
-	if inner := bodyH - 2; inner < len(letters) {
-		letters = letters[:max(inner, 0)]
-	}
-	rows := make([]string, 0, len(letters))
-	for _, r := range letters {
-		rows = append(rows, m.sty.brand.Render(string(r)))
-	}
-	box := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(chromeDim.GetForeground()).
-		Width(homeStripW).
-		Height(bodyH).
-		Align(lipgloss.Center, lipgloss.Center)
-	return fixedBlock(strings.Split(box.Render(strings.Join(rows, "\n")), "\n"), homeStripW, bodyH)
 }
 
 // renderStrip is the 2-row strip under the body, hosting the nav band ahead

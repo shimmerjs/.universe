@@ -24,8 +24,8 @@ func TestPanelGeometryOccupied(t *testing.T) {
 		{id: "aaaaaaaa-live", mtime: now, prompt: "go"},
 		{id: "bbbbbbbb-idle", mtime: now.Add(-30 * time.Minute)},
 	}
-	title, rows := renderPanel(sessions, 0, nil, panelListMax, now)
-	if title != "claude 1/2" {
+	title, rows := renderPanel(sessions, 0, nil, nil, panelListMax, now)
+	if title != "clod 1/2" {
 		t.Errorf("title = %q", title)
 	}
 	if len(rows) != panelDetailRows+2 {
@@ -61,7 +61,7 @@ func TestPanelGeometryOverflow(t *testing.T) {
 		sessions = append(sessions, session{
 			id: fmt.Sprintf("%08d-x", i), mtime: now.Add(-time.Duration(i) * time.Minute)})
 	}
-	_, rows := renderPanel(sessions, 0, nil, panelListMax, now)
+	_, rows := renderPanel(sessions, 0, nil, nil, panelListMax, now)
 	if len(rows) != panelDetailRows+panelListMax+1 {
 		t.Fatalf("len(rows) = %d, want %d", len(rows), panelDetailRows+panelListMax+1)
 	}
@@ -76,7 +76,7 @@ func TestPanelGeometryOverflow(t *testing.T) {
 func TestPanelEmptyDetail(t *testing.T) {
 	now := time.Now()
 	sessions := []session{{id: "aaaaaaaa-idle", mtime: now.Add(-30 * time.Minute)}}
-	_, rows := renderPanel(sessions, -1, nil, panelListMax, now)
+	_, rows := renderPanel(sessions, -1, nil, nil, panelListMax, now)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v, want placeholder + one list row", rows)
 	}
@@ -89,8 +89,8 @@ func TestPanelEmptyDetail(t *testing.T) {
 }
 
 func TestPanelNoSessions(t *testing.T) {
-	title, rows := renderPanel(nil, -1, nil, panelListMax, time.Now())
-	if title != "claude" || len(rows) != 1 || rows[0].Text != "no active sessions" {
+	title, rows := renderPanel(nil, -1, nil, nil, panelListMax, time.Now())
+	if title != "clod" || len(rows) != 1 || rows[0].Text != "no active sessions" {
 		t.Errorf("empty panel = %q %+v", title, rows)
 	}
 }
@@ -102,8 +102,8 @@ func TestPanelTitleRollup(t *testing.T) {
 		{id: "aaaaaaaa-x", mtime: now, agents: 12, workflows: 2},
 		{id: "bbbbbbbb-x", mtime: now.Add(-time.Hour), agents: 2},
 	}
-	title, _ := renderPanel(sessions, 0, nil, panelListMax, now)
-	if want := "claude 1/2 . " + glyphAgents + "14 " + glyphWorkflows + "2"; title != want {
+	title, _ := renderPanel(sessions, 0, nil, nil, panelListMax, now)
+	if want := "clod 1/2 . " + glyphAgents + "14 " + glyphWorkflows + "2"; title != want {
 		t.Errorf("title = %q, want %q", title, want)
 	}
 }
@@ -273,6 +273,21 @@ func TestAttentionLive(t *testing.T) {
 		{"at exactly the horizon stays live", session{attention: true, notified: now.Add(-attentionHorizon)}, true},
 		{"just past the horizon goes stale", session{attention: true, notified: now.Add(-attentionHorizon - time.Second)}, false},
 		{"a recent stop keeps an old bell inside the horizon", session{attention: true, notified: now.Add(-17 * time.Hour), stopped: now.Add(-time.Minute)}, true},
+		// mid-turn gates: the transcript is silent while the gate blocks, so
+		// transcript activity (or a stop) strictly after notification_ts
+		// means the gate was answered and the turn moved on
+		{"granted permission (transcript moved after the bell)", session{attention: true, notifType: "permission_prompt",
+			notified: now.Add(-3 * time.Minute), transcriptMtime: now.Add(-time.Minute)}, false},
+		{"pending permission (transcript quiet since the bell)", session{attention: true, notifType: "permission_prompt",
+			notified: now.Add(-3 * time.Minute), transcriptMtime: now.Add(-4 * time.Minute)}, true},
+		{"same-second transcript write does not answer its own bell", session{attention: true, notifType: "permission_prompt",
+			notified: now.Truncate(time.Second), transcriptMtime: now.Truncate(time.Second).Add(500 * time.Millisecond)}, true},
+		{"gate resolved by turn end", session{attention: true, notifType: "permission_prompt",
+			notified: now.Add(-3 * time.Minute), stopped: now.Add(-time.Minute)}, false},
+		{"answered question (agent_needs_input)", session{attention: true, notifType: "agent_needs_input",
+			notified: now.Add(-3 * time.Minute), transcriptMtime: now.Add(-time.Minute)}, false},
+		{"idle bell survives transcript churn (wakeups do not answer it)", session{attention: true, notifType: "idle_prompt",
+			notified: now.Add(-3 * time.Minute), transcriptMtime: now.Add(-time.Minute)}, true},
 	} {
 		if got := tt.s.attentionLive(now); got != tt.want {
 			t.Errorf("%s: attentionLive = %v, want %v", tt.name, got, tt.want)
@@ -289,8 +304,10 @@ func TestStateSpanStaleAttention(t *testing.T) {
 	if got := s.stateSpan(now); got != (module.Span{Text: " " + glyphAttention, Style: module.StyleDim}) {
 		t.Errorf("stale stateSpan = %+v, want the dim bell", got)
 	}
-	// live attention keeps the typed warn glyph
+	// live attention keeps the typed warn glyph (no answer signal left:
+	// a stop after the bell answers a permission gate)
 	s.tailPromptTS = time.Time{}
+	s.stopped = time.Time{}
 	if got := s.stateSpan(now); got != (module.Span{Text: " " + glyphPerm, Style: module.StyleWarn}) {
 		t.Errorf("live stateSpan = %+v, want the typed warn glyph", got)
 	}
@@ -366,7 +383,7 @@ func TestOutcomeRow(t *testing.T) {
 func TestDetailHeaderModelEffort(t *testing.T) {
 	now := time.Now()
 	s := session{id: "aaaaaaaa-x", mtime: now, model: "Opus 4.8", effort: "xhigh"}
-	rows := detailRows(s, nil, now)
+	rows := detailRows(s, nil, nil, now)
 	if len(rows) != panelDetailRows {
 		t.Fatalf("detail rows = %d, want %d", len(rows), panelDetailRows)
 	}
@@ -376,45 +393,229 @@ func TestDetailHeaderModelEffort(t *testing.T) {
 		t.Errorf("header tail span = %+v, want dim model+effort", last)
 	}
 	// no model/effort: no empty span appended
-	rows = detailRows(session{id: "bbbbbbbb-x", mtime: now}, nil, now)
+	rows = detailRows(session{id: "bbbbbbbb-x", mtime: now}, nil, nil, now)
 	h = rows[0]
 	if got := h.Spans[len(h.Spans)-1].Text; strings.TrimSpace(got) == "" {
 		t.Errorf("header tail span = %q, want no blank tail", got)
 	}
 }
 
-// Agent rows cap at panelAgentRows with a "+N agents" overflow; running
-// agents lead.
-func TestDetailAgentRows(t *testing.T) {
-	now := time.Now()
+func foldOf(sid, node string) string { return strings.Join(foldArgv(sid, node), " ") }
+
+func testAgents(now time.Time, n, running int) []agentRow {
 	var agents []agentRow
-	for i := range 7 {
+	for i := range n {
 		agents = append(agents, agentRow{
 			id: fmt.Sprintf("a%d", i), typ: "reviewer",
 			desc: fmt.Sprintf("lens %d", i), ts: now.Add(-time.Duration(i) * time.Minute),
-			running: i < 2,
+			running: i < running,
 		})
 	}
+	return agents
+}
+
+// One expanded tree fills the zone: root row + children capped into the
+// budget with a "+N agents" overflow, EVERY row carrying the fold act.
+func TestDetailFleetTree(t *testing.T) {
+	now := time.Now()
+	nodes := []fleetNode{newFleetNode("agents", "agents", glyphAgents, testAgents(now, 7, 2))}
 	s := session{id: "aaaaaaaa-x", mtime: now}
-	rows := detailRows(s, agents, now)
+	rows := detailRows(s, nodes, nil, now)
 	if len(rows) != panelDetailRows {
 		t.Fatalf("detail rows = %d, want %d", len(rows), panelDetailRows)
 	}
-	for i := range panelAgentRows {
-		r := rows[2+i]
-		if r.Kind != module.RowSpans || len(r.Act) != 0 {
-			t.Fatalf("agent row %d = %+v, want actless spans", i, r)
+	fold := foldOf("aaaaaaaa-x", "agents")
+	root := rows[2]
+	if actOf(root) != fold {
+		t.Errorf("root act = %q, want %q", actOf(root), fold)
+	}
+	if text := lineText(root); !strings.Contains(text, glyphFoldOpen) || !strings.Contains(text, "agents") ||
+		!strings.Contains(text, "2/7") {
+		t.Errorf("root row = %q, want expanded chevron + label + live/total", text)
+	}
+	if root.Style != module.StyleAccent {
+		t.Errorf("root style = %q, want accent while children run", root.Style)
+	}
+	// children: rows 3-6 (spare 5 minus the overflow row), then "+3 agents"
+	for i := range 4 {
+		r := rows[3+i]
+		if actOf(r) != fold {
+			t.Fatalf("child row %d act = %q, want the fold act (touch anywhere collapses)", i, actOf(r))
 		}
 		if text := lineText(r); !strings.Contains(text, "reviewer") || !strings.Contains(text, glyphAgents) {
-			t.Errorf("agent row %d = %q", i, text)
+			t.Errorf("child row %d = %q", i, text)
 		}
 	}
-	if rows[2].Style != module.StyleAccent || rows[4].Style != module.StyleDim {
-		t.Errorf("agent row styles = %q/%q, want running accent, done dim", rows[2].Style, rows[4].Style)
+	if text := lineText(rows[3]); !strings.Contains(text, treeMid) {
+		t.Errorf("first child = %q, want a mid connector", text)
 	}
-	over := rows[2+panelAgentRows]
-	if over.Text != "+2 agents" || over.Style != module.StyleDim {
-		t.Errorf("agent overflow row = %+v", over)
+	if rows[3].Style != module.StyleAccent || rows[5].Style != module.StyleDim {
+		t.Errorf("child styles = %q/%q, want running accent, done dim", rows[3].Style, rows[5].Style)
+	}
+	over := rows[7]
+	if !strings.Contains(over.Text, "+3 agents") || over.Style != module.StyleDim || actOf(over) != fold {
+		t.Errorf("overflow row = %+v, want dim +3 agents carrying the fold act", over)
+	}
+}
+
+// A folded tree is ONE row: collapsed chevron, live/total, the type
+// summary, still tappable to re-expand.
+func TestDetailFleetTreeFolded(t *testing.T) {
+	now := time.Now()
+	agents := testAgents(now, 7, 2)
+	agents[6].typ = "skeptic"
+	nodes := []fleetNode{newFleetNode("agents", "agents", glyphAgents, agents)}
+	s := session{id: "aaaaaaaa-x", mtime: now}
+	folded := map[string]bool{"aaaaaaaa-x/agents": true}
+	rows := detailRows(s, nodes, folded, now)
+	if len(rows) != panelDetailRows {
+		t.Fatalf("detail rows = %d, want %d", len(rows), panelDetailRows)
+	}
+	root := rows[2]
+	if actOf(root) != foldOf("aaaaaaaa-x", "agents") {
+		t.Errorf("folded root act = %q", actOf(root))
+	}
+	text := lineText(root)
+	if !strings.Contains(text, glyphFoldShut) || !strings.Contains(text, "2/7") ||
+		!strings.Contains(text, "6 reviewer 1 skeptic") {
+		t.Errorf("folded root = %q, want collapsed chevron + counts + type summary", text)
+	}
+	// the rest of the zone pads blank: the tree really is one row
+	for i := 3; i < panelDetailRows; i++ {
+		if rows[i].Text != "" || len(rows[i].Act) != 0 {
+			t.Errorf("pad row %d = %+v, want blank actless", i, rows[i])
+		}
+	}
+}
+
+// Trees outnumbering the budget truncate roots-first into "+N trees";
+// children share what the roots leave, greedily in tree order.
+func TestFleetRowsBudget(t *testing.T) {
+	now := time.Now()
+	var nodes []fleetNode
+	for i := range 8 {
+		nodes = append(nodes, newFleetNode(fmt.Sprintf("wf:wf_%d", i), fmt.Sprintf("wf_%d", i),
+			glyphWorkflows, testAgents(now, 3, 0)))
+	}
+	rows := fleetRows("sid", nodes, nil, 6, now)
+	if len(rows) != 6 {
+		t.Fatalf("fleet rows = %d, want the budget (6)", len(rows))
+	}
+	for i := range 5 {
+		if actOf(rows[i]) != foldOf("sid", fmt.Sprintf("wf:wf_%d", i)) {
+			t.Errorf("row %d act = %q, want root %d (roots first-class)", i, actOf(rows[i]), i)
+		}
+	}
+	last := rows[5]
+	if last.Text != "+3 trees" || last.Style != module.StyleDim || len(last.Act) != 0 {
+		t.Errorf("overflow row = %+v, want dim actless +3 trees", last)
+	}
+
+	// two trees, first expanded: children fill the spare rows only
+	nodes = []fleetNode{
+		newFleetNode("agents", "agents", glyphAgents, testAgents(now, 9, 9)),
+		newFleetNode("wf:wf_1", "wf_1", glyphWorkflows, testAgents(now, 2, 0)),
+	}
+	rows = fleetRows("sid", nodes, nil, 6, now)
+	if len(rows) != 6 {
+		t.Fatalf("fleet rows = %d, want 6", len(rows))
+	}
+	if actOf(rows[0]) != foldOf("sid", "agents") || actOf(rows[5]) != foldOf("sid", "wf:wf_1") {
+		t.Errorf("roots = %q / %q, want both roots on glass", actOf(rows[0]), actOf(rows[5]))
+	}
+	if !strings.Contains(rows[4].Text, "+6 agents") {
+		t.Errorf("first tree overflow = %+v, want +6 agents", rows[4])
+	}
+}
+
+// HandleAct toggles fold state in-process; anything else is not ours.
+func TestPanelHandleAct(t *testing.T) {
+	p := NewPanel(New())
+	if p.HandleAct([]string{"khudson", "claude", "focus"}) {
+		t.Error("HandleAct claimed a focus argv")
+	}
+	if !p.HandleAct(foldArgv("sid-a", "agents")) {
+		t.Fatal("HandleAct refused its own fold argv")
+	}
+	folded := p.foldSnapshot([]session{{id: "sid-a"}})
+	if !folded["sid-a/agents"] {
+		t.Errorf("foldSnapshot = %v, want the toggled tree folded", folded)
+	}
+	// toggle back
+	if !p.HandleAct(foldArgv("sid-a", "agents")) {
+		t.Fatal("HandleAct refused the re-expand")
+	}
+	if folded := p.foldSnapshot([]session{{id: "sid-a"}}); len(folded) != 0 {
+		t.Errorf("foldSnapshot after re-expand = %v, want empty", folded)
+	}
+	// dead sessions' folds prune
+	p.HandleAct(foldArgv("sid-gone", "agents"))
+	if folded := p.foldSnapshot([]session{{id: "sid-a"}}); len(folded) != 0 {
+		t.Errorf("foldSnapshot = %v, want dead session pruned", folded)
+	}
+}
+
+// fleetNodes: loose agents form one node, each wf dir another; live trees
+// lead, then newest activity.
+func TestFleetNodes(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	sub := filepath.Join(dir, "sess", "subagents")
+	touch(t, filepath.Join(sub, "agent-a1.meta.json"),
+		`{"agentType":"reviewer","description":"lens A"}`, now.Add(-10*time.Minute))
+	touch(t, filepath.Join(sub, "agent-a1.jsonl"), "{}", now.Add(-10*time.Minute))
+	wfLive := filepath.Join(sub, "workflows", "wf_live")
+	touch(t, filepath.Join(wfLive, "agent-b1.meta.json"), `{"agentType":"skeptic","spawnDepth":1}`, now)
+	touch(t, filepath.Join(wfLive, "agent-b1.jsonl"), "{}", now)
+	touch(t, filepath.Join(wfLive, "agent-b2.meta.json"), `{"agentType":"skeptic","spawnDepth":1}`, now.Add(-5*time.Minute))
+	touch(t, filepath.Join(wfLive, "agent-b2.jsonl"), "{}", now.Add(-5*time.Minute))
+	wfDead := filepath.Join(sub, "workflows", "wf_dead")
+	touch(t, filepath.Join(wfDead, "agent-c1.meta.json"), `{"agentType":"mapper","spawnDepth":1}`, now.Add(-time.Hour))
+	touch(t, filepath.Join(wfDead, "agent-c1.jsonl"), "{}", now.Add(-time.Hour))
+	// an empty wf dir contributes no tree
+	touch(t, filepath.Join(sub, "workflows", "wf_empty", "journal.jsonl"), "", now)
+
+	s := session{id: "sid-a", dirs: []string{filepath.Join(dir, "sess")}}
+	nodes := fleetNodes(s, "", now)
+	if len(nodes) != 3 {
+		t.Fatalf("fleetNodes = %+v, want agents + 2 wf trees", nodes)
+	}
+	if nodes[0].key != "wf:wf_live" || nodes[0].live != 1 || len(nodes[0].rows) != 2 {
+		t.Errorf("nodes[0] = %+v, want the live workflow leading", nodes[0])
+	}
+	if nodes[1].key != "agents" || nodes[2].key != "wf:wf_dead" {
+		t.Errorf("node order = %s, %s, want stale agents then the dead wf", nodes[1].key, nodes[2].key)
+	}
+	if nodes[0].label != "wf_live" || nodes[0].glyph != glyphWorkflows {
+		t.Errorf("wf node identity = %+v", nodes[0])
+	}
+}
+
+// Live attention flags the exact rows awaiting input -- detail header +
+// outcome and the session's list row -- and only those.
+func TestPanelAttentionRows(t *testing.T) {
+	now := time.Now()
+	sessions := []session{
+		{id: "aaaaaaaa-bell", mtime: now, attention: true, notified: now.Add(-time.Minute)},
+		{id: "bbbbbbbb-live", mtime: now},
+	}
+	_, rows := renderPanel(sessions, 0, nil, nil, panelListMax, now)
+	if !rows[0].Attention || !rows[1].Attention {
+		t.Errorf("detail header/outcome attention = %v/%v, want both flagged", rows[0].Attention, rows[1].Attention)
+	}
+	if !rows[panelDetailRows].Attention {
+		t.Error("attention session's list row not flagged")
+	}
+	if rows[panelDetailRows+1].Attention {
+		t.Error("calm session's list row flagged")
+	}
+	// no live attention: nothing flagged
+	_, rows = renderPanel([]session{{id: "aaaaaaaa-x", mtime: now}, {id: "bbbbbbbb-y", mtime: now}},
+		0, nil, nil, panelListMax, now)
+	for i, r := range rows {
+		if r.Attention {
+			t.Errorf("row %d flagged without live attention", i)
+		}
 	}
 }
 
@@ -500,7 +701,7 @@ func TestPanelPoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
-	if want := "claude 1/2 . " + glyphAgents + "1"; data.Title != want {
+	if want := "clod 1/2 . " + glyphAgents + "1"; data.Title != want {
 		t.Errorf("Title = %q, want %q", data.Title, want)
 	}
 	if len(data.Rows) != panelDetailRows+2 {
@@ -517,7 +718,13 @@ func TestPanelPoll(t *testing.T) {
 	if !strings.Contains(outcome, "> all green") || !strings.Contains(outcome, "bg:1 parked") {
 		t.Errorf("outcome = %q", outcome)
 	}
-	if agent := lineText(data.Rows[2]); !strings.Contains(agent, "reviewer") || !strings.Contains(agent, "lens A") {
+	if root := lineText(data.Rows[2]); !strings.Contains(root, "agents") || !strings.Contains(root, "1/1") {
+		t.Errorf("tree root row = %q", root)
+	}
+	if actOf(data.Rows[2]) != foldOf(live, "agents") {
+		t.Errorf("tree root act = %q, want the fold act", actOf(data.Rows[2]))
+	}
+	if agent := lineText(data.Rows[3]); !strings.Contains(agent, "reviewer") || !strings.Contains(agent, "lens A") {
 		t.Errorf("agent row = %q", agent)
 	}
 	if actOf(data.Rows[panelDetailRows+1]) != focusOf(idle) {

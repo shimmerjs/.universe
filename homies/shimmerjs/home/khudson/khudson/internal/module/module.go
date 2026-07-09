@@ -52,9 +52,9 @@ const (
 
 // Row styles (dock palette names, not colors: modules stay theme-blind).
 const (
-	StyleDim     = "dim"
-	StyleAccent  = "accent"
-	StyleWarn    = "warn"
+	StyleDim    = "dim"
+	StyleAccent = "accent"
+	StyleWarn   = "warn"
 	// StyleHighlight is the emphasis style for inline glyph+number pairs.
 	StyleHighlight = "highlight"
 	// StyleTitle is spans-only: the span renders in the row's base style,
@@ -88,6 +88,20 @@ type Row struct {
 	// Act makes the row a button: tapping it runs this argv on the bus
 	// host (dock-mirror rows activate apps the way the real Dock would).
 	Act []string `json:"act,omitempty"`
+	// Attention marks this row's item as awaiting input (data-not-style:
+	// the dock renders the input-requested emphasis, composed with the
+	// row's spans and styles).
+	Attention bool `json:"attention,omitempty"`
+}
+
+// ActHandler is an optional Module capability: HandleAct runs a published
+// row act in-process (fold toggles, view state) instead of the bus exec
+// path. Return false for argv the module does not own -- the bus then
+// execs it like any other act. Implementations must be safe to call
+// concurrently with Poll (the bus input worker and the scheduler poller
+// are different goroutines).
+type ActHandler interface {
+	HandleAct(argv []string) bool
 }
 
 // IntParam reads an int-valued param, tolerating the numeric types config

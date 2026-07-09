@@ -66,10 +66,12 @@ const (
 	trackBlend    = 0.18
 )
 
-// Attention border ramp: warn crawling to dim chrome over attentionRampLen
-// steps, advancing one step per dock tick.
+// Attention border ramp: a pure-warn plateau then a fade to dim chrome over
+// attentionRampLen steps total, advancing one step per dock tick -- the
+// plateau keeps a solid warn head on the crawl instead of a single hot cell.
 const (
-	attentionRampLen  = 10
+	attentionRampLen  = 14
+	attentionPlateau  = 4
 	attentionDimBlend = 0.35
 )
 
@@ -85,7 +87,29 @@ func (m *model) attentionRamp() []color.Color {
 	if !ok {
 		return nil
 	}
-	return lipgloss.Blend1D(attentionRampLen, warn, dim)
+	ramp := make([]color.Color, 0, attentionRampLen)
+	for range attentionPlateau {
+		ramp = append(ramp, warn)
+	}
+	// Blend1D includes the warn endpoint; drop it or the plateau gains a cell
+	return append(ramp, lipgloss.Blend1D(attentionRampLen-attentionPlateau+1, warn, dim)[1:]...)
+}
+
+// Attention row wash: an input-requested row renders over a steady
+// mid-blend background -- warn pulled most of the way toward the theme
+// background, so the row reads highlighted while the text stays readable
+// (an animated comet drowned it; glass-verified).
+const attnRowBGBlend = 0.65
+
+// attnRowBG derives the wash tone. Nil when the palette lacks either tone:
+// attention rows then render plain and the marching border still calls out
+// the widget (per-tone degradation).
+func attnRowBG(p palette) color.Color {
+	c, ok := p.blend("color3", "background", attnRowBGBlend)
+	if !ok {
+		return nil
+	}
+	return c
 }
 
 // styles is the strip-level style set: indexed base, brand emphasis derived
@@ -133,6 +157,7 @@ func newRowStyles(p palette) rowStyles {
 	if c, ok := p.blend("color6", "foreground", emphasisBlend); ok {
 		ss.highlight = lipgloss.NewStyle().Foreground(c).Bold(true)
 	}
+	ss.attnBG = attnRowBG(p)
 	// the gauge gradient needs the whole cool -> hot ramp; partial palettes
 	// keep the flat fill
 	if g, okG := p.color("color2"); okG {

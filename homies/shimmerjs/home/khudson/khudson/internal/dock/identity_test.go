@@ -86,12 +86,12 @@ func TestRailIdentityColors(t *testing.T) {
 
 	// bordered tiles: the name sits on the band's middle row
 	hue := lipgloss.NewStyle().Foreground(identityHue("safari"))
-	if !strings.Contains(lines[2], hue.Render("safari")) {
-		t.Errorf("safari name not identity-hued: %q", lines[2])
+	if !strings.Contains(lines[1], hue.Render("safari")) {
+		t.Errorf("safari name not identity-hued: %q", lines[1])
 	}
 	over := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000"))
-	if !strings.Contains(lines[2], over.Render("mail")) {
-		t.Errorf("mail hex override not applied: %q", lines[2])
+	if !strings.Contains(lines[1], over.Render("mail")) {
+		t.Errorf("mail hex override not applied: %q", lines[1])
 	}
 }
 

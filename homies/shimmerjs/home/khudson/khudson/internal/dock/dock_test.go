@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
@@ -134,11 +133,10 @@ func TestUnknownLayoutIsLoud(t *testing.T) {
 	}
 }
 
-// Every non-home layout reserves the home affordance: a slim always-on
-// chrome column on the right edge, wired into the hit table as a nav-to-home
-// target. The layout body shrinks by homeStripW; total geometry stays exact.
+// Non-home layouts render full-width: the strip's persistent home icon is
+// the only return affordance, so no per-view column reserves body cells.
 // The hit table is locked in full -- it is how touch works.
-func TestNonHomeLayoutCarriesHomeStrip(t *testing.T) {
+func TestNonHomeLayoutFullWidth(t *testing.T) {
 	m := newHomeModel(120, 20)
 	m.cfg.Layouts["grid"] = config.Layout{Kind: "dock-grid"}
 	m.layout = "grid"
@@ -149,7 +147,7 @@ func TestNonHomeLayoutCarriesHomeStrip(t *testing.T) {
 	}
 	for i, l := range lines[:18] {
 		if w := lipgloss.Width(l); w != 120 {
-			t.Errorf("line %d width = %d, want 120", i, w)
+			t.Errorf("line %d width = %d, want 120 (full width, no affordance column)", i, w)
 		}
 	}
 	for i, l := range lines[18:] {
@@ -158,21 +156,9 @@ func TestNonHomeLayoutCarriesHomeStrip(t *testing.T) {
 		}
 	}
 
-	// the label reads down the affordance column, on glass
-	var down strings.Builder
-	for _, l := range lines[:18] {
-		if plain := []rune(ansi.Strip(l)); len(plain) > 118 {
-			down.WriteRune(plain[118])
-		}
-	}
-	if !strings.Contains(down.String(), "home") {
-		t.Errorf("affordance column reads %q, want home", down.String())
-	}
-
-	// full hit-table lock: the affordance strip, then the status strip's
-	// chrome (home icon + whole-strip consume; no strip config here)
+	// full hit-table lock: only the status strip's chrome (home icon +
+	// whole-strip consume; no strip config here)
 	want := []rect{
-		{117, 0, 3, 18}, // home strip
 		{0, 18, 3, 2},   // strip: home icon glyph
 		{0, 18, 120, 2}, // strip: whole-strip consume rect
 	}
@@ -185,47 +171,18 @@ func TestNonHomeLayoutCarriesHomeStrip(t *testing.T) {
 		}
 	}
 
-	// tapping the strip goes home (bus absent: local switch)
-	if !m.resolveTap(118, 10) {
-		t.Fatal("tap on the home strip not consumed")
+	// tapping the strip's home icon goes home (bus absent: local switch)
+	if !m.resolveTap(1, 19) {
+		t.Fatal("tap on the strip home icon not consumed")
 	}
 	if m.layout != "home" {
 		t.Fatalf("layout = %q, want home", m.layout)
 	}
 }
 
-// Below 11 columns the home strip is dropped by design: renderNonHome keeps
-// the layout full-width when m.width-homeStripW < 8 (dock.go), and the
-// renderNonHome comment names `khudson ctl layout` as the return path there.
-// This golden pins the accepted posture: full-width body, no strip hit
-// region.
-func TestNonHomeSub11ColFullWidth(t *testing.T) {
-	m := newHomeModel(10, 20)
-	m.cfg.Layouts["grid"] = config.Layout{Kind: "dock-grid"}
-	m.layout = "grid"
-	v := m.View()
-	lines := strings.Split(v.Content, "\n")
-	if len(lines) != 20 {
-		t.Fatalf("view lines = %d, want 20", len(lines))
-	}
-	bodyH := 20 - stripH
-	for i, l := range lines[:bodyH] {
-		if w := lipgloss.Width(l); w != 10 {
-			t.Errorf("line %d width = %d, want 10 (full width, no strip)", i, w)
-		}
-	}
-	strip := rect{10 - homeStripW, 0, homeStripW, bodyH}
-	for _, h := range m.hits {
-		if h.area == strip {
-			t.Fatal("sub-11-col layout carries a home strip hit region")
-		}
-	}
-}
-
-// The keyboard view reserves the strip too: renderKeyboard reads the model
-// width, so its region shrinks by homeStripW while the total frame stays
-// exact; the strip tap navigates to the home-kind layout.
-func TestKeyboardViewCarriesHomeStrip(t *testing.T) {
+// The keyboard view renders full-width too; the strip's home icon is its
+// return path.
+func TestKeyboardViewFullWidth(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	m.cfg.Layouts["main"] = config.Layout{Kind: "home"}
 	v := m.View()
@@ -235,7 +192,7 @@ func TestKeyboardViewCarriesHomeStrip(t *testing.T) {
 	}
 	for i, l := range lines[:22] {
 		if w := lipgloss.Width(l); w != 196 {
-			t.Errorf("line %d width = %d, want 196", i, w)
+			t.Errorf("line %d width = %d, want 196 (full width)", i, w)
 		}
 	}
 	for i, l := range lines[22:] {
@@ -243,34 +200,16 @@ func TestKeyboardViewCarriesHomeStrip(t *testing.T) {
 			t.Errorf("strip row %d = %d cells, want 196", i, c)
 		}
 	}
-	strip := rect{193, 0, 3, 22}
-	found := false
 	for _, h := range m.hits {
-		if h.area == strip {
-			found = true
+		if h.area.y < 22 && h.area.x+h.area.w > 193 && h.area.w == 3 {
+			t.Fatalf("keyboard view still carries an affordance column at %+v", h.area)
 		}
 	}
-	if !found {
-		t.Fatalf("home strip rect %+v missing from the keyboard hit table", strip)
-	}
-	if !m.resolveTap(194, 12) {
-		t.Fatal("tap on the home strip not consumed")
+	if !m.resolveTap(1, 23) {
+		t.Fatal("tap on the strip home icon not consumed")
 	}
 	if m.layout != "main" {
 		t.Fatalf("layout = %q, want main (home by kind)", m.layout)
-	}
-}
-
-// Home itself renders full-width: no affordance column, no strip hit region
-// (the home hit table is locked cell-exact in TestHomeRegionGeometry).
-func TestHomeLayoutHasNoHomeStrip(t *testing.T) {
-	m := newHomeModel(320, 18)
-	m.View()
-	strip := rect{320 - homeStripW, 0, homeStripW, 16}
-	for _, h := range m.hits {
-		if h.area == strip {
-			t.Fatal("home layout carries a home strip")
-		}
 	}
 }
 
@@ -359,6 +298,12 @@ func TestBusConnectedReassertsCurrentGrid(t *testing.T) {
 	msg := wantBusMsg(t, got)
 	if msg.Type != proto.TypeGrid || msg.Cols != 200 || msg.Rows != 24 {
 		t.Fatalf("got %s %dx%d, want grid 200x24", msg.Type, msg.Cols, msg.Rows)
+	}
+	// the panel region is the whole body (no outer frame): width x
+	// height-stripH; the bus sizes scraped windows and the recognizer to it
+	if msg.PanelCols != 200 || msg.PanelRows != 24-stripH {
+		t.Fatalf("panel region %dx%d, want %dx%d (full body)",
+			msg.PanelCols, msg.PanelRows, 200, 24-stripH)
 	}
 }
 

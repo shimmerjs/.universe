@@ -5,8 +5,40 @@ Current state, backlog, and open items. Design rationale is in
 research notes) lives in git history -- docs/ carries living docs only.
 Reconciled 2026-07-08 (supersedes the accreted 07-07/08 bullets).
 
-## State (2026-07-08)
+## State (2026-07-09)
 
+- IN TREE, UNCOMMITTED (2026-07-09 batch, awaiting user commit +
+  switch): claude-panel ("clod" on the border now, hauz style) fleet
+  trees -- detail zone renders one tree per workflow dir plus one for
+  loose subagents (children indented, running-first), touch ANYWHERE
+  in a tree folds it to a one-line summary root (counts + type
+  breakdown) and back; fold acts are handled in-process
+  (module.ActHandler + bus repoll poke, ~250ms to glass, never exec'd;
+  vet gate unchanged). Input-requested emphasis: Row.Attention marks
+  the exact rows awaiting input and the dock washes them with a STEADY
+  mid-blend background (attnRowBGBlend 0.65; the first cut animated a
+  comet across the row -- glass-verdict: unreadable, reverted to the
+  wash), border ramp gained a 4-cell pure-warn plateau. Attention
+  false-positive fixed (glass-reported: bell on a working session):
+  mid-turn gates (permission_prompt / agent_needs_input) resolve with
+  NO hook firing, so main-transcript activity or a Stop strictly after
+  notification_ts now answers them (observed live: transcript +12s
+  after the bell with attention still set); idle_prompt keeps
+  prompt-only answering. Chrome: the base HUD's outer frame dropped
+  (panelRegion is now the full body) and the per-view right-edge
+  "home" column deleted -- the strip's persistent home icon is the one
+  return affordance.
+  Adversarially reviewed (38-agent lens/verify workflow + two codex
+  cross-model passes); confirmed findings fixed in-tree: fleet-tree
+  order now live-first + key-stable (per-poll mtime sort would re-key
+  fold acts under a finger), wide-rune/combining-mark cells in the
+  comet, plateau off-by-one, vet/dispatch config-swap TOCTOU
+  (vetRowAct single snapshot), repoll clears failure backoff,
+  same-run-id wf dirs across satellites merge into one tree; act
+  publication (applyNative) and repoll scheduling now test-pinned.
+  vet/test green (27 pkgs) + closure green. Known cosmetic gap
+  (accepted): a just-launched workflow with no agents yet counts in
+  the title rollup but draws no tree for its first seconds.
 - ON GLASS (last switch ~2026-07-08 01:37):
   home v2 -- strip-hosted nav under the panel (tabs + cup), claude-panel
   center column w/ cwd-first grouped rows, kb-live right column (K=75),

@@ -152,14 +152,14 @@ func (m *model) invalidateHome(id string) {
 }
 
 // renderHome composes the home layout: peel each region off its declared
-// edge in config order, split the remainder among fill regions, frame the
-// whole content box. Rebuilds the hit table as it places regions.
+// edge in config order, split the remainder among fill regions. No outer
+// frame -- the region borders are the chrome; the base box bought nothing
+// at the glass edge. Rebuilds the hit table as it places regions.
 func (m *model) renderHome(bodyH int) string {
 	m.resetHits()
 	l := m.cfg.Layouts[m.layout]
-	interior := rect{1, 1, m.width - 2, bodyH - 2}
-	inner := m.renderRegions(l.Regions, interior)
-	return renderTitledBox("", strings.Split(inner, "\n"), m.width, bodyH)
+	inner := m.renderRegions(l.Regions, rect{0, 0, m.width, bodyH})
+	return fixedBlock(strings.Split(inner, "\n"), m.width, bodyH)
 }
 
 // renderRegions peels regs[0] off its edge of box and recurses on the rest;

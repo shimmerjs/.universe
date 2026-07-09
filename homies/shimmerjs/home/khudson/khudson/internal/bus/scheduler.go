@@ -112,6 +112,8 @@ func (b *Bus) scheduler(ctx context.Context) {
 			b.applySnapshot(r, entries)
 		case r := <-b.natives:
 			b.applyNative(r)
+		case id := <-b.repoll:
+			repollEntry(entries, id)
 		case now := <-tick.C:
 			b.trySwapPending(entries)
 			if !adoptBusy && b.adoptPending() {
@@ -123,6 +125,18 @@ func (b *Bus) scheduler(ctx context.Context) {
 			}
 			b.schedulerPass(ctx, now, entries, busyCh, adoptBusy)
 		}
+	}
+}
+
+// repollEntry dues a widget's next poll now: a module-handled row act wants
+// its state on glass, so the poll fires on the next tick (the pass still
+// respects busy single-flight and visibility). The backoff clears too -- a
+// user tap must not wait out a stale failure window, and taps bound the
+// retry rate on their own.
+func repollEntry(entries map[string]*schedEntry, id string) {
+	if e, ok := entries[id]; ok {
+		e.nextPoll = time.Time{}
+		e.backoffUntil = time.Time{}
 	}
 }
 

@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
+	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
 
@@ -177,6 +179,140 @@ func TestHandleRowActRejectsForeignArgv(t *testing.T) {
 	if len(starts) != 2 {
 		t.Fatalf("config run argv starts = %v", starts)
 	}
+}
+
+// fakeActMod is a native module claiming acts whose argv[0] is "mod:act".
+type fakeActMod struct {
+	handled [][]string
+}
+
+func (*fakeActMod) Name() string { return "fake-act" }
+func (*fakeActMod) Poll(context.Context, map[string]any) (module.Data, error) {
+	return module.Data{}, nil
+}
+func (f *fakeActMod) HandleAct(argv []string) bool {
+	if argv[0] != "mod:act" {
+		return false
+	}
+	f.handled = append(f.handled, argv)
+	return true
+}
+
+// A vetted act on a native widget whose module implements ActHandler is
+// handled in-process: no exec, and the widget gets a repoll poke. Argv the
+// module declines still execs; the vet gate stays ahead of the dispatch.
+func TestHandleRowActModuleDispatch(t *testing.T) {
+	b, _ := inputTestBus()
+	mod := &fakeActMod{}
+	b.cfg.Widgets["n"] = config.Widget{ID: "n",
+		Render: config.Render{Kind: "native", Module: "fake-act"}}
+	b.reg = NewRegistry(b.cfg)
+	b.mods = map[string]module.Module{"fake-act": mod}
+	b.repoll = make(chan string, 1)
+	var starts [][]string
+	b.execStart = func(argv []string) (func() error, error) {
+		starts = append(starts, argv)
+		return func() error { return nil }, nil
+	}
+	handled := []string{"mod:act", "sid", "node"}
+	declined := []string{"khudson", "claude", "focus", "abc"}
+	st, _ := b.reg.Get("n")
+	st.setActs([][]string{handled, declined})
+
+	// unpublished argv never reaches the module, even with a matching verb
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n",
+		Argv: []string{"mod:act", "crafted", "x"}})
+	if len(mod.handled) != 0 {
+		t.Fatalf("unvetted argv reached the module: %v", mod.handled)
+	}
+
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: handled})
+	if len(mod.handled) != 1 || len(starts) != 0 {
+		t.Fatalf("handled act: module saw %v, exec saw %v; want in-process only", mod.handled, starts)
+	}
+	select {
+	case id := <-b.repoll:
+		if id != "n" {
+			t.Fatalf("repoll poke = %q, want the widget id", id)
+		}
+	default:
+		t.Fatal("handled act sent no repoll poke")
+	}
+
+	// declined argv falls through to exec, with no poke
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: declined})
+	if len(starts) != 1 || !slices.Equal(starts[0], declined) {
+		t.Fatalf("declined act starts = %v, want the exec path", starts)
+	}
+	select {
+	case id := <-b.repoll:
+		t.Fatalf("declined act poked a repoll for %q", id)
+	default:
+	}
+}
+
+// The load-bearing publication chain, no hand-priming: a native poll's rows
+// flow through applyNative into the act allowlist, and a tapped fold act
+// dispatches in-process. A regression in the harvest loop must go red here,
+// not surface as silent vet refusals on glass.
+func TestApplyNativePublishesActsEndToEnd(t *testing.T) {
+	b, _ := inputTestBus()
+	mod := &fakeActMod{}
+	b.cfg.Widgets["n"] = config.Widget{ID: "n",
+		Render: config.Render{Kind: "native", Module: "fake-act"}}
+	b.reg = NewRegistry(b.cfg)
+	b.mods = map[string]module.Module{"fake-act": mod}
+	b.repoll = make(chan string, 1)
+	var starts [][]string
+	b.execStart = func(argv []string) (func() error, error) {
+		starts = append(starts, argv)
+		return func() error { return nil }, nil
+	}
+
+	fold := []string{"mod:act", "sid", "agents"}
+	focus := []string{"khudson", "claude", "focus", "sid"}
+	b.applyNative(nativeResult{id: "n", data: module.Data{Rows: []module.Row{
+		{Kind: module.RowSpans, Act: fold},
+		{Kind: module.RowSpans, Act: focus},
+		{Kind: module.RowText, Text: "actless"},
+	}}})
+
+	// the harvested fold act dispatches in-process
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: fold})
+	if len(mod.handled) != 1 || len(starts) != 0 {
+		t.Fatalf("fold act after applyNative: module saw %v, exec saw %v", mod.handled, starts)
+	}
+	// the harvested focus act execs
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: focus})
+	if len(starts) != 1 || !slices.Equal(starts[0], focus) {
+		t.Fatalf("focus act after applyNative: starts = %v", starts)
+	}
+	// unpublished argv still refused after a real publication pass
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n",
+		Argv: []string{"mod:act", "sid", "crafted"}})
+	if len(mod.handled) != 1 {
+		t.Fatalf("crafted argv reached the module after applyNative: %v", mod.handled)
+	}
+	// an error poll keeps the previous act set (the error branch never
+	// clears the allowlist)
+	b.applyNative(nativeResult{id: "n", err: context.DeadlineExceeded})
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: fold})
+	if len(mod.handled) != 2 {
+		t.Fatal("error poll dropped the published act set")
+	}
+}
+
+// repollEntry dues the widget's poll now AND clears any failure backoff: a
+// user tap must not wait out a stale backoff window.
+func TestRepollEntryClearsSchedule(t *testing.T) {
+	entries := map[string]*schedEntry{
+		"n": {nextPoll: time.Now().Add(time.Minute), backoffUntil: time.Now().Add(30 * time.Second)},
+	}
+	repollEntry(entries, "n")
+	if !entries["n"].nextPoll.IsZero() || !entries["n"].backoffUntil.IsZero() {
+		t.Fatalf("entry after repoll = %+v, want zeroed schedule", entries["n"])
+	}
+	repollEntry(entries, "missing") // unknown id: no panic, no effect
 }
 
 // TestHelperProcess is the re-exec target for TestRowActSurfacesExit: the

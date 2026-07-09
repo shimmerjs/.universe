@@ -60,6 +60,8 @@ const (
 	glyphDone      = "\uf00c" // check: turn complete, idle at prompt
 	glyphPerm      = "\uf071" // warning triangle: permission prompt (actionable)
 	glyphError     = "\uf00d" // cross: turn ended in an API error (StopFailure)
+	glyphFoldOpen  = "\uf078" // chevron-down: fleet tree expanded
+	glyphFoldShut  = "\uf054" // chevron-right: fleet tree folded to its root
 )
 
 // Mod implements module.Module. The singleton caches each session's start
@@ -971,6 +973,17 @@ const attentionHorizon = time.Hour
 // (now minus the NEWEST of notified/promptTS/tailPromptTS/stopped; all
 // four zero counts as stale) exceeds attentionHorizon is stale even
 // unanswered. Ages AT the horizon are still live; only past it is stale.
+//
+// Mid-turn gates (permission_prompt, agent_needs_input) resolve WITHOUT
+// any hook: granting fires no UserPromptSubmit and the turn keeps running,
+// so the bell would ring a working session until its next Stop (observed
+// live: transcript moving +12s after notification_ts while attention held).
+// The main transcript is silent while the gate blocks (its tool_use entry
+// lands before the notification fires), so transcript activity strictly
+// after notification_ts -- or a turn end at/after it -- marks the gate
+// answered. Truncated to seconds like every spool compare: a same-second
+// write must not answer the bell it announced. idle_prompt keeps
+// prompt-only answering -- the session really is waiting for the user.
 func (s session) attentionLive(now time.Time) bool {
 	if !s.attention {
 		return false
@@ -986,6 +999,15 @@ func (s session) attentionLive(now time.Time) bool {
 	}
 	if s.notified.IsZero() {
 		return true
+	}
+	switch s.notifType {
+	case "permission_prompt", "agent_needs_input":
+		if s.transcriptMtime.Truncate(time.Second).After(s.notified) {
+			return false
+		}
+		if s.stopped.After(s.notified) {
+			return false
+		}
 	}
 	latest := s.promptTS
 	if s.tailPromptTS.After(latest) {

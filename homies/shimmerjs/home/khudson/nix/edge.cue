@@ -25,7 +25,7 @@ widgets: {
 	// Acts exec `khudson claude focus <sid>` on the bus host; resume stays
 	// staged behind the M9 allowlist.
 	"claude-panel": {
-		title: "claude"
+		title: "clod"
 		glyph: ""
 		render: {
 			kind:   "native"
