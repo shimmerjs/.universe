@@ -1,0 +1,900 @@
+// Package dock is the pane of glass: one fullscreen bubbletea program that
+// owns every pixel on the Edge. Tiles come from the vetted config; gestures
+// arrive as ndjson from the bus, with kitty mouse events as the fallback
+// when the bus is absent.
+//
+// Launch on the Edge:
+//
+//	kitten panel --detach --edge=center --output-name "XENEON EDGE" khudson dock
+package dock
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"net"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/shimmerjs/khudson/khudson/internal/config"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
+	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/proto"
+)
+
+// Options configures Run.
+type Options struct {
+	ConfigPath string // empty = embedded example
+	BusSocket  string
+}
+
+// Run loads the config and runs the dock program.
+func Run(opts Options) error {
+	var cfg *config.Config
+	var err error
+	if opts.ConfigPath == "" {
+		cfg, err = config.LoadExample()
+	} else {
+		cfg, err = config.LoadFile(opts.ConfigPath)
+	}
+	if err != nil {
+		return err
+	}
+	m := &model{
+		opts:        opts,
+		cfg:         cfg,
+		layout:      cfg.Layout,
+		now:         time.Now(),
+		widgetData:  make(map[string]module.Data),
+		widgetErr:   make(map[string]string),
+		widgetStale: make(map[string]bool),
+		sty:         buildStyles(day),
+		openURL:     openWithMacOS,
+	}
+	_, err = tea.NewProgram(m).Run()
+	return err
+}
+
+type rect struct{ x, y, w, h int }
+
+func (r rect) contains(x, y int) bool {
+	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
+}
+
+// hitRegion is one tappable rect; do runs with the tap's absolute cell
+// coords. The first containing rect in the table wins, and a match consumes
+// the tap even when its action no-ops.
+type hitRegion struct {
+	area rect
+	do   func(x, y int)
+}
+
+// resolveTap runs the first hit region containing (x, y); reports whether it
+// consumed the tap.
+func (m *model) resolveTap(x, y int) bool {
+	for _, h := range m.hits {
+		if h.area.contains(x, y) {
+			h.do(x, y)
+			return true
+		}
+	}
+	return false
+}
+
+// resetHits starts a fresh hit table; every layout renderer calls it before
+// appending its own targets, so the table always matches the frame on glass.
+func (m *model) resetHits() {
+	m.hits = m.hits[:0]
+}
+
+// consumeTap is the no-op action: the region owns the tap, nothing fires.
+func consumeTap(int, int) {}
+
+type busState int
+
+const (
+	busAbsent busState = iota // mouse fallback active
+	busConnected
+)
+
+// Bus dial messages carry the generation of the connectBus cmd that spawned
+// them (model.busGen at dial time): a stale dial's connect must not displace
+// a newer conn without closing, and a stale reader's busGoneMsg must not
+// tear down the healthy replacement.
+type (
+	tickMsg         time.Time
+	busConnectedMsg struct {
+		gen  int
+		conn net.Conn
+		ch   chan proto.Msg
+	}
+	busGoneMsg struct {
+		gen int
+		err error
+	}
+	busEventMsg struct {
+		gen int
+		msg proto.Msg
+	}
+	retryMsg struct{}
+	// flashTickMsg is the one-shot redraw at a tap flash's expiry; it
+	// advances m.now so the expired flash drops off the next frame.
+	flashTickMsg time.Time
+)
+
+type model struct {
+	opts   Options
+	cfg    *config.Config
+	layout string
+
+	width, height int
+	taps          int
+	now           time.Time
+
+	bus     busState
+	busConn net.Conn
+	busCh   chan proto.Msg
+	// busGen is the live dial generation; connect/gone/event messages from
+	// an older connectBus cmd (stale gen) are dropped, never acted on
+	busGen  int
+	lastGst string
+
+	theme string // theme name as broadcast ("day"/"night"); labels only
+	sty   styles
+	// palette is the HUD kitty's effective colors as broadcast by the bus
+	// (TypeTheme). sty and rows derive from it; nil = indexed-ANSI defaults.
+	palette palette
+	// rows is the derived row vocabulary, memoized until the next theme
+	// broadcast (rowsOK=false forces a re-derive on the next rowStyles call)
+	rows   rowStyles
+	rowsOK bool
+
+	// caffeinate is the bus supervisor's state as broadcast (TypeCaffeinate,
+	// "on"|"off"); "" until the first broadcast (the greeting replays it, so
+	// only a bus-absent dock stays unknown -- the cup renders that as off).
+	caffeinate string
+
+	// skew marks a bus TypeLayout naming a layout this config lacks; the
+	// next successful switch clears it. Chrome (the strip cup) renders it
+	// as a warn state.
+	skew bool
+
+	// last module view model / poll error per native widget id
+	widgetData map[string]module.Data
+	widgetErr  map[string]string
+	// exec widgets the bus marked stale (TypeSnapshot Stale); the titled
+	// region renders a dim stale suffix until a fresh snapshot clears it
+	widgetStale map[string]bool
+
+	// hits is the tap hit table: the active layout's targets, rebuilt from
+	// scratch by the layout renderer (via resetHits); the first containing
+	// rect wins
+	hits []hitRegion
+	// trayFlash holds "soon" stubs keyed by entry label; trayCache memoizes
+	// parsed tray entries per widget until the config/layout changes
+	trayFlash map[string]time.Time
+	trayCache map[string][]trayEntry
+	// flashArmed marks a tap flash recorded during the current Update
+	// dispatch; Update drains it into a one-shot tapFlashFor tick so the
+	// 250 ms flash clears without waiting for the 1 s clock
+	flashArmed bool
+
+	// homeCache memoizes the composed home body + hit table between frames;
+	// resizes, layout switches, visible-widget updates, and tray flash
+	// writes invalidate it, and unexpired flashes bypass it (the "soon"
+	// label is clock-driven)
+	homeCache homeCache
+
+	// keyboard view state: the static Moonlander board, loaded once (lazy),
+	// the shown layer index, and the load error/empty message. No polling --
+	// the layout is static and offline.
+	kbBoard  *keyboard.Board
+	kbErr    string
+	kbLayer  int
+	kbLoaded bool
+
+	// openURL hands a URL to the OS (default /usr/bin/open); nil in bare
+	// test models so a stray tap in a test never spawns a browser
+	openURL func(string)
+}
+
+// rowStyles is the render-time row vocabulary: derived from the broadcast
+// palette, memoized until the next theme broadcast. A model that never saw
+// a broadcast (or a bare test model) derives the indexed-ANSI defaults.
+func (m *model) rowStyles() rowStyles {
+	if !m.rowsOK {
+		m.rows = newRowStyles(m.palette)
+		m.rowsOK = true
+	}
+	return m.rows
+}
+
+// resetLayout drops the per-layout caches on a layout switch: the tray memo,
+// the composed home body, and the stale hit table (a tap before the new
+// layout's renderer rebuilds it must fire nothing).
+func (m *model) resetLayout() {
+	m.trayCache = nil
+	m.homeCache.ok = false
+	m.hits = m.hits[:0]
+}
+
+// stripH is the status strip under the body: two rows, so the strip-hosted
+// nav icons draw at double height. Strip-chrome geometry, not a region
+// size.
+const stripH = 2
+
+// stripIconW is one strip icon's width in cells: a nerd-font glyph with a
+// space either side, sitting on the BOTTOM strip row at the text baseline;
+// the hit rect stays 2 rows tall for touch. Bigger-than-a-cell icons are a
+// dead end twice over: OSC 66 scaled runs die at the compositor
+// (ultraviolet forwards only SGR and OSC 8 -- TestStripSurvivesCompositor
+// pins that class), and 4x2 quadrant block art has ~8x4 pixel resolution,
+// which read as blobs on glass. One crisp designed glyph
+// beats both.
+const stripIconW = 3
+
+// homeGlyph is the chrome-owned home icon on the strip; not a config
+// entry -- homeTap resolves its target by layout kind. md-home-variant:
+// the plain md-home read as an up arrow at strip size.
+const homeGlyph = "\U000F02DD"
+
+// Strip flip chevrons (nerd font material design icons, the cup-glyph
+// convention): one control between the tabs and the toggles that flips the
+// strip.flip layout pair -- collapse hides the kb column, expand restores it.
+const (
+	stripCollapseGlyph = "\U000F0140" // nf-md-chevron_down
+	stripExpandGlyph   = "\U000F0143" // nf-md-chevron_up
+)
+
+// panelRegion is the home content area in cells (inside the border); the bus
+// receives it via hello/grid so the recognizer and any scraped windows size
+// to the same grid.
+func (m *model) panelRegion() (cols, rows int) {
+	return m.width - 2, m.height - stripH - 2
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// flashTick arms the one-shot redraw at a tap flash's expiry.
+func flashTick() tea.Cmd {
+	return tea.Tick(tapFlashFor, func(t time.Time) tea.Msg { return flashTickMsg(t) })
+}
+
+// drainFlashArmed reports and clears the tap-flash mark flash() set during
+// the current dispatch; Update turns it into flashTick.
+func (m *model) drainFlashArmed() bool {
+	armed := m.flashArmed
+	m.flashArmed = false
+	return armed
+}
+
+func retryBus() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return retryMsg{} })
+}
+
+// connectBus dials the bus and sends the dock hello with the current cell
+// grid + panel region; the reader goroutine feeds bus msgs through ch. gen
+// is the dial generation stamped on every message this cmd produces.
+func connectBus(gen int, socket string, cols, rows, pcols, prows int) tea.Cmd {
+	return func() tea.Msg {
+		conn, err := net.DialTimeout("unix", socket, time.Second)
+		if err != nil {
+			return busGoneMsg{gen: gen, err: err}
+		}
+		enc := json.NewEncoder(conn)
+		if err := enc.Encode(proto.Msg{
+			Type: proto.TypeHello, Role: proto.RoleDock,
+			Cols: cols, Rows: rows, PanelCols: pcols, PanelRows: prows,
+		}); err != nil {
+			conn.Close()
+			return busGoneMsg{gen: gen, err: err}
+		}
+		ch := make(chan proto.Msg, 16)
+		go func() {
+			dec := json.NewDecoder(conn)
+			for {
+				var msg proto.Msg
+				if err := dec.Decode(&msg); err != nil {
+					close(ch)
+					return
+				}
+				ch <- msg
+			}
+		}()
+		return busConnectedMsg{gen: gen, conn: conn, ch: ch}
+	}
+}
+
+func waitBus(gen int, ch chan proto.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return busGoneMsg{gen: gen, err: fmt.Errorf("bus connection closed")}
+		}
+		return busEventMsg{gen: gen, msg: msg}
+	}
+}
+
+// sendGrid pushes the current cell grid + panel region to the bus; the bus
+// rebuilds its recognizer and resizes scrape windows to it. No-op until both
+// the bus and a real size exist.
+func (m *model) sendGrid() {
+	if m.bus != busConnected || m.busConn == nil || m.width <= 0 {
+		return
+	}
+	pcols, prows := m.panelRegion()
+	enc := json.NewEncoder(m.busConn)
+	_ = enc.Encode(proto.Msg{
+		Type: proto.TypeGrid,
+		Cols: m.width, Rows: m.height, PanelCols: pcols, PanelRows: prows,
+	})
+}
+
+func (m *model) Init() tea.Cmd { return tick() }
+
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case tea.WindowSizeMsg:
+		first := m.width == 0
+		m.width, m.height = msg.Width, msg.Height
+		m.homeCache.ok = false
+		if first {
+			pcols, prows := m.panelRegion()
+			m.busGen++
+			return m, connectBus(m.busGen, m.opts.BusSocket, m.width, m.height, pcols, prows)
+		}
+		m.sendGrid()
+
+	case tea.MouseClickMsg:
+		// kitty mouse fallback: works with or without the bus
+		m.taps++
+		m.resolveTap(msg.X, msg.Y)
+		if m.drainFlashArmed() {
+			return m, flashTick()
+		}
+
+	case busConnectedMsg:
+		if msg.gen != m.busGen {
+			// a stale dial won its race after a newer one was armed: close
+			// its conn, never adopt it or touch the current one
+			msg.conn.Close()
+			return m, nil
+		}
+		if m.bus != busConnected {
+			// bus state is chrome (the strip cup): a real transition drops
+			// the composed frame
+			m.homeCache.ok = false
+		}
+		if m.busConn != nil {
+			// a replaced conn closes; its reader's busGoneMsg arrives with
+			// a stale gen and is dropped above
+			m.busConn.Close()
+		}
+		m.bus = busConnected
+		m.busConn = msg.conn
+		m.busCh = msg.ch
+		// hello carried the dims captured when the dial Cmd was created;
+		// re-assert the current grid (a duplicate is idempotent bus-side)
+		m.sendGrid()
+		return m, waitBus(m.busGen, m.busCh)
+
+	case busGoneMsg:
+		if msg.gen != m.busGen {
+			// a stale dial or reader: the current conn is healthy -- no
+			// teardown, no retry
+			return m, nil
+		}
+		if m.bus != busAbsent {
+			// transition-guarded like the connect case: busGoneMsg refires
+			// every retry while absent and must not rebuild the frame
+			m.homeCache.ok = false
+		}
+		m.bus = busAbsent
+		if m.busConn != nil {
+			m.busConn.Close()
+			m.busConn = nil
+		}
+		return m, retryBus()
+
+	case retryMsg:
+		if m.bus == busAbsent && m.width > 0 {
+			pcols, prows := m.panelRegion()
+			m.busGen++
+			return m, connectBus(m.busGen, m.opts.BusSocket, m.width, m.height, pcols, prows)
+		}
+
+	case busEventMsg:
+		if msg.gen != m.busGen {
+			// stale reader chain: drop the event and let the chain die
+			return m, nil
+		}
+		m.handleBusMsg(msg.msg)
+		if m.drainFlashArmed() {
+			// a gesture tap flashed: arm the expiry redraw WITHOUT
+			// replacing the bus wait -- dropping it would wedge the reader
+			return m, tea.Batch(waitBus(m.busGen, m.busCh), flashTick())
+		}
+		return m, waitBus(m.busGen, m.busCh)
+
+	case tickMsg:
+		m.now = time.Time(msg)
+		return m, tick()
+
+	case flashTickMsg:
+		// advance the clock so the expired flash drops off the frame this
+		// redraw composes; no re-arm -- the 1 s tick owns steady state
+		m.now = time.Time(msg)
+	}
+	return m, nil
+}
+
+func (m *model) handleBusMsg(msg proto.Msg) {
+	switch msg.Type {
+	case proto.TypeReload:
+		// the bus's config replaces the startup copy (greeting) or a reloaded
+		// one (broadcast): re-derive cfg-dependent state exactly like startup.
+		// Runtime-only state survives -- kbBoard/kbLayer, caffeinate, palette,
+		// widget data, taps; strip/toggles and the kb-live gate read m.cfg at
+		// render, so assigning it covers them.
+		if msg.Config == nil {
+			return
+		}
+		m.cfg = msg.Config
+		m.layout = msg.Config.Layout
+		m.skew = false
+		m.resetLayout()
+		m.trayFlash = nil
+		// the bus resizes scrape windows to the (possibly re-regioned) grid
+		m.sendGrid()
+	case proto.TypeLayout:
+		if _, ok := m.cfg.Layouts[msg.Layout]; ok {
+			m.layout = msg.Layout
+			m.skew = false // resetLayout below drops the composed frame
+			m.resetLayout()
+			// the bus resizes scrape windows to the new region
+			m.sendGrid()
+		} else {
+			// config skew: keep the current layout, surface it on the strip
+			// and its cup
+			m.lastGst = fmt.Sprintf("layout %q unknown (config skew)", msg.Layout)
+			if !m.skew {
+				m.skew = true
+				m.homeCache.ok = false
+			}
+		}
+	case proto.TypeTheme:
+		m.theme = msg.Theme
+		// a palette-less broadcast (bus hasn't fetched yet) keeps the last
+		// known palette rather than clearing it
+		if msg.Palette != nil {
+			m.palette = palette(msg.Palette)
+		}
+		// styles derive from the palette: rebuild them and drop the composed
+		// frame so the new tones land immediately
+		m.sty = buildStyles(m.palette)
+		m.rowsOK = false
+		m.homeCache.ok = false
+	case proto.TypeCaffeinate:
+		if msg.Caffeinate != m.caffeinate {
+			m.caffeinate = msg.Caffeinate
+			// the cup lives in the tray chrome: drop the composed frame so
+			// the new state lands immediately
+			m.homeCache.ok = false
+		}
+	case proto.TypeNotice:
+		// transient bus-side warning (refused row act, nonzero exec exit):
+		// surfaces on the strip like the skew path
+		m.lastGst = msg.Error
+		m.homeCache.ok = false
+	case proto.TypeWidgetData:
+		m.invalidateHome(msg.Widget)
+		if msg.Error != "" {
+			m.widgetErr[msg.Widget] = msg.Error
+			break
+		}
+		var d module.Data
+		if err := json.Unmarshal(msg.Data, &d); err != nil {
+			m.widgetErr[msg.Widget] = "decode: " + err.Error()
+			break
+		}
+		delete(m.widgetErr, msg.Widget)
+		m.widgetData[msg.Widget] = d
+	case proto.TypeSnapshot:
+		// the dock has no scraped-frame renderer yet; the stale mark lands
+		// on the widget's titled region
+		was := m.widgetStale[msg.Widget]
+		switch {
+		case msg.Stale:
+			if m.widgetStale == nil {
+				m.widgetStale = make(map[string]bool)
+			}
+			m.widgetStale[msg.Widget] = true
+		case msg.Error == "":
+			// only a REAL frame clears the mark: error frames while the
+			// window wedges must not resurrect a dead screen as live (the
+			// scheduler's staleSent latch never re-pulses)
+			delete(m.widgetStale, msg.Widget)
+		}
+		if was != m.widgetStale[msg.Widget] {
+			// transitions only: fresh frames arrive at poll cadence and
+			// must not defeat the home cache
+			m.invalidateHome(msg.Widget)
+		}
+	case proto.TypeKey:
+		m.handleKeyMsg(msg)
+	case proto.TypeGesture:
+		if msg.Gesture == nil {
+			return
+		}
+		g := msg.Gesture
+		m.lastGst = g.Kind
+		switch g.Kind {
+		case proto.GestureTap:
+			m.taps++
+			m.resolveTap(g.Col, g.Row)
+		case proto.GestureLongPress:
+			m.lastGst = fmt.Sprintf("long-press @%d,%d", g.Col, g.Row)
+		case proto.GestureSwipe:
+			m.lastGst = "swipe-" + g.Dir
+		case proto.GestureTwoFingerSwipe:
+			// tray gesture; tray engine is a later milestone
+			m.lastGst = "two-finger-swipe-" + g.Dir + " (tray stub)"
+		case proto.GestureWheel:
+			m.lastGst = fmt.Sprintf("wheel %+d,%+d", g.DX, g.DY)
+		}
+	}
+}
+
+// navigateTo switches to a layout the dock config knows. Bus-connected navs
+// route through the bus exactly like `khudson ctl layout` -- the bus config
+// (scheduler visibility) moves with the switch and the dock flips when the
+// TypeLayout broadcast comes back. Dock-local switching is the bus-absent
+// fallback only.
+func (m *model) navigateTo(target string) {
+	m.lastGst = "nav: " + target
+	if m.bus == busConnected && m.busConn != nil {
+		enc := json.NewEncoder(m.busConn)
+		_ = enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: target})
+		return
+	}
+	m.layout = target
+	m.resetLayout()
+}
+
+// homeTap navigates to the home-kind layout; no-op when already there or
+// when none is configured. The home strip's hit region consumes the tap
+// either way.
+func (m *model) homeTap(int, int) {
+	if t, ok := m.homeLayout(); ok && m.layout != t {
+		m.navigateTo(t)
+	}
+}
+
+// homeLayout is the home tap target: the first layout whose KIND is home,
+// in stable order -- the config default first, then sorted names.
+func (m *model) homeLayout() (string, bool) {
+	if m.cfg == nil {
+		return "", false
+	}
+	if m.cfg.Layouts[m.cfg.Layout].Kind == "home" {
+		return m.cfg.Layout, true
+	}
+	for _, name := range slices.Sorted(maps.Keys(m.cfg.Layouts)) {
+		if m.cfg.Layouts[name].Kind == "home" {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func (m *model) View() tea.View {
+	var v tea.View
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	if m.width == 0 {
+		v.SetContent("...")
+		return v
+	}
+
+	bodyH := m.height - stripH
+
+	var body string
+	// kind drives the ENGINE (which renderer runs); name drives the
+	// AFFORDANCE (only the home layout itself skips the return strip)
+	switch m.layoutKind() {
+	case "home":
+		render := m.renderHome
+		if t, ok := m.homeLayout(); ok && m.layout != t {
+			// a home-kind layout that is not THE home layout (e.g. the
+			// fullscreen claude panel) still needs a way back
+			render = func(h int) string { return m.renderNonHome(h, m.renderHome) }
+		}
+		if m.trayFlashLive() || m.attentionLive() {
+			// clock-driven frame: render fresh until the flash expires or
+			// the attention border stops marching
+			m.homeCache.ok = false
+			body = render(bodyH)
+		} else if m.homeCache.ok {
+			body = m.homeCache.body
+			m.hits = m.homeCache.hits
+		} else {
+			body = render(bodyH)
+			m.homeCache = homeCache{body: body, hits: slices.Clone(m.hits), ok: true}
+		}
+	case "keyboard":
+		if m.trayFlashLive() {
+			m.homeCache.ok = false
+			body = m.renderNonHome(bodyH, m.renderKeyboard)
+		} else if m.homeCache.ok {
+			body = m.homeCache.body
+			m.hits = m.homeCache.hits
+		} else {
+			body = m.renderNonHome(bodyH, m.renderKeyboard)
+			m.homeCache = homeCache{body: body, hits: slices.Clone(m.hits), ok: true}
+		}
+	default:
+		body = m.renderNonHome(bodyH, m.renderSkewStub)
+	}
+
+	// renderStrip appends the strip hits onto whichever body table is live;
+	// cap the slice first so the append reallocates instead of growing into
+	// homeCache's cached backing array (a cache-hit frame aliases it). The
+	// join is plain concatenation: both sides are exact-width by
+	// construction.
+	m.hits = m.hits[:len(m.hits):len(m.hits)]
+	v.SetContent(body + "\n" + m.renderStrip())
+	return v
+}
+
+// renderSkewStub is the loud config-skew body: home/keyboard are the shipped
+// kinds, anything else renders a warn stub, never a silent freeze.
+func (m *model) renderSkewStub(bodyH int) string {
+	m.resetHits()
+	return renderTitledBox("",
+		[]string{chromeWarn.Render(" layout " + m.layout + ": kind " + m.layoutKind() + " has no renderer")},
+		m.width, bodyH)
+}
+
+// homeStripW is the home affordance column: a slim strip of always-on chrome
+// on the right edge of every non-home layout, tap = back to home.
+const homeStripW = 3
+
+// renderNonHome renders a non-home layout with the home affordance strip on
+// its right edge. The layout renderer reads its width off the model (the
+// kb.go contract), so the reserved columns are a scoped width override
+// around the call; the hit regions the renderer appends are absolute cells
+// and stay valid in the narrower region. A dock too small to share keeps the
+// layout full-width; `khudson ctl layout` is the return path there.
+func (m *model) renderNonHome(bodyH int, render func(int) string) string {
+	if m.width-homeStripW < 8 {
+		return render(bodyH)
+	}
+	w := m.width
+	m.width = w - homeStripW
+	body := render(bodyH)
+	m.width = w
+	return lipgloss.JoinHorizontal(lipgloss.Top, body, m.renderHomeStrip(bodyH))
+}
+
+// renderHomeStrip draws the affordance column and registers its tap target:
+// the whole strip navigates to the home-kind layout (homeTap). The label
+// reads top-to-bottom in the brand tone (discoverable), the border
+// stays dim chrome. lipgloss v2 Width/Height are frame-inclusive, so the
+// style yields exactly homeStripW x bodyH cells; fixedBlock re-asserts the
+// geometry per the ambiguous-width convention.
+func (m *model) renderHomeStrip(bodyH int) string {
+	m.hits = append(m.hits, hitRegion{
+		area: rect{m.width - homeStripW, 0, homeStripW, bodyH},
+		do:   m.homeTap,
+	})
+	letters := "home"
+	if inner := bodyH - 2; inner < len(letters) {
+		letters = letters[:max(inner, 0)]
+	}
+	rows := make([]string, 0, len(letters))
+	for _, r := range letters {
+		rows = append(rows, m.sty.brand.Render(string(r)))
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(chromeDim.GetForeground()).
+		Width(homeStripW).
+		Height(bodyH).
+		Align(lipgloss.Center, lipgloss.Center)
+	return fixedBlock(strings.Split(box.Render(strings.Join(rows, "\n")), "\n"), homeStripW, bodyH)
+}
+
+// renderStrip is the 2-row strip under the body, hosting the nav band ahead
+// of the status content: the drawn home icon, config tab labels (active
+// target accented, stub targets flashing "soon"), the flip chevron (only
+// while the active layout is one of the strip.flip pair), drawn toggle cups,
+// then layout, bus state, and gesture tally, the clock flush right. Icons
+// occupy both rows as real cells (see the strip art block for why escapes
+// cannot); 1x text sits on the BOTTOM row with blank cells above it.
+// Registers the strip hits as it places the band: icon, tabs, chevron, cups,
+// then a whole-strip consume rect so strip taps never leak into the body
+// (first-match table).
+func (m *model) renderStrip() string {
+	yTop := m.height - stripH
+	var top, bot strings.Builder
+	x := 0
+	icon := func(glyph string, style lipgloss.Style, do func(int, int)) {
+		top.WriteString(strings.Repeat(" ", stripIconW))
+		// force painted cells == stripIconW (fitCell convention): nerd
+		// glyphs are the ambiguous-width poster child
+		bot.WriteString(fitCellPad(" "+style.Render(glyph)+" ", stripIconW))
+		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, stripIconW, stripH}, do: do})
+		x += stripIconW
+	}
+
+	if m.width >= stripIconW {
+		style := m.sty.brand
+		if m.flashLive("icon:home") {
+			style = m.tapStyle(style)
+		}
+		icon(homeGlyph, style, func(x, y int) {
+			m.flash("icon:home")
+			m.homeTap(x, y)
+		})
+	}
+	if m.cfg != nil && m.cfg.Strip != nil {
+		for _, e := range m.cfg.Strip.Entries {
+			label, style := e.Label, chromeFG
+			if e.Target == m.layout {
+				style = chromeAccent
+			}
+			if m.flashLive(e.Label) {
+				// the "soon" stub flash is the informative one: it outranks
+				// the tap restyle
+				label, style = "soon", chromeWarn
+			} else if m.flashLive("tab:" + e.Label) {
+				style = m.tapStyle(style)
+			}
+			w := lipgloss.Width(label) + 2
+			if x+w > m.width {
+				break
+			}
+			top.WriteString(strings.Repeat(" ", w))
+			// force painted cells == the budgeted w (fitCell convention):
+			// an ambiguous-width label must not desync the row from the
+			// hit rect registered below
+			bot.WriteString(fitCellPad(" "+style.Render(label)+" ", w))
+			m.hits = append(m.hits, hitRegion{
+				area: rect{x, yTop, w, stripH},
+				do: func(int, int) {
+					m.flash("tab:" + e.Label)
+					m.trayActivate(e.Target, e.Label)
+				},
+			})
+			x += w
+		}
+		// flip chevron: a control (chromeFG, not a state light), rendered
+		// only while the active layout is one of the pair; tap flips to the
+		// other side. The icon closure does not width-guard, so guard here.
+		if f := m.cfg.Strip.Flip; f != nil && x+stripIconW <= m.width {
+			glyph, target := "", ""
+			switch m.layout {
+			case f.Expanded:
+				glyph, target = stripCollapseGlyph, f.Collapsed
+			case f.Collapsed:
+				glyph, target = stripExpandGlyph, f.Expanded
+			}
+			if glyph != "" {
+				style := chromeFG
+				if m.flashLive("icon:chevron") {
+					style = m.tapStyle(style)
+				}
+				icon(glyph, style, func(int, int) {
+					m.flash("icon:chevron")
+					m.trayActivate(target, "kb")
+				})
+			}
+		}
+		degraded := m.bus != busConnected || m.skew
+		for i, tg := range m.cfg.Strip.Toggles {
+			if x+1+stripIconW > m.width {
+				break
+			}
+			top.WriteString(" ")
+			bot.WriteString(" ")
+			x++
+			if tg.Kind != "caffeinate" {
+				// unknown kind: LOOK dead -- dim glyph, consumed no-op tap
+				// (config ahead of the binary stays visible, never healthy)
+				g := tg.Off
+				if g == "" {
+					g = "?"
+				}
+				icon(g, chromeDim, consumeTap)
+				continue
+			}
+			glyph, style := tg.Off, chromeFG
+			if glyph == "" {
+				glyph = cupOffGlyph
+			}
+			if m.caffeinate == "on" {
+				glyph, style = tg.On, chromeAccent
+				if glyph == "" {
+					glyph = cupOnGlyph
+				}
+			}
+			if degraded {
+				// a tap that cannot land must look dead, never silently no-op
+				style = chromeWarn
+			}
+			key := "cup:" + strconv.Itoa(i)
+			if m.flashLive(key) {
+				style = m.tapStyle(style)
+			}
+			icon(glyph, style, func(int, int) {
+				m.flash(key)
+				m.sendCaffeinateToggle()
+			})
+		}
+	}
+
+	// status remainder, width-fitted; everything left of it is exact-width
+	// by construction
+	rem := m.width - x
+	left := lipgloss.JoinHorizontal(lipgloss.Top,
+		m.sty.strip.Render(" "+m.layout+" | "),
+		m.renderBusIndicator(),
+		m.sty.strip.Render(" | "+m.lastGestureLabel()),
+	)
+	clock := m.sty.strip.Render(strings.ToLower(m.now.Format("Mon 15:04")))
+	var status string
+	gap := rem - lipgloss.Width(left) - lipgloss.Width(clock)
+	switch {
+	case gap >= 1:
+		status = left + strings.Repeat(" ", gap) + clock
+	case lipgloss.Width(clock)+1 <= rem:
+		status = fitCellPad(left, rem-lipgloss.Width(clock)-1) + " " + clock
+	default:
+		status = fitCellPad(left+" "+clock, rem)
+	}
+	top.WriteString(strings.Repeat(" ", rem))
+	bot.WriteString(status)
+
+	m.hits = append(m.hits, hitRegion{area: rect{0, yTop, m.width, stripH}, do: consumeTap})
+	return top.String() + "\n" + bot.String()
+}
+
+// layoutKind is the active layout's engine kind; home is the only shipped
+// kind, so an unknown or empty kind defaults to home.
+func (m *model) layoutKind() string {
+	if m.cfg == nil {
+		return "home"
+	}
+	if l, ok := m.cfg.Layouts[m.layout]; ok && l.Kind != "" {
+		return l.Kind
+	}
+	return "home"
+}
+
+func (m *model) renderBusIndicator() string {
+	if m.bus == busConnected {
+		return m.sty.strip.Render("bus ok")
+	}
+	// degraded state is loud, never silent
+	return m.sty.warn.Render("bus absent -- mouse fallback")
+}
+
+func (m *model) lastGestureLabel() string {
+	if m.lastGst == "" {
+		return fmt.Sprintf("taps: %d", m.taps)
+	}
+	return fmt.Sprintf("taps: %d, last: %s", m.taps, m.lastGst)
+}

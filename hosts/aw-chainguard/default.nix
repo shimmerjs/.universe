@@ -42,7 +42,18 @@
       imports = [
         ../../modules/home-manager/gcloud.nix
         ./clod
+        # khudson Edge HUD: host-scoped on purpose (edge-host.md review m2 --
+        # this is the only host physically driving the Xeneon Edge).
+        ../../homies/shimmerjs/home/khudson/nix/module.nix
       ];
+
+      universe.home.khudson = {
+        enable = true;
+        # Daily-kitty RC socket + socket-only hardening. First switch owes the
+        # one-time hand-created rc-password.conf and ONE manual daily-kitty
+        # quit+relaunch (listen_on/allow_remote_control bind at startup only).
+        mainKittyIntegration.enable = true;
+      };
 
       # Trust the chainguard tap so interactive brew commands (bundle, upgrade,
       # info) can load its formulae under Homebrew >=6 tap trust enforcement.

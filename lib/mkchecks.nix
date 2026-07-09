@@ -7,6 +7,10 @@
 #                             hosts that have a clod/statusline.sh.
 #   - clod-workflow-tests-<host>: fixture unit tests (testdata/*.json) for the
 #                             workflow parser and pure helpers, under plain node.
+#   - khudson-bininstall-<host>: activation install-script legs (verify/tamper/
+#                             fast-path) for hosts with khudson enabled.
+#   - khudson-posture-<host>: RC + state-root posture pins on the rendered
+#                             khudson artifacts, same gate.
 { inputs }:
 
 let
@@ -118,7 +122,31 @@ let
            value = import ./hooks-check.nix { inherit pkgs; goBuildSweep = hooks.goBuildSweep; }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck ];
+  # khudson checks live beside the module (homies/shimmerjs/home/khudson/nix/)
+  # and are gated on the module being enabled for the host's user -- no other
+  # builder discovers khudson, so this is the one lib/ shim. Both import from
+  # the module dir so the checked script/artifacts are the deployed ones.
+  mkKhudsonInstallCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+  in if hmUserCfg.universe.home.khudson.enable or false
+    then { inherit system; name = "khudson-bininstall-${hostname}";
+           value = import ../homies/shimmerjs/home/khudson/nix/install-check.nix { inherit pkgs; }; }
+    else null;
+
+  mkKhudsonPostureCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+  in if hmUserCfg.universe.home.khudson.enable or false
+    then { inherit system; name = "khudson-posture-${hostname}";
+           value = import ../homies/shimmerjs/home/khudson/nix/posture-check.nix { inherit pkgs; hmCfg = hmUserCfg; }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

@@ -1,0 +1,178 @@
+{
+  "data": {
+    "layout": {
+      "hashId": "TESTr",
+      "title": "khudson test",
+      "geometry": "moonlander",
+      "revision": {
+        "hashId": "REVAB",
+        "qmkVersion": "24.0",
+        "title": "Keyboard layout edited.",
+        "createdAt": "2026-06-30 12:00:00 UTC",
+        "model": "mk1",
+        "md5": "a0ad3b81cdb73228812d171d115e22ac",
+        "layers": [
+          {
+            "title": "Base",
+            "position": 0,
+            "keys": [
+              {
+                "tap": {
+                  "code": "KC_A",
+                  "color": null,
+                  "layer": null,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": null,
+                  "description": null
+                },
+                "hold": {
+                  "code": "MO",
+                  "color": null,
+                  "layer": 1,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": null,
+                  "description": null
+                },
+                "icon": null,
+                "emoji": null,
+                "tapHold": null,
+                "doubleTap": null,
+                "glowColor": null,
+                "customLabel": null,
+                "tappingTerm": null
+              },
+              {
+                "tap": {
+                  "code": "KC_TAB",
+                  "color": null,
+                  "layer": null,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": {
+                    "leftAlt": false,
+                    "leftGui": false,
+                    "leftCtrl": true,
+                    "rightAlt": false,
+                    "rightGui": false,
+                    "leftShift": true,
+                    "rightCtrl": false,
+                    "rightShift": false
+                  },
+                  "description": ""
+                },
+                "hold": null,
+                "icon": null,
+                "emoji": null,
+                "tapHold": null,
+                "doubleTap": null,
+                "glowColor": "#000EFF",
+                "customLabel": null,
+                "tappingTerm": 220
+              },
+              {
+                "tap": {
+                  "code": "KC_ESCAPE",
+                  "color": null,
+                  "layer": null,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": null,
+                  "description": null
+                },
+                "hold": null,
+                "icon": null,
+                "emoji": null,
+                "tapHold": null,
+                "doubleTap": {
+                  "code": "KC_GRAVE",
+                  "color": null,
+                  "layer": null,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": null,
+                  "description": null
+                },
+                "glowColor": null,
+                "customLabel": "esc",
+                "tappingTerm": null
+              }
+            ]
+          },
+          {
+            "title": "Nav",
+            "position": 1,
+            "keys": [
+              {
+                "tap": {
+                  "code": "TO",
+                  "color": null,
+                  "layer": 0,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": null,
+                  "description": null
+                },
+                "hold": null,
+                "icon": null,
+                "emoji": null,
+                "tapHold": null,
+                "doubleTap": null,
+                "glowColor": null,
+                "customLabel": null,
+                "tappingTerm": null
+              },
+              {
+                "tap": null,
+                "hold": null,
+                "icon": null,
+                "emoji": null,
+                "tapHold": null,
+                "doubleTap": null,
+                "glowColor": null,
+                "customLabel": null,
+                "tappingTerm": null
+              },
+              {
+                "tap": {
+                  "code": "KC_LEFT",
+                  "color": null,
+                  "layer": null,
+                  "macro": null,
+                  "modifier": null,
+                  "modifiers": null,
+                  "description": null
+                },
+                "hold": null,
+                "icon": null,
+                "emoji": null,
+                "tapHold": null,
+                "doubleTap": null,
+                "glowColor": null,
+                "customLabel": null,
+                "tappingTerm": null
+              }
+            ]
+          }
+        ],
+        "combos": [
+          {
+            "keyIndices": [0, 2],
+            "layerIdx": 0,
+            "trigger": {
+              "code": "KC_ENTER",
+              "color": null,
+              "layer": null,
+              "macro": null,
+              "modifier": null,
+              "modifiers": null,
+              "description": null
+            }
+          }
+        ],
+        "config": null
+      }
+    }
+  }
+}

@@ -106,6 +106,7 @@
     let
       mkSystem = import ./lib/mksystem.nix { inherit inputs; };
       mkChecks = import ./lib/mkchecks.nix { inherit inputs; };
+
     in
     {
       darwinConfigurations = {

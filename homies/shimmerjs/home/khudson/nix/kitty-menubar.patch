@@ -1,0 +1,45 @@
+kitty v0.47.4: let a center-edge layer-shell panel cover the menu bar strip.
+
+Upstream _glfwPlatformSetLayerShellConfig sizes GLFW_EDGE_CENTER (and
+LAYER_SHELL_BACKGROUND) panels to the screen height minus the menu bar, so a
+panel pinned to the Xeneon Edge leaves a dead strip at the top of the glass.
+Panels are placed at NSPopUpMenuWindowLevel - 1, above the menu bar, so
+covering the full frame is safe; the now-unused dock_height/menubar_height
+locals are dropped to keep the build warning-clean.
+
+Sizing alone is not enough (v1 regression, eyes-on 2026-07-03): the full-frame
+rect submitted via setFrame: goes through AppKit's default
+constrainFrameRect:toScreen:, which pushes a frame whose top overlaps the menu
+bar back down below it -- origin shifts, size intact -- so the 24-row panel
+rendered shifted with the bar still visible and the bottom row off the glass.
+kitty's GlfwWindow already overrides constrainFrameRect: to honor
+ns.suppress_frame_constraints (used transiently for traditional-fullscreen
+restoration, #9572); set it permanently for full-cover panels so every
+constraint pass (setStyleMask:, setFrame:, orderFront:, screen changes) leaves
+the frame alone.
+
+Generated against https://raw.githubusercontent.com/kovidgoyal/kitty/v0.47.4/glfw/cocoa_window.m
+(sha1 84e821e4e6b9e131fbcaa9ff991dff27183d24dc). Applied by overlay.nix.
+
+--- a/glfw/cocoa_window.m
++++ b/glfw/cocoa_window.m
+@@ -2681,11 +2681,16 @@
+     double spacing_y = top_edge_spacing + bottom_edge_spacing;
+     const unsigned xsz = config.x_size_in_pixels ? (unsigned)(config.x_size_in_pixels * xscale) : (cell_width * config.x_size_in_cells);
+     const unsigned ysz = config.y_size_in_pixels ? (unsigned)(config.y_size_in_pixels * yscale) : (cell_height * config.y_size_in_cells);
+-    CGFloat dock_height = NSMinY(screen.visibleFrame) - NSMinY(screen.frame);
+-    CGFloat menubar_height = NSHeight(screen.frame) - NSHeight(screen.visibleFrame) - dock_height;
+     CGFloat x = NSMinX(screen.visibleFrame), y = NSMinY(screen.visibleFrame) - 1, width = NSWidth(screen.visibleFrame), height = NSHeight(screen.visibleFrame) + 2;
+     if (config.type == GLFW_LAYER_SHELL_BACKGROUND || config.edge == GLFW_EDGE_CENTER) {
+-        x = NSMinX(screen.frame); height = NSHeight(screen.frame) - menubar_height + 1; y = NSMinY(screen.frame); width = NSWidth(screen.frame);
++        // khudson: cover the full display height, menu bar strip included.
++        // Panels draw at NSPopUpMenuWindowLevel - 1, above the menu bar, so a
++        // center-edge panel can own every pixel of the target display.
++        // AppKit's default constrainFrameRect:toScreen: pushes a frame whose
++        // top overlaps the menu bar back down below it (origin shifts, size
++        // intact), so make the GlfwWindow override return frames untouched.
++        window->ns.suppress_frame_constraints = true;
++        x = NSMinX(screen.frame); height = NSHeight(screen.frame); y = NSMinY(screen.frame); width = NSWidth(screen.frame);
+     }
+     // Screen co-ordinate system is with origin in lower left and y increasing upwards and x increasing rightwards
+     // NSLog(@"frame: %@ visibleFrame: %@\n", NSStringFromRect(screen.frame), NSStringFromRect(screen.visibleFrame));
