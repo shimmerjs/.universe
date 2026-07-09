@@ -44,7 +44,8 @@ func TestInlineSparse(t *testing.T) {
 		t.Fatal("unexpectedly hidden")
 	}
 	got := stripANSI(content)
-	want := "⟳ ms-start · 100 tok"
+	glyph, _ := statusStyle("running")
+	want := glyph + " ms-start"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -62,9 +63,6 @@ func TestSparseTaskNoFieldShift(t *testing.T) {
 	got := stripANSI(content)
 	if !strings.HasPrefix(got, "⟳ ms-start") {
 		t.Fatalf("label not where it belongs: %q", got)
-	}
-	if !strings.Contains(got, "100 tok") {
-		t.Fatalf("token count missing: %q", got)
 	}
 	if w := visibleWidth(content); w != 120 {
 		t.Fatalf("visible width %d, want exactly 120", w)
@@ -122,8 +120,8 @@ func TestQueuedWithTokensShown(t *testing.T) {
 	if hide {
 		t.Fatal("active queued task should show")
 	}
-	if !strings.Contains(stripANSI(content), "1.2K tok") {
-		t.Fatalf("token count missing in %q", stripANSI(content))
+	if !strings.Contains(stripANSI(content), "warm") {
+		t.Fatalf("label missing in %q", stripANSI(content))
 	}
 }
 
@@ -136,31 +134,6 @@ func TestTruncatesToColumns(t *testing.T) {
 	}
 	if !strings.Contains(content, "...") {
 		t.Fatal("expected truncation ellipsis")
-	}
-}
-
-// The tape shows at most the last tapeWindow samples so its cell width is
-// stable as samples accumulate.
-func TestTapeWindow(t *testing.T) {
-	tk := mk(t, `{"id":"x","status":"running","label":"l","tokenCount":1,"tokenSamples":[1,2,3,4,5,6,7,8,9,10,11,12]}`)
-	content, _ := render(tk, 120, now)
-	n := 0
-	for _, r := range stripANSI(content) {
-		if r >= 0x2581 && r <= 0x2588 {
-			n++
-		}
-	}
-	if n != tapeWindow {
-		t.Fatalf("tape has %d runes, want %d", n, tapeWindow)
-	}
-}
-
-func TestSparkline(t *testing.T) {
-	if got, want := sparkline([]float64{0, 5, 12, 30, 18}), "▁▂▄█▅"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-	if got, want := sparkline([]float64{0, 0, 0}), "▁▁▁"; got != want {
-		t.Fatalf("all-zero: got %q, want %q", got, want)
 	}
 }
 
@@ -186,11 +159,6 @@ func TestUnknownStatusGlyph(t *testing.T) {
 }
 
 func TestFormatters(t *testing.T) {
-	for in, want := range map[float64]string{500: "500", 45230: "45.2K", 1741002: "1.7M"} {
-		if got := ftok(in); got != want {
-			t.Errorf("ftok(%v) = %q, want %q", in, got, want)
-		}
-	}
 	for in, want := range map[int64]string{42: "42s", 83: "1:23", 3725: "1:02:05", -5: "0s"} {
 		if got := fdur(in); got != want {
 			t.Errorf("fdur(%d) = %q, want %q", in, got, want)

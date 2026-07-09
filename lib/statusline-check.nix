@@ -19,7 +19,6 @@ pkgs.runCommandLocal "clod-statusline-check"
   ''
     set -eo pipefail
     export HOME=$TMPDIR
-    export STATUSLINE_SYNC=1
 
     cp "$statuslineScript" statusline.sh
 
@@ -116,33 +115,45 @@ pkgs.runCommandLocal "clod-statusline-check"
       echo "FAIL: subpath should be empty at repo root" >&2; exit 1
     fi
 
-    # 6) LEDGER + FLEET: seed this session's transcripts (a main turn + one
-    #    workflow-agent turn), then assert the spend tape (tokens, dollar adjunct,
-    #    churn) and both the quiet fleet tally and the live fleet row.
+    # 6) CHURN + FLEET: churn renders straight from the payload, the spend
+    #    ledger stays gone (no odometer, no dollar figure, no 24h tally, no
+    #    transcript scanning), and the live fleet row appears for fresh fan-out.
     sid=led-1
     proj=$HOME/.claude/projects/proj
     mkdir -p "$proj/$sid/subagents/workflows/wf_a"
     tp="$proj/$sid.jsonl"
-    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    jq -nc --arg ts "$ts" '{type:"assistant",timestamp:$ts,requestId:"r1",message:{id:"m1",model:"opus",usage:{input_tokens:1000,output_tokens:2000,cache_read_input_tokens:5000,cache_creation_input_tokens:3000}}}' > "$tp"
-    jq -nc --arg ts "$ts" '{type:"assistant",timestamp:$ts,requestId:"r2",message:{id:"m2",model:"opus",usage:{input_tokens:1000,output_tokens:1000,cache_read_input_tokens:1000,cache_creation_input_tokens:1000}}}' > "$proj/$sid/subagents/workflows/wf_a/agent-1.jsonl"
-    # ses_tok = 11000 + 4000 = 15000 (15.0K); n_wf=1, n_wfa=1 (one fan-out agent).
+    : > "$tp"
+    : > "$proj/$sid/subagents/workflows/wf_a/agent-1.jsonl"
     payload=$(jq -nc --arg tp "$tp" --arg sid "$sid" '{model:{display_name:"Opus"},session_id:$sid,transcript_path:$tp,workspace:{current_dir:"/tmp"},cost:{total_cost_usd:4.2,total_lines_added:1234,total_lines_removed:340},context_window:{used_percentage:20}}')
 
-    # 6a) fan-out older than the live window -> quiet tally on the ledger line.
+    # 6a) fan-out older than the live window -> churn line only, no money residue.
     find "$proj/$sid/subagents" -name '*.jsonl' -exec touch -d '10 minutes ago' {} +
-    led=$(printf '%s' "$payload" | STATUSLINE_SYNC=1 bash statusline.sh | strip | grep spend)
-    printf 'ledger=[%s]\n' "$led"
-    for want in '15.0K' 'tok' '~$4.20' '+1.2K' '-340' '24h' '1 wf'; do
-      if ! printf '%s' "$led" | grep -qF -- "$want"; then
-        echo "FAIL: ledger line missing [$want]" >&2; exit 1
+    rendered=$(printf '%s' "$payload" | bash statusline.sh | strip)
+    printf 'churn render=[%s]\n' "$rendered"
+    for want in '+1.2K' '-340'; do
+      if ! printf '%s' "$rendered" | grep -qF -- "$want"; then
+        echo "FAIL: churn missing [$want]" >&2; exit 1
+      fi
+    done
+    for banned in 'spend' '$4.20' 'tok' '24h'; do
+      if printf '%s' "$rendered" | grep -qF -- "$banned"; then
+        echo "FAIL: money residue [$banned] still renders" >&2; exit 1
       fi
     done
 
-    # 6b) fresh fan-out -> the live FLEET row appears (last line).
-    rm -rf "$HOME/.claude/.statusline_cache"
+    # 6b) no churn in the payload -> the churn line disappears entirely.
+    bare=$(jq -nc '{model:{display_name:"Opus"},session_id:"s8",workspace:{current_dir:"/tmp"},context_window:{used_percentage:20}}' \
+      | bash statusline.sh | strip)
+    if printf '%s' "$bare" | grep -q 'churn'; then
+      echo "FAIL: churn line should be absent without churn" >&2; exit 1
+    fi
+    if [ "$(printf '%s\n' "$bare" | wc -l | tr -d ' ')" != "1" ]; then
+      echo "FAIL: churnless unnamed session should render exactly one line" >&2; exit 1
+    fi
+
+    # 6c) fresh fan-out -> the live FLEET row appears (last line).
     find "$proj/$sid/subagents" -name '*.jsonl' -exec touch {} +
-    live=$(printf '%s' "$payload" | STATUSLINE_SYNC=1 bash statusline.sh | strip | tail -1)
+    live=$(printf '%s' "$payload" | bash statusline.sh | strip | tail -1)
     printf 'live=[%s]\n' "$live"
     if ! printf '%s' "$live" | grep -qF 'workflow'; then
       echo "FAIL: live fleet row missing when a workflow agent is fresh" >&2; exit 1

@@ -7,7 +7,7 @@
 // Wide panels get a fixed-width cell layout so rows align like a table and
 // numerics don't jitter as values grow:
 //
-//	<glyph> <label [type], padded> . <tok, right-aligned> tok <tape> . <elapsed>
+//	<glyph> <label [type], padded> . <elapsed>
 //
 // Every cell has a constant visible width (blank-filled when absent), so each
 // row renders to exactly `columns` visible characters with no cross-row
@@ -30,16 +30,15 @@ type payload struct {
 }
 
 type task struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	Type         string          `json:"type"`
-	Status       string          `json:"status"`
-	Description  string          `json:"description"`
-	Label        string          `json:"label"`
-	StartTime    json.RawMessage `json:"startTime"`
-	TokenCount   float64         `json:"tokenCount"`
-	TokenSamples []float64       `json:"tokenSamples"`
-	Cwd          string          `json:"cwd"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Type        string          `json:"type"`
+	Status      string          `json:"status"`
+	Description string          `json:"description"`
+	Label       string          `json:"label"`
+	StartTime   json.RawMessage `json:"startTime"`
+	TokenCount  float64         `json:"tokenCount"`
+	Cwd         string          `json:"cwd"`
 }
 
 type row struct {
@@ -64,14 +63,9 @@ const (
 	glyphMisc = string(rune(0x2022)) // bullet
 
 	// fixed visible widths for the table layout
-	tapeWindow = 8  // sparkline shows the last N samples
-	tokCellW   = 13 // " . NNNNNN tok"
-	durCellW   = 10 // " . HHMM:SS" (7-char duration)
-	minLabelW  = 8  // below this, fall back to inline
+	durCellW  = 10 // " . HHMM:SS" (7-char duration)
+	minLabelW = 8  // below this, fall back to inline
 )
-
-// block elements U+2581..U+2588, one eighth per level
-var sparks = []rune("▁▂▃▄▅▆▇█")
 
 func fg(rgb string) string { return "\x1b[38;2;" + rgb + "m" }
 
@@ -87,16 +81,6 @@ func statusStyle(status string) (glyph, color string) {
 		return "◌", cQueue
 	}
 	return glyphMisc, dim
-}
-
-func ftok(n float64) string {
-	switch {
-	case n >= 1e6:
-		return fmt.Sprintf("%.1fM", n/1e6)
-	case n >= 1e3:
-		return fmt.Sprintf("%.1fK", n/1e3)
-	}
-	return strconv.FormatInt(int64(n), 10)
 }
 
 func fdur(s int64) string {
@@ -145,30 +129,6 @@ func normEpoch(n float64) (int64, bool) {
 	return int64(n), true
 }
 
-func sparkline(samples []float64) string {
-	peak := 0.0
-	for _, v := range samples {
-		if v > peak {
-			peak = v
-		}
-	}
-	var b strings.Builder
-	for _, v := range samples {
-		i := 0
-		if peak > 0 {
-			i = int(v/peak*7 + 0.5)
-		}
-		if i < 0 {
-			i = 0
-		}
-		if i > 7 {
-			i = 7
-		}
-		b.WriteRune(sparks[i])
-	}
-	return b.String()
-}
-
 // visibleWidth counts runes, skipping CSI escape sequences.
 func visibleWidth(s string) int {
 	w := 0
@@ -206,8 +166,6 @@ type cells struct {
 	color string
 	label string
 	typ   string // "[researcher]", possibly empty
-	tok   string // "45.2K", possibly empty
-	tape  string // spark runes, possibly empty
 	dur   string // "1:23", possibly empty
 }
 
@@ -236,15 +194,6 @@ func makeCells(t task, now time.Time) (c cells, hide bool) {
 	if typ := strings.ToLower(t.Type); typ != "" && typ != strings.ToLower(c.label) {
 		c.typ = "[" + typ + "]"
 	}
-	if t.TokenCount > 0 {
-		c.tok = ftok(t.TokenCount)
-	}
-	if s := t.TokenSamples; len(s) >= 2 {
-		if len(s) > tapeWindow {
-			s = s[len(s)-tapeWindow:]
-		}
-		c.tape = sparkline(s)
-	}
 	if hasStart {
 		c.dur = fdur(now.Unix() - start)
 	}
@@ -254,7 +203,7 @@ func makeCells(t task, now time.Time) (c cells, hide bool) {
 // table lays the row out in fixed-width cells: the label cell absorbs all
 // remaining width, the right-side groups are constant-width and blank-filled
 // when absent, so rows align across the panel.
-func (c cells) table(labelW int, showTape bool) string {
+func (c cells) table(labelW int) string {
 	label, typ := c.label, c.typ
 	tagW := 0
 	if typ != "" {
@@ -275,18 +224,6 @@ func (c cells) table(labelW int, showTape bool) string {
 	}
 	b.WriteString(strings.Repeat(" ", labelW-len([]rune(label))-tagW))
 
-	if c.tok != "" {
-		b.WriteString(" " + fg(dim2) + sep + reset + " " + fg(dim) + fmt.Sprintf("%6s", c.tok) + " tok" + reset)
-	} else {
-		b.WriteString(strings.Repeat(" ", tokCellW))
-	}
-	if showTape {
-		if c.tape != "" {
-			b.WriteString(" " + strings.Repeat(" ", tapeWindow-len([]rune(c.tape))) + fg(c.color) + c.tape + reset)
-		} else {
-			b.WriteString(strings.Repeat(" ", 1+tapeWindow))
-		}
-	}
 	if c.dur != "" {
 		b.WriteString(" " + fg(dim2) + sep + reset + " " + fg(dim) + fmt.Sprintf("%7s", c.dur) + reset)
 	} else {
@@ -301,12 +238,6 @@ func (c cells) inline(columns int) string {
 	var tail strings.Builder
 	if c.typ != "" {
 		tail.WriteString(" " + fg(dim2) + c.typ + reset)
-	}
-	if c.tok != "" {
-		tail.WriteString(" " + fg(dim2) + sep + reset + " " + fg(dim) + c.tok + " tok" + reset)
-		if c.tape != "" && columns == 0 {
-			tail.WriteString(" " + fg(c.color) + c.tape + reset)
-		}
 	}
 	if c.dur != "" {
 		tail.WriteString(" " + fg(dim2) + sep + reset + " " + fg(dim) + c.dur + reset)
@@ -329,13 +260,8 @@ func render(t task, columns int, now time.Time) (content string, hide bool) {
 	if hide {
 		return "", true
 	}
-	showTape := columns >= 60
-	tailW := tokCellW + durCellW
-	if showTape {
-		tailW += 1 + tapeWindow
-	}
-	if labelW := columns - 2 - tailW; columns > 0 && labelW >= minLabelW {
-		return c.table(labelW, showTape), false
+	if labelW := columns - 2 - durCellW; columns > 0 && labelW >= minLabelW {
+		return c.table(labelW), false
 	}
 	return c.inline(columns), false
 }
