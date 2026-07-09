@@ -76,8 +76,10 @@ in
       # (keep-when-unsure); answers the recurring manual "prune your memory" ask.
       memory-prune = ./skills/memory-prune/SKILL.md;
       # Cross-model second opinion via codex (different vendor, so reviewers don't
-      # share the pinned Claude model's blind spots). Prefers the codex MCP tools
-      # below; bash fallback covered by the Bash(codex ...) perms.
+      # share the pinned Claude model's blind spots). CLI-only via the
+      # Bash(codex ...) perms; threading via `codex exec resume <uuid>`. No MCP
+      # server: per-session stdio daemons cost ~32MB each for a rarely-used path,
+      # and the hm module's plugin-prefixed tool names broke the allowlist silently.
       codex-consult = ./skills/codex-consult/SKILL.md;
     };
 
@@ -85,14 +87,6 @@ in
       linear = {
         type = "http";
         url = "https://mcp.linear.app/mcp";
-      };
-      # codex as a stdio MCP server: `codex` starts a thread, `codex-reply`
-      # continues it -- the threaded path the codex-consult skill prefers. Binary
-      # is nix-pinned; auth is mutable state (`codex login`), not nix-managed.
-      codex = {
-        type = "stdio";
-        command = "${pkgs.codex}/bin/codex";
-        args = [ "mcp-server" ];
       };
     };
 
@@ -120,6 +114,11 @@ in
       effortLevel = "xhigh";
       autoScrollEnabled = true;
       includeCoAuthoredBy = false;
+      # ctrl+g external-editor buffer: prepend the last assistant response as
+      # #-commented context above the prompt (stripped on save). Key name from the
+      # binary's /config panel id ("Show last response in external editor") -- not
+      # yet in the schemastore schema, which lags the app.
+      externalEditorContext = true;
       # WebFetch sends the requested hostname to api.anthropic.com for a safety
       # preflight on every fetch. The permission allowlist already scopes which
       # domains are reachable, so the preflight is largely redundant.
@@ -149,6 +148,17 @@ in
               {
                 type = "command";
                 command = "${hooks.glod}/bin/fancypants";
+              }
+            ];
+          }
+          # Force scriptPath over name= for deployed workflows: name resolution
+          # is frozen at session start and can run a stale pre-switch script.
+          {
+            matcher = "Workflow";
+            hooks = [
+              {
+                type = "command";
+                command = "${hooks.awScriptpathGate}/bin/clod-aw-scriptpath-gate";
               }
             ];
           }
@@ -249,11 +259,10 @@ in
 
           "mcp__claude_ai_Chainguard_Analytics__metrics"
 
-          # codex-consult: threaded MCP path + one-shot bash fallback, promptless.
-          "mcp__codex__codex"
-          "mcp__codex__codex-reply"
+          # codex-consult: CLI-only, promptless (exec resume carries threads).
           "Bash(codex exec:*)"
           "Bash(codex review:*)"
+          "Bash(codex login status:*)"
         ];
       };
 
@@ -350,8 +359,7 @@ in
 
   home.packages = [
     clodCheat
-    # codex CLI on PATH for the codex-consult bash fallback (and direct use);
-    # same package the codex MCP server above is pinned to.
+    # codex CLI on PATH for codex-consult (exec / review / exec resume; no MCP).
     pkgs.codex
   ];
 

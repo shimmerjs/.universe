@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-design-review',
-  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart=off intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses with a refute-default verifier; design= is a path to the doc under review, unset means the prompt is the design problem and a candidate is proposed; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
+  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart=off codex=on intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses (plus a cross-model codex dissent leg) with a refute-default verifier; design= is a path to the doc under review, unset means the prompt is the design problem and a candidate is proposed; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked',
   phases: [{ title: 'Frame' }, { title: 'Critique' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -16,6 +16,7 @@ const FLAGS = {
   locked:      { short: 'k', type: 'path', default: '', help: 'path to a CONSTRAINTS / LOCKED block' },
   votes:       { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per flaw' },
   priorart:    { short: 'o', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'priorart=on folds a prior-art pass into the critique' },
+  codex:       { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex dissent leg in the critique fan-out' },
   intensity:   { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
   subagents:   { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
@@ -164,17 +165,57 @@ const FLAW = { type: 'object', required: ['flaws'], properties: { flaws: { type:
 const VERDICT = { type: 'object', required: ['real'], properties: { real: { type: 'boolean' }, why: { type: 'string' } } }
 
 phase('Critique')
-const found = (await parallel(lenses.map(lens => () => agent(
+// codex dissent leg: cross-model recall (same-model lens critics share one
+// model's blind spots; a flaw Claude cannot see never reaches Verify). Codex
+// flaws enter as CANDIDATES through the same dedup + skeptic quorum as every
+// lens flaw -- codex supplies recall, the quorum supplies precision. The leg
+// is a Claude relay (DESIGNER has Bash; codex exec is allowlisted) that must
+// ground every codex citation before relaying. A dead leg (auth, exec error,
+// or a null agent) is DOWN: logged and tallied, never absorbed by
+// filter(Boolean) -- available=false is what keeps "codex is down"
+// distinguishable from "codex found nothing".
+const CODEX_FLAWS = { type: 'object', required: ['available', 'flaws', 'dropped'], properties: {
+  available: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'integer' },
+  flaws: { type: 'array', items: {
+    type: 'object', required: ['lens', 'desc', 'severity'], properties: {
+      lens: { type: 'string' }, desc: { type: 'string' }, evidence: { type: 'string' },
+      severity: { type: 'string', enum: ['fatal', 'major', 'minor'] } } } } } }
+const legThunks = lenses.map(lens => () => agent(
   'Stress-test this design through the ' + lens + ' lens. Ground every flaw in real code under ' + flags['code-root'] + ' (file:line).\n' +
   'Design:\n' + framed.design + (locked ? '\nLOCKED (do not flag these as flaws):\n' + locked : ''),
-  { label: 'critique:' + lens, phase: 'Critique', agentType: DESIGNER, schema: FLAW }))))
-  .filter(Boolean).flatMap(r => r.flaws || [])
+  { label: 'critique:' + lens, phase: 'Critique', agentType: DESIGNER, schema: FLAW }))
+if (flags.codex === 'on') legThunks.unshift(() => agent(
+  'Cross-model dissent leg: relay codex, do NOT add flaws of your own.\n' +
+  '1. Check auth first: run "codex login status" if permitted; if it prompts or fails, skip straight to the codex exec attempt.\n' +
+  '2. Write the design brief below to a temp file (mktemp; bash heredoc is quoting-safe), then run:\n' +
+  '   codex exec -s read-only -o <mktemp-out> "Read <input-file>. Attack the design described there: list every concrete flaw, each grounded in real code under ' + flags['code-root'] + ' with file:line, severity fatal|major|minor. Be adversarial; no praise."\n' +
+  '3. Read the output file. For EACH codex flaw, verify the cited file/symbol actually exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
+  '4. Return available=true with the surviving flaws (keep codex\'s wording in desc, cite the grounded file:line in evidence). If codex exits nonzero, times out, or errors (e.g. a 401 after retry churn -- that means auth expired), return available=false with the first error lines in error. Never fabricate flaws.\n' +
+  'Design brief:\n' + framed.design + (locked ? '\nLOCKED (not flaws, do not relay complaints about these):\n' + locked : ''),
+  { label: 'critique:codex-dissent', phase: 'Critique', agentType: DESIGNER, schema: CODEX_FLAWS }))
+const legResults = await parallel(legThunks)
+let codexDown = false, codexDropped = 0, codexFlaws = []
+if (flags.codex === 'on') {
+  const cx = legResults[0]
+  if (!cx || cx.available === false) {
+    codexDown = true
+    log('codex dissent leg DOWN: ' + (cx ? (cx.error || 'no error text') : 'agent died'))
+  } else {
+    codexDropped = cx.dropped || 0
+    codexFlaws = (cx.flaws || []).map(f => ({ ...f, lens: 'codex-dissent' }))
+    if (codexDropped) log('codex dissent: ' + codexFlaws.length + ' flaw(s) relayed, ' + codexDropped + ' ungroundable dropped')
+  }
+}
+// codex flaws concat at the HEAD so the run's only cross-model findings cannot
+// silently fall over the verify cap.
+const lensResults = flags.codex === 'on' ? legResults.slice(1) : legResults
+const found = codexFlaws.concat(lensResults.filter(Boolean).flatMap(r => r.flaws || []))
 const seen = new Set()
 const fresh = found.filter(f => {
   const k = (f.lens + ':' + (f.desc || '')).toLowerCase()
   if (seen.has(k)) return false; seen.add(k); return true
 })
-log('design-review: ' + found.length + ' flaws, ' + fresh.length + ' fresh')
+log('design-review: ' + found.length + ' flaws, ' + fresh.length + ' fresh' + (codexDown ? ' (codex leg DOWN)' : ''))
 
 phase('Verify')
 const { take, over } = capClaims(fresh, VERIFY_CAP)
@@ -201,4 +242,4 @@ const report = await agent(
   'Output a prioritized change list (fatal, then major, then minor), each grounded in file:line, ending in one go/no-go.',
   { label: 'synthesize', phase: 'Synthesize' })
 
-return { kind: framed.kind, lenses, confirmed: confirmed.length, unverified: unverified.length, fatal, overCap: over.length, report }
+return { kind: framed.kind, lenses, confirmed: confirmed.length, unverified: unverified.length, fatal, overCap: over.length, codexDown, codexDropped, report }

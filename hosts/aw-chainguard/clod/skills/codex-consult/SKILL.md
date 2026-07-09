@@ -1,6 +1,6 @@
 ---
 name: codex-consult
-description: Get a cross-model (codex / GPT-5) second opinion on a diff, design, or hard bug. Use when an independent, different-vendor reviewer is worth more than another same-model pass -- every Claude subagent here runs the one pinned model and shares its blind spots. NOT for routine edits or anything faster to do directly.
+description: Get a cross-model (codex / GPT-5) second opinion on a diff, design, or hard bug. Reach for it BEFORE committing an expensive diff, WHEN fanning out same-model review/design/audit subagents or workflows (every Claude agent here runs one pinned model and shares its blind spots), AFTER two failed attempts at the same bug, and on any hard architecture or migration call. NOT for routine edits or anything faster to do directly.
 ---
 
 # codex-consult
@@ -29,9 +29,7 @@ This is the global rigor doctrine (`distrust unverified claims -- including suba
 
 ## HOW TO CALL IT
 
-Prefer the MCP `codex` tool if it's wired (`codex` to start a thread, `codex-reply` to continue). The returned `content` is codex's final answer only -- not its reasoning or tool use. Model / effort / sandbox lock at thread start, so if a conversation might get harder, start at the higher effort.
-
-Bash fallback when MCP isn't available or you need a one-shot:
+CLI only (there is no codex MCP server wired; `codex exec resume` carries threads):
 
 ```
 # one-shot review of the current diff (cheap, no back-and-forth)
@@ -39,9 +37,18 @@ codex review --base main         # or: --uncommitted | --commit <sha>
 
 # read-only consult, output to a file you then read and verify
 codex exec -s read-only -o /tmp/codex-result.txt "<one-line intent + question>"
+
+# continue a prior consult: session UUID from the run banner (or --json)
+codex exec resume <SESSION_ID> -o /tmp/codex-result.txt "<follow-up>"
 ```
 
-Default: `-s read-only` (sandbox). exec is non-interactive and has no approval flag -- the sandbox is the only guardrail, so keep it read-only. Do NOT hand codex a workspace-write path on the strength of a prompt instruction -- if it needs to write, that's a real permission decision; surface it to me first. Effort rides on config (`-c model_reasoning_effort=high|xhigh`), there's no dedicated flag. Don't hardcode a model string in your invocation if a profile/default is configured -- let the configured default pick it.
+Default: `-s read-only` (sandbox). exec is non-interactive and has no approval flag -- the sandbox is the only guardrail, so keep it read-only. Do NOT hand codex a workspace-write path on the strength of a prompt instruction -- if it needs to write, that's a real permission decision; surface it to me first. Effort rides on config (`-c model_reasoning_effort=high|xhigh`), there's no dedicated flag; model / effort / sandbox lock at session start, so if a conversation might get harder, start at the higher effort. Don't hardcode a model string in your invocation if a profile/default is configured -- let the configured default pick it.
+
+Resume by explicit UUID only: `--last` picks the newest session across ALL concurrent claude sessions in this cwd (cross-resume race), and `--ephemeral` makes a session unresumable -- don't use either when you might continue.
+
+## AUTH IS THE ONE MUTABLE DEPENDENCY
+
+Everything else is nix-pinned; login state lives in ~/.codex/auth.json and expires outside nix's control. Check `codex login status` (non-interactive, promptless) before a consult batch. Expired auth does not fail clean: expect ~30s of reconnect churn ending in a bare `401 Unauthorized` with no remediation hint. Don't retry through it -- surface it to me to rerun `codex login`.
 
 ## THREAD HYGIENE
 

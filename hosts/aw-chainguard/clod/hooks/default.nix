@@ -37,6 +37,18 @@
     ldflags = [ "-X glod/cmd/gocheck.goBin=${pkgs.go}/bin/go" ];
   };
 
+  # PreToolUse(Workflow): deny name= invocations of deployed workflows -- the
+  # name registry is frozen at session start, so name= can run a stale
+  # pre-switch script; scriptPath reads the deployed symlink at invocation.
+  awScriptpathGate = pkgs.writeShellApplication {
+    name = "clod-aw-scriptpath-gate";
+    runtimeInputs = with pkgs; [
+      jq
+      coreutils
+    ];
+    text = builtins.readFile ./aw-scriptpath-gate.sh;
+  };
+
   # PostToolUse(Bash): sweep stray `go build` binaries out of the tree into a
   # gitignored .claude/bin/ so they can't be committed.
   goBuildSweep = pkgs.writeShellApplication {
