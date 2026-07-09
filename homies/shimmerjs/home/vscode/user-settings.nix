@@ -157,7 +157,9 @@
   # everything is read-only, so we dont want vscode attempting to udpate
   # anything on its own
   "extensions.autoCheckUpdates" = false;
-  "extensions.autoUpdate" = false;
+  # vscode >=1.127 migrated this bool to an enum; a bool triggers a rewrite of
+  # settings.json on every launch, which fails loudly on the read-only symlink
+  "extensions.autoUpdate" = "off";
   "extensions.ignoreRecommendations" = true;
   "extensions.showRecommendationsOnlyOnDemand" = true;
 

@@ -1,6 +1,6 @@
 # Default macOS system configuration applied to all macOS hosts. Additional
 # modules are then layered on top or defined as part of the host definition.
-{ user, hostname, config, inputs, ... }:
+{ user, hostname, config, inputs, pkgs, ... }:
 {
   imports = [
     ../nix.nix
@@ -35,6 +35,18 @@
   # $ darwin-rebuild changelog
   system.stateVersion = 4;
 
+  # nix-darwin master's HTML manual passes --toc-depth, which nixos-render-docs
+  # on nixpkgs unstable (2026-07-05) removed in favor of --sidebar-depth, so the
+  # darwin-manual-html derivation fails the whole closure. Two entry points,
+  # both must go until nix-darwin catches up: the outer manual in
+  # systemPackages (doc.enable), and darwin-uninstaller, which embeds its OWN
+  # baseline darwin-system eval whose default documentation settings ignore
+  # ours (why-depends: system-applications -> darwin-uninstaller ->
+  # darwin-system -> system-path -> darwin-manual-html). Re-enable on a bump
+  # where `nix build .#darwinConfigurations.<host>.system` passes with both on.
+  documentation.doc.enable = false;
+  system.tools.darwin-uninstaller.enable = false;
+
   nix = {
     # GC configuration that is specific to nix-darwin
     gc = {
@@ -52,8 +64,18 @@
   # the collector nothing to free. Prune them 15 min before the 03:00 collect so
   # the newly-unreferenced paths get swept the same run. Window mirrors
   # nix.gc.options (--delete-older-than 30d). Always keeps the current generation.
-  launchd.daemons.nix-gc-system = {
-    command = "${config.nix.package}/bin/nix-env --profile /nix/var/nix/profiles/system --delete-generations 30d";
+  # ProgramArguments (not command=) so nix-darwin skips its /bin/sh -c wrapper
+  # and Login Items/BTM shows the script basename instead of "sh"; the attr
+  # rename (nix-gc-system -> nix-gc-system-profile) is deliberate -- BTM caches
+  # the display name per label, so only a fresh label picks the new name up.
+  # Store-path executable is fine here: no RunAtLoad, and the store is long
+  # mounted by the 02:45 fire time.
+  launchd.daemons.nix-gc-system-profile = {
+    serviceConfig.ProgramArguments = [
+      "${pkgs.writeShellScript "nix-gc-system-profile" ''
+        exec ${config.nix.package}/bin/nix-env --profile /nix/var/nix/profiles/system --delete-generations 30d
+      ''}"
+    ];
     serviceConfig.RunAtLoad = false;
     serviceConfig.StartCalendarInterval = {
       Hour = 2;
