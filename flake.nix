@@ -91,6 +91,14 @@
       url = "github:romkatv/powerlevel10k";
       flake = false;
     };
+    # effective-html claude skills (html / html-diagram / html-plan, each
+    # bundling its reference corpus). Pinned source tree consumed by the clod
+    # skills block -- no `npx skills add`, no marketplace, no mutable plugin
+    # cache. Bump with `nix flake update effective-html`.
+    effective-html = {
+      url = "github:plannotator/effective-html";
+      flake = false;
+    };
   };
 
   outputs =

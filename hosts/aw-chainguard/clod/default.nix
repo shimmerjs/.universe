@@ -81,6 +81,13 @@ in
       # server: per-session stdio daemons cost ~32MB each for a rarely-used path,
       # and the hm module's plugin-prefixed tool names broke the allowlist silently.
       codex-consult = ./skills/codex-consult/SKILL.md;
+      # effective-html: self-contained HTML deliverables with a strong visual
+      # bias (plans, architecture diagrams, general pages), each skill shipping
+      # its reference corpus + agents alongside SKILL.md -- whole-directory
+      # deploys, from the pinned effective-html input (never npm/marketplace).
+      html = "${inputs.effective-html}/skills/html";
+      html-diagram = "${inputs.effective-html}/skills/html-diagram";
+      html-plan = "${inputs.effective-html}/skills/html-plan";
     };
 
     mcpServers = {
