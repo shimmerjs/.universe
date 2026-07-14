@@ -6,13 +6,17 @@
   ...
 }:
 let
-  # Build custom kitty cheatsheet tool
+  # Build custom kitty cheatsheet tool (single source of truth: pkgs/kittykrib,
+  # binary `krib`; the former ./cheatsheet fork is retired).
   kittykrib = (
     pkgs.buildGoModule {
       pname = "kittykrib";
-      src = ./cheatsheet;
+      src = ../../../../pkgs/kittykrib;
       version = "0.1.0";
-      vendorHash = null;
+      vendorHash = "sha256-Gc1vL8/qJczgi8TUAhLwLOxvvGsMAaqvq7/OjPEIvj0=";
+      # guard the classify/chord/parity tests at build (they ran under no
+      # check before, which let the forked category tables drift).
+      doCheck = true;
     }
   );
 in
@@ -30,7 +34,7 @@ in
       "f1" = "show_kitty_doc conf";
       # Show current keybindings
       "f2" =
-        "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${kittykrib}/bin/cheatsheet\"";
+        "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${kittykrib}/bin/krib print\"";
       "kitty_mod+f3" = "command_palette";
       # clod workflow cheatsheet, rendered from each aw-*.js meta.flags
       "f4" = ''launch --type=overlay sh -c "clod-cheat | less -R"'';
