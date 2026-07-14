@@ -38,6 +38,9 @@ in
       "kitty_mod+f3" = "command_palette";
       # clod workflow cheatsheet, rendered from each aw-*.js meta.flags
       "f4" = ''launch --type=overlay sh -c "clod-cheat | less -R"'';
+      # kuiboard: standalone Moonlander keyboard TUI (couch-mode keyboard
+      # panel); dials the HID daemon keys.sock, no Edge/dock needed.
+      "f5" = "launch --type=os-window --title kuiboard kuiboard";
 
       # Clipboard
       "cmd+c" = "copy_or_noop";
