@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/kbview"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keymappdb"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
@@ -725,7 +726,7 @@ func TestKeyboardLayerChipTint(t *testing.T) {
 	}
 
 	m.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
-	if m.kbLayerChip(0) != nil {
+	if kbview.LayerChip(m.kbBoard, 0, m.kbTheme()) != nil {
 		t.Fatal("base layer must carry no fill (off-base indicator)")
 	}
 	if strings.Contains(m.renderKeyboard(bodyH), "48;2;") {
@@ -734,11 +735,11 @@ func TestKeyboardLayerChipTint(t *testing.T) {
 	if len(m.kbBoard.Layers) < 3 {
 		t.Fatalf("fixture board has %d layers, need 3+", len(m.kbBoard.Layers))
 	}
-	chip1 := m.kbLayerChip(1)
+	chip1 := kbview.LayerChip(m.kbBoard, 1, m.kbTheme())
 	if chip1 == nil {
 		t.Fatal("no chip color for a non-base layer with a palette present")
 	}
-	if chip2 := m.kbLayerChip(2); chip2 == chip1 {
+	if chip2 := kbview.LayerChip(m.kbBoard, 2, m.kbTheme()); chip2 == chip1 {
 		t.Error("two layers share one chip color")
 	}
 	m.kbLayer = 1
@@ -810,8 +811,8 @@ func kbTexModel(t testing.TB, texture string) *model {
 func TestKeyboardTextureDeterministic(t *testing.T) {
 	var textures []string
 	for _, recipe := range config.KBTextureRecipes {
-		if cell, _ := kbTexCellFn(recipe); cell == nil {
-			t.Errorf("%s: vocabulary recipe has no kbTexCellFn cell", recipe)
+		if cell, _ := kbview.TexCellFn(recipe); cell == nil {
+			t.Errorf("%s: vocabulary recipe has no TexCellFn cell", recipe)
 		}
 		for _, density := range []string{"", ":sparse", ":dense"} {
 			textures = append(textures, recipe+density)
@@ -931,11 +932,12 @@ func TestKeyboardFilledFrameNoOverflow(t *testing.T) {
 // border COLOR signals the layer, never the glyphs.
 func TestKBTitledBoxBaseMatchesChrome(t *testing.T) {
 	body := []string{"one", "two", "three"}
-	if got, want := kbTitledBox("t", body, 24, 6, nil), renderTitledBox("t", body, 24, 6); got != want {
-		t.Fatalf("base kbTitledBox diverged from renderTitledBox:\ngot  %q\nwant %q", got, want)
+	bare := kbview.Theme{FG: chromeFG, Dim: chromeDim}
+	if got, want := kbview.TitledBox("t", body, 24, 6, nil, bare), renderTitledBox("t", body, 24, 6); got != want {
+		t.Fatalf("base TitledBox diverged from renderTitledBox:\ngot  %q\nwant %q", got, want)
 	}
 	// off-base: same geometry, hue-colored frame
-	hued := kbTitledBox("t", body, 24, 6, lipgloss.Color("#d699b6"))
+	hued := kbview.TitledBox("t", body, 24, 6, lipgloss.Color("#d699b6"), bare)
 	if ansi.Strip(hued) != ansi.Strip(renderTitledBox("t", body, 24, 6)) {
 		t.Fatal("hued frame changed glyphs; color is the only allowed signal")
 	}
@@ -949,19 +951,19 @@ func TestOryxURL(t *testing.T) {
 	m.kbBoard.Geometry = "moonlander"
 	m.kbBoard.RevisionID = "rEv34"
 	m.kbLayer = 2
-	if got, want := m.oryxURL(), "https://configure.zsa.io/moonlander/layouts/AbC12/rEv34/2"; got != want {
+	if got, want := kbview.OryxURL(m.kbBoard, m.kbLayer), "https://configure.zsa.io/moonlander/layouts/AbC12/rEv34/2"; got != want {
 		t.Errorf("oryxURL = %q, want %q", got, want)
 	}
 	m.kbBoard.RevisionID = ""
-	if got, want := m.oryxURL(), "https://configure.zsa.io/moonlander/layouts/AbC12/latest/2"; got != want {
+	if got, want := kbview.OryxURL(m.kbBoard, m.kbLayer), "https://configure.zsa.io/moonlander/layouts/AbC12/latest/2"; got != want {
 		t.Errorf("revisionless oryxURL = %q, want %q", got, want)
 	}
 	m.kbBoard.LayoutID = ""
-	if got := m.oryxURL(); got != "" {
+	if got := kbview.OryxURL(m.kbBoard, m.kbLayer); got != "" {
 		t.Errorf("slugless oryxURL = %q, want empty", got)
 	}
 	m.kbBoard = nil
-	if got := m.oryxURL(); got != "" {
+	if got := kbview.OryxURL(m.kbBoard, m.kbLayer); got != "" {
 		t.Errorf("boardless oryxURL = %q, want empty", got)
 	}
 }
@@ -994,7 +996,7 @@ func TestKBOryxInteriorLink(t *testing.T) {
 	i := lipgloss.Width(last[:bi]) // cell column, not byte offset
 	// interior spans cols 1..w-2; the link sits kbOryxPad cells off its
 	// right edge
-	if got, want := i, 1+(m.width-2)-kbOryxPad-len(" oryx "); got != want {
+	if got, want := i, 1+(m.width-2)-kbview.OryxPad-len(" oryx "); got != want {
 		t.Errorf("oryx link starts at col %d, want %d (right-aligned)", got, want)
 	}
 	if !m.resolveTap(i+1, bodyH-2) {
