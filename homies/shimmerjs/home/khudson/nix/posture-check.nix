@@ -1,12 +1,15 @@
 # Build-time posture pins for khudson's RC and state-root hardening: pure
 # string assertions on the RENDERED artifacts of the host config (hmCfg =
 # the host user's home-manager config), no runtime. Four legs, each anchored
-# on a positive marker first so nothing passes vacuously:
-#   (a) hud-kitty.conf     socket-only RC, and NO password (the daily kitty
-#                          is the only password-bearing socket)
+# on a positive marker first so nothing passes vacuously. The posture is
+# socket-only everywhere, passwordless by design: kitty never consults
+# remote_control_password for socket peers, so any password line is inert
+# posture-theater and legs (a)/(c) now REJECT it outright.
+#   (a) hud-kitty.conf     socket-only RC, no password line
 #   (b) substrate argv     the launcher's kitty line carries
 #                          -o allow_remote_control=socket-only
-#   (c) daily kitty.conf   include rc-password.conf + socket-only RC
+#   (c) daily kitty.conf   socket-only RC, no password include, no
+#                          password line
 #   (d) state root         khudsonRuntimeDirs re-asserts -m 700 on the
 #                          ".../Library/Application Support/khudson" root
 #                          every activation (BSD install -d would silently
@@ -48,7 +51,7 @@ pkgs.runCommand "khudson-posture-check"
     grep -Fq 'allow_remote_control socket-only' "$hudKitty" \
       || fail "hud-kitty.conf lost 'allow_remote_control socket-only'"
     if grep -q 'remote_control_password' "$hudKitty"; then
-      fail "hud-kitty.conf grew a remote_control_password (the daily kitty is the ONLY password-bearing socket)"
+      fail "hud-kitty.conf grew a remote_control_password (inert on socket peers; the posture is passwordless socket-only)"
     fi
 
     echo "(b) substrate agent argv: socket-only RC"
@@ -59,12 +62,13 @@ pkgs.runCommand "khudson-posture-check"
     grep -Fq -- '-o allow_remote_control=socket-only' "$launcher" \
       || fail "substrate kitty argv lost '-o allow_remote_control=socket-only'"
 
-    echo "(c) daily kitty.conf: password include + socket-only"
+    echo "(c) daily kitty.conf: socket-only, passwordless"
     if [ -n "$dailyKitty" ]; then
-    grep -Fq 'include rc-password.conf' "$dailyKitty" \
-      || fail "daily kitty.conf lost 'include rc-password.conf'"
     grep -Fq 'allow_remote_control socket-only' "$dailyKitty" \
       || fail "daily kitty.conf lost 'allow_remote_control socket-only'"
+    if grep -q 'rc-password.conf\|remote_control_password' "$dailyKitty"; then
+      fail "daily kitty.conf regrew password machinery (inert on socket peers; retired 2026-07-10)"
+    fi
     else
       echo "    (skipped: mainKittyIntegration off -- posture has no daily-kitty leg)"
     fi

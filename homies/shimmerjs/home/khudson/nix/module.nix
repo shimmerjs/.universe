@@ -174,21 +174,27 @@ let
   mkAgentPlist =
     name:
     pkgs.writeText "${agentLabel name}.plist" (
-      lib.generators.toPlist { escape = true; } {
-        Label = agentLabel name;
-        ProgramArguments = [ "${agentsDir}/khudson-${name}" ];
-        # launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin; the bus's
-        # native modules LookPath nix-profile binaries (gh, m1ddc, kitten) and
-        # exec-widget argvs are bare names (btop) -- without the nix dirs every
-        # one of them fails to resolve.
-        EnvironmentVariables.PATH =
-          "/etc/profiles/per-user/${config.home.username}/bin:/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-        RunAtLoad = true;
-        KeepAlive = true;
-        ProcessType = "Interactive";
-        StandardOutPath = "${appSupport}/log/${name}.log";
-        StandardErrorPath = "${appSupport}/log/${name}.log";
-      }
+      lib.generators.toPlist { escape = true; } (
+        {
+          Label = agentLabel name;
+          ProgramArguments = [ "${agentsDir}/khudson-${name}" ];
+          # launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin; the bus's
+          # native modules LookPath nix-profile binaries (gh, m1ddc, kitten) and
+          # exec-widget argvs are bare names (btop) -- without the nix dirs every
+          # one of them fails to resolve.
+          EnvironmentVariables.PATH =
+            "/etc/profiles/per-user/${config.home.username}/bin:/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+          RunAtLoad = true;
+          KeepAlive = true;
+          ProcessType = "Interactive";
+          StandardOutPath = "${appSupport}/log/${name}.log";
+          StandardErrorPath = "${appSupport}/log/${name}.log";
+        }
+        # hud only: the launcher persists its own relaunch backoff, but a lost
+        # state file must not let a KeepAlive respawn storm tight-loop the
+        # supervisor (the 2026-07-14 HUD stack).
+        // lib.optionalAttrs (name == "hud") { ThrottleInterval = 30; }
+      )
     );
 
   agentCommands = {
@@ -227,7 +233,14 @@ let
     # The stale-socket rm guards KeepAlive relaunches: a leftover socket
     # file would shadow the new bind (an exiting instance also unlinks a
     # shared path, so no other agent may reuse this socket path).
-    substrate = ''/bin/wait4path "${pkgs.kitty}/bin/kitty" && rm -f "${appSupport}/kitty.sock" && exec "${pkgs.kitty}/bin/kitty" --config NONE -o allow_remote_control=socket-only -o macos_hide_from_tasks=yes --listen-on "unix:${appSupport}/kitty.sock" --title khudson-substrate --start-as hidden'';
+    # Execs the khudson.app copy's .kitty-wrapped, NOT pkgs.kitty: a bare
+    # kitty image makes this process a net.kovidgoyal.kitty activation
+    # target, so the dock rail's `open -a kitty` tap UNHIDES the substrate
+    # on glass (observed live 2026-07-09). Under the khudson bundle id no
+    # kitty activation can reach it. clear_all_mouse_actions matches the
+    # HUD conf: if a substrate window ever does surface, click-drag must
+    # not read as text selection.
+    substrate = ''/bin/wait4path "${khudson-hud-app}/Applications/khudson.app/Contents/MacOS/.kitty-wrapped" && rm -f "${appSupport}/kitty.sock" && exec "${khudson-hud-app}/Applications/khudson.app/Contents/MacOS/.kitty-wrapped" --config NONE -o clear_all_mouse_actions=yes -o allow_remote_control=socket-only -o macos_hide_from_tasks=yes --listen-on "unix:${appSupport}/kitty.sock" --title khudson-substrate --start-as hidden'';
 
     # Headless bus: recognizer, scheduler, RC client, widget supervision.
     # The Accessibility TCC client (dockmirror's direct AX walk plus the
@@ -282,12 +295,12 @@ in
       description = "Populate the claude-sessions spool via module-owned claude-code hooks (UserPromptSubmit + SessionStart + SessionEnd + Notification + Stop + StopFailure).";
     };
 
-    # Fold the hand-applied main-kitty RC integration into the daily kitty
-    # config (main-kitty-integration.md). Off by default even when the module
-    # is enabled: it mutates programs.kitty (a shared, always-on config) and
-    # needs the one-time hand-created rc-password.conf + a manual daily-kitty
-    # relaunch, so it is opt-in rather than riding cfg.enable.
-    mainKittyIntegration.enable = lib.mkEnableOption "declarative main-kitty RC socket + socket-only hardening for the khudson bus (needs a hand-created rc-password.conf; see main-kitty-integration.md)";
+    # Fold the main-kitty RC integration into the daily kitty config
+    # (main-kitty-integration.md). Off by default even when the module is
+    # enabled: it mutates programs.kitty (a shared, always-on config) and
+    # owes one manual daily-kitty relaunch (listen_on binds at startup), so
+    # it is opt-in rather than riding cfg.enable.
+    mainKittyIntegration.enable = lib.mkEnableOption "declarative main-kitty RC socket + socket-only hardening for the khudson bus (see main-kitty-integration.md)";
   };
 
   config = lib.mkMerge [
@@ -295,11 +308,11 @@ in
     home.packages = [ khudson ];
 
     # hud kitty instance config; khudson-scoped so the daily kitty config is
-    # untouched. The main-kitty side (fixed RC socket, socket-only, password)
-    # is folded into programs.kitty under cfg.mainKittyIntegration.enable
-    # below (RC password stays hand-applied: it is a secret). The theme is
-    # included from the same kitty-themes package the daily kitty uses, so
-    # the two instances cannot drift apart again.
+    # untouched. The main-kitty side (fixed RC socket, passwordless
+    # socket-only) is folded into programs.kitty under
+    # cfg.mainKittyIntegration.enable below. The theme is included from the
+    # same kitty-themes package the daily kitty uses, so the two instances
+    # cannot drift apart again.
     xdg.configFile."khudson/hud-kitty.conf".source = pkgs.replaceVars ./hud-kitty.conf {
       everforestTheme = "${pkgs.kitty-themes}/share/kitty-themes/themes/everforest_dark_soft.conf";
     };
@@ -544,11 +557,9 @@ in
     # main-kitty RC integration (main-kitty-integration.md), declaratively
     # folded in where possible. allow_remote_control is redefined (yes ->
     # socket-only) so it needs mkForce over the daily kitty's value; listen_on
-    # and the quick-access RC-off override are new keys. The RC password
-    # (remote_control_password) stays hand-applied: a literal in nix lands
-    # world-readable in the store, so rc-password.conf is a user-owned 0600
-    # include (see the doc). Caveat, unchanged: listen_on binds only at kitty
-    # startup, so ONE manual daily-kitty relaunch is owed after first enabling.
+    # and the quick-access RC-off override are new keys. Caveat, unchanged:
+    # listen_on binds only at kitty startup, so one manual daily-kitty
+    # relaunch is owed after first enabling.
     (lib.mkIf cfg.mainKittyIntegration.enable {
       # The listen_on socket lives under the khudson state root, which only
       # khudsonRuntimeDirs (gated on cfg.enable) creates; standalone the daily
@@ -561,15 +572,18 @@ in
       ];
       programs.kitty = {
         settings = {
-          # RC only via the fixed socket below; tty RC is refused, so programs
-          # inside windows cannot drive kitty without the password.
+          # RC only via the fixed socket below; tty RC is refused outright,
+          # and socket peers are trusted by the socket file's user-write-only
+          # mode. That mode never consults remote_control_password, so the
+          # old password include was inert on this path and retired (see
+          # main-kitty-integration.md).
           allow_remote_control = lib.mkForce "socket-only";
         };
         # Fixed, non-pid socket, delivered as a LAUNCH option, not settings:
         # config-form unix listen_on gets "-<PID>" appended (kitty
-        # expand_listen_on, main.py:409-410 -- same semantics the panel socket
-        # comment above documents), so only CLI --listen-on binds the exact
-        # path the bus contract promises.
+        # expand_listen_on, main.py ~365-371 in 0.47.4 -- same semantics the
+        # panel socket comment above documents), so only CLI --listen-on
+        # binds the exact path the bus contract promises.
         # The launcher shlex-parses macos-launch-services-cmdline and
         # home-manager joins this list with bare spaces, so the space in
         # "Application Support" needs the embedded quotes. Caveat: the file is
@@ -579,13 +593,6 @@ in
           "--listen-on"
           "'unix:${appSupport}/main-kitty.sock'"
         ];
-        # A literal RC password in nix is world-readable in the store, so the
-        # real remote_control_password line lives in a hand-created 0600
-        # include; a missing include is ignored with only a warning, so first
-        # activation does not break kitty startup (main-kitty-integration.md).
-        extraConfig = ''
-          include rc-password.conf
-        '';
         # The quick-access terminal is a second kitty process on the same
         # kitty.conf; RC off means it never binds listen_on, so it cannot
         # squat or shadow the fixed socket and exposes no second RC surface.

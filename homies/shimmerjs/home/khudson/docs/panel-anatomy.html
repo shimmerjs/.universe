@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>clod panel anatomy</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #101318; --panel: #171b22; --edge: #2a303b;
+    --fg: #cfd6e0; --dim: #667082; --accent: #6fd3a4; --warn: #e8b45a;
+    --hl: #7aa7e8; --wash: rgba(232, 180, 90, 0.14); --note: #9aa4b2;
+  }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, sans-serif;
+         max-width: 1080px; margin: 2rem auto 6rem; padding: 0 1.25rem; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-top: 2.6rem; color: var(--fg); }
+  p, li { color: var(--note); } code { color: var(--fg); background: var(--panel); padding: 0 .3em; border-radius: 3px; }
+  .panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px;
+           padding: .7rem .9rem; margin: .8rem 0; overflow-x: auto; }
+  .row { font: 13px/1.9 "SF Mono", ui-monospace, monospace; white-space: pre; }
+  .row.wash { background: var(--wash); }
+  .dim { color: var(--dim); } .accent { color: var(--accent); } .warn { color: var(--warn); }
+  .hl { color: var(--hl); } .title { font-weight: 700; }
+  .faint .title { font-weight: 400; opacity: .75; }
+  .h1c { color: #d38ad3; } .h2c { color: #7ac7d8; } .h3c { color: #d8a97a; }
+  .h4c { color: #8fd87a; } .h5c { color: #d87a8f; }
+  .g { display: inline-block; border: 1px solid var(--edge); border-radius: 3px;
+       padding: 0 .25em; font-size: 10px; vertical-align: 1px; }
+  .ann { font-size: 12px; color: var(--note); margin: .15rem 0 .9rem; }
+  .ann b { color: var(--fg); font-weight: 600; }
+  .tag { display: inline-block; background: var(--edge); color: var(--fg); border-radius: 3px;
+         padding: 0 .4em; font-size: 11px; margin-right: .4em; }
+  table { border-collapse: collapse; font-size: 13px; margin: .8rem 0; }
+  td, th { border: 1px solid var(--edge); padding: .35rem .6rem; text-align: left; color: var(--note); }
+  th { color: var(--fg); }
+  .cap { font-size: 12px; color: var(--dim); margin-top: -.4rem; }
+</style>
+</head>
+<body>
+
+<h1>clod panel anatomy</h1>
+<p>Every block below is <b>real renderer output</b> (the env-gated
+<code>TestPanelShowcase</code> dump), styled as the dock draws it. Nerd-font
+icons render here as labeled badges: <span class="g warn">perm</span> permission
+triangle, <span class="g warn">bell</span> notification bell, <span class="g dim">chk</span>
+turn-done check, <span class="g warn">err</span> StopFailure cross,
+<span class="g">ag</span> agents gear, <span class="g">wf</span> workflow sitemap,
+<span class="g dim">v</span>/<span class="g dim">&gt;</span> fold chevrons.</p>
+
+<h2>The three independent signals</h2>
+<table>
+<tr><th>signal</th><th>carrier</th><th>meaning</th></tr>
+<tr><td>membership</td><td>row exists at all</td><td>a live Claude process on this machine owns this session (registry pid, identity-checked)</td></tr>
+<tr><td>activity</td><td>age color + name weight</td><td>bright = files fresh within 60s OR registry says busy (long tool calls count); dim = parked. The age <i>text</i> is always honest: time since last observable output</td></tr>
+<tr><td>need</td><td>row wash + warn glyph + border march</td><td>registry status <code>waiting</code>: blocked on YOU (permission, plan approval, question). Busy and idle never wash</td></tr>
+</table>
+
+<h2>Scenario: a waiting session pins the detail zone</h2>
+<p class="cap">title: <code>clod 2/5 . ag:3 wf:1</code> -- 2 active of 5 live; 3 agents + 1 workflow running fleet-wide</p>
+<div class="panel">
+<div class="row wash faint"><span class="h1c">&#x258F; </span><span class="dim"> 3m</span> <span class="g warn">perm</span><span class="dim">          c/c/can             </span><span class="title h1c"> rules/go perf dev plan</span><span class="dim"> &gt; pick up handoff for rules/go performance improvements</span><span class="dim"> claude-fable-5 xhigh</span></div>
+<div class="row wash"><span class="h1c">&#x258F; </span><span class="warn"> 1m</span> <span class="g warn">perm</span><span class="warn"> Claude needs your permission to use Bash</span></div>
+<div class="row dim"><span class="h1c">&#x258F; </span>    no agents</div>
+<div class="row"><span class="h1c">&#x258F; </span></div><div class="row"><span class="h1c">&#x258F; </span></div><div class="row"><span class="h1c">&#x258F; </span></div><div class="row"><span class="h1c">&#x258F; </span></div><div class="row"><span class="h1c">&#x258F; </span></div>
+<div class="row wash faint"><span class="dim"> 3m</span> <span class="g warn">perm</span><span class="dim">          c/c/can             </span><span class="title h1c"> rules/go perf dev plan</span><span class="dim"> &gt; pick up handoff...</span></div>
+<div class="row"><span class="accent">10s</span>    <span class="hl"><span class="g">ag</span> 3</span> <span class="hl"><span class="g">wf</span> 1</span><span class="dim"> universe            </span><span class="title h2c"> panel-work</span><span class="dim"> &gt; fix clod panel attention semantics</span></div>
+<div class="row"><span class="accent"> 4m</span>    <span class="dim">          c/c/can             </span><span class="title h3c"> can</span><span class="dim"> &gt; consult codex on the migration</span></div>
+<div class="row faint"><span class="dim">25m</span> <span class="g dim">chk</span><span class="dim">          universe            </span><span class="title h4c"> statusline tweaks</span><span class="dim"> &gt; bump the beps</span></div>
+<div class="row faint"><span class="dim"> 8m</span> <span class="g warn">err</span><span class="dim">          ~/scratch           </span><span class="title h5c"> scratch</span><span class="dim"> &gt; run the flaky suite</span></div>
+</div>
+<p class="ann"><b>Rows 1-8 are the detail zone</b> (fixed 8 rows while occupied, so the
+list never shifts under a finger), read as one card behind the <b>left
+rail</b>: every zone row -- blank pads included -- leads with a thin bar hued
+to the occupant's identity (the same hue as its name in the list), so the
+zone's extent and WHOSE detail it is are both visible at a glance. Row 1:
+header = the session's list row + <b>model and effort</b> appended dim. Row 2: the <b>outcome line</b> -- here the
+needs-you branch: warn age (time since the gate), typed glyph, notification
+text (falls back to the registry's <code>waitingFor</code>, then
+"input requested"). Rows carry the <b>amber wash</b> because this session is
+registry-<code>waiting</code>. Note its age tone is <b>dim</b>: blocked is not
+working -- the wash marks need, tone marks activity. "no agents" fills the
+reserved fleet space so it doesn't read as a dead gap.</p>
+<p class="ann"><b>Rows 9-13, the list zone</b>: <span class="tag">row 10</span>
+busy + fleet: bright 10s age, blue <span class="g">ag</span> 3 / <span class="g">wf</span> 1
+live-fleet counts (blank at zero elsewhere).
+<span class="tag">row 11</span> the codex-consult case: 4m-stale files but
+registry-busy, so the age is STILL bright -- and blank state glyph = turn in
+flight. Name falls to cwd basename "can" (no title yet, derived registry names
+never display). <span class="tag">row 12</span> idle: dim, check = turn done.
+<span class="tag">row 13</span> idle after a failed turn: cross = StopFailure.
+Name hues are keyed to the session id (stable across renames); cwd column is
+fish-abbreviated repo-relative ("can-work/containers/can" -&gt; "c/c/can").
+Every session row is a tap target: focus its kitty window.</p>
+
+<h2>Scenario: busy session with a fleet (accordion expanded)</h2>
+<div class="panel">
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent">10s</span>    <span class="hl"><span class="g">ag</span> 3</span> <span class="hl"><span class="g">wf</span> 1</span><span class="dim"> universe            </span><span class="title h2c"> panel-work</span><span class="dim"> &gt; fix clod panel attention semantics</span><span class="dim"> claude-fable-5 xhigh</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent"> 5m</span><span class="dim"> turn running</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent">20s</span> <span class="g dim">v</span> <span class="accent"><span class="g">wf</span></span><span class="title"> aw-review</span><span class="accent"> 2/4</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="dim"> &#x251C;&#x2500;</span><span class="accent">20s</span> <span class="g">ag</span><span class="title"> reviewer</span><span class="dim"> review:security:r1</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="dim"> &#x251C;&#x2500;</span><span class="accent">40s</span> <span class="g">ag</span><span class="title"> skeptic</span><span class="dim"> review:codex:r1</span></div>
+<div class="row faint"><span class="h2c">&#x258F; </span><span class="dim"> &#x251C;&#x2500; 1m</span> <span class="g dim">ag</span><span class="title"> researcher</span><span class="dim"> verify:panel.go</span></div>
+<div class="row faint"><span class="h2c">&#x258F; </span><span class="dim"> &#x2514;&#x2500; 1m</span> <span class="g dim">ag</span><span class="title"> mapper</span><span class="dim"> synthesize</span></div>
+<div class="row dim"><span class="h2c">&#x258F; </span>+2 trees</div>
+</div>
+<p class="ann">Outcome line shows the <b>in-flight branch</b>: accent age since
+the prompt + "turn running". The fleet is a <b>greedy accordion</b>: the leading
+tree expands vertically; trees that lost the space race collapse into
+<b>"+2 trees"</b>. Tapping ANY row of a tree toggles that tree's fold.
+<b>Name-plates</b> (new): the root says <code>aw-review</code> -- the run name
+read from any child's prompt plate, instead of the opaque
+<code>wf_7fc5bc03-3c4</code> dir name -- and each child's description column
+is its plated <b>leg name</b> (<code>review:codex:r1</code>,
+<code>verify:panel.go</code>), so you can tell the cross-model leg from a lens
+reviewer from a verifier at a glance. Running children bright, finished dim.</p>
+
+<h2>Scenario: same fleet, leading tree folded</h2>
+<div class="panel">
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent">10s</span>    <span class="hl"><span class="g">ag</span> 3</span> <span class="hl"><span class="g">wf</span> 1</span><span class="dim"> universe            </span><span class="title h2c"> panel-work</span><span class="dim"> &gt; fix clod panel...</span><span class="dim"> claude-fable-5 xhigh</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent"> 5m</span><span class="dim"> turn running</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent">20s</span> <span class="g dim">&gt;</span> <span class="accent"><span class="g">wf</span></span><span class="title"> aw-review</span><span class="accent"> 2/4</span><span class="dim"> 1 mapper 1 researcher 1 reviewer 1 skeptic</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="accent">30s</span> <span class="g dim">v</span> <span class="accent"><span class="g">ag</span></span><span class="title"> agents</span><span class="accent"> 1/2</span></div>
+<div class="row"><span class="h2c">&#x258F; </span><span class="dim"> &#x251C;&#x2500;</span><span class="accent">30s</span> <span class="g">ag</span><span class="title"> general-purpose</span><span class="dim"> Sweep panel_test.go fixtures</span></div>
+<div class="row faint"><span class="h2c">&#x258F; </span><span class="dim"> &#x2514;&#x2500; 3m</span> <span class="g dim">ag</span><span class="title"> claude-code-guide</span><span class="dim"> Registry status enum research</span></div>
+<div class="row faint"><span class="h2c">&#x258F; </span><span class="dim">20s</span> <span class="g dim">v</span> <span class="g dim">wf</span><span class="title"> khudson-ledger-map</span><span class="dim"> 0/3 1 researcher 1 reviewer 1 skeptic</span></div>
+<div class="row dim"><span class="h2c">&#x258F; </span> &#x2514;&#x2500; +3 agents</div>
+</div>
+<p class="ann">Folding <code>aw-review</code> (closed chevron <span class="g dim">&gt;</span>)
+collapses it to a one-line summary -- the <b>type breakdown</b> ("1 mapper 1
+researcher...") appears exactly when children are hidden, so the info never
+vanishes with the rows. Its freed rows flow to the NEXT tree: <code>agents</code>
+(loose Agent-tool spawns, which carry their real descriptions from meta --
+"Sweep panel_test.go fixtures") now shows children;
+<code>khudson-ledger-map</code> (an inline workflow, named from its plate) gets
+a root with inline summary and a "+3 agents" stub. 0/3 live = fully dim tree.
+The rail runs the full zone in both scenarios -- fold state changes rows, never
+the card.</p>
+
+<h2>Overflow + empty states</h2>
+<div class="panel">
+<div class="row dim">+3 more</div>
+<div class="row dim">no active sessions</div>
+<div class="row dim">no session in focus</div>
+</div>
+<p class="ann"><b>"+N more"</b> caps the list zone (not tappable).
+<b>"no active sessions"</b> = zero live Claude processes (or, pathologically, a
+registry fault would now surface as a widget ERROR, never this).
+<b>"no session in focus"</b> = the detail zone's placeholder in the zero/one-idle
+states where the zone collapses.</p>
+
+<h2>Conditional elements, complete list</h2>
+<table>
+<tr><th>element</th><th>appears when</th></tr>
+<tr><td>amber row wash + marching border</td><td>registry status <code>waiting</code> (permission / plan / question). Never for busy, idle, or mere activity</td></tr>
+<tr><td><span class="g warn">perm</span> triangle</td><td>notification type <code>permission_prompt</code>, or registry <code>waitingFor</code> starts with "permission"</td></tr>
+<tr><td><span class="g warn">bell</span> warn</td><td>other needs-input types (idle_prompt, agent_needs_input, plan questions)</td></tr>
+<tr><td><span class="g dim">bell</span> dim</td><td>answered/stale bell -- only on sessions whose registry lacks a known status (fallback heuristics)</td></tr>
+<tr><td><span class="g warn">err</span> cross</td><td>last turn ended in StopFailure (cleared by the next clean Stop)</td></tr>
+<tr><td><span class="g dim">chk</span> check</td><td>turn complete, parked at prompt</td></tr>
+<tr><td>blank state glyph</td><td>turn in flight (bright age already carries it)</td></tr>
+<tr><td><span class="g">ag</span>/<span class="g">wf</span> counts</td><td>live (60s) subagent transcripts / workflow dirs; blank at zero</td></tr>
+<tr><td>bright age + bold name</td><td>active: files fresh within 60s OR registry busy</td></tr>
+<tr><td>model + effort tail</td><td>detail-zone header only</td></tr>
+<tr><td>bg:N parked / cron:N</td><td>done-outcome line, when the Stop hook reported background tasks / crons</td></tr>
+<tr><td>type breakdown on a tree root</td><td>tree folded, or squeezed out of child rows</td></tr>
+<tr><td>"+N trees" / "+N agents" / "+N more"</td><td>fleet trees / tree children / list rows past their budgets</td></tr>
+</table>
+
+<p class="cap">source of truth: internal/module/claudesessions (renderPanel,
+lineW, outcomeRow, fleetRows); regenerate the raw dumps with
+<code>KHUDSON_PANEL_SHOWCASE=1 go test ./internal/module/claudesessions/ -run TestPanelShowcase -v</code></p>
+
+</body>
+</html>

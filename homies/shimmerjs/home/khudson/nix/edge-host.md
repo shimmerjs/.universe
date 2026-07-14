@@ -1,63 +1,50 @@
-# Edge host defaults (hand-applied to hosts/aw-chainguard)
+# Edge host defaults (hosts/aw-chainguard)
 
 ## which host
 
-`aw-chainguard`. Verified 2026-07-02 on the machine physically driving the
-Xeneon Edge: `scutil --get ComputerName` and `hostname` both return
-`aw-chainguard`. It is also the only host with the PR/claude widget substrate
-(gh config, clod statusline).
+`aw-chainguard` (re-verified 2026-07-10: `scutil --get ComputerName` and
+`hostname`). The only host importing clod (hosts/aw-chainguard/default.nix)
+and the only one physically driving the Xeneon Edge.
 
-Scoping rule: these defaults go in
-`hosts/aw-chainguard/default.nix`, NEVER in the shared
-`homies/shimmerjs/darwin.nix` layer -- unscoped they would land on all four
-darwin hosts, including machines with a lock policy that display-never-sleeps
-would violate. If a second host ever gets an Edge, the block gets extracted
-to a module then, not preemptively.
+Scoping rule: Edge-host settings go in `hosts/aw-chainguard/default.nix`,
+NEVER in the shared `homies/shimmerjs/darwin.nix` layer -- unscoped they
+land on every shimmerjs darwin host (aw-chainguard, nostromo, mother),
+including machines whose lock policy a display-never-sleeps would violate.
+If a second host ever gets an Edge, extract a module then, not
+preemptively.
 
-## defaults block for `hosts/aw-chainguard/default.nix` `systemConfig`
+## display sleep: superseded by runtime caffeinate
 
-```nix
-      # Xeneon Edge substrate (khudson). This host physically drives the Edge;
-      # keep these out of the shared darwin layer.
-      system.defaults = {
-        dock = {
-          # Stable Space ordering: auto-rearrange would shuffle the Space the
-          # Edge panel and its neighbors live on.
-          mru-spaces = false;
-          # 1 = disabled. Edge-origin swipes and taps near the glass corners
-          # must never trigger hot-corner actions on the mains.
-          wvous-tl-corner = 1;
-          wvous-tr-corner = 1;
-          wvous-bl-corner = 1;
-          wvous-br-corner = 1;
-        };
-      };
+The old plan (static `power.sleep.display = "never"`) is superseded by
+decision: the bus owns a caffeinate supervisor (`/usr/bin/caffeinate -di`,
+default ON, glass-toggleable via the strip cup / `khudson ctl
+caffeinate`). A static never-sleep could not be toggled off from the
+glass; runtime wins, the static setting stays unset. Anchors: edge.cue
+caffeinate comment, internal/bus/caffeinate.go, schema CaffeinateOn. Do
+not re-add the static setting.
 
-      # The Edge is a HUD: its content is only useful if the panel never
-      # sleeps. Applies to all displays on this host; lock posture is
-      # unchanged (screen lock and require-password settings are untouched).
-      power.sleep.display = "never";
-```
+## open hazard: screensaver can still blank the HUD
 
-## screensaver idleTime (activation script, per-user ByHost)
+Live-probed 2026-07-10 on this host:
 
-`com.apple.screensaver idleTime` is ByHost, so nix-darwin's
-CustomUserPreferences cannot set it; it needs `defaults -currentHost` at
-activation. Goes in the `home` block of `hosts/aw-chainguard/default.nix`:
+- `wvous-br-corner = 5` with modifier 0: an armed no-modifier
+  start-screensaver hot corner. An Edge-glass tap near that corner blanks
+  the HUD today; caffeinate does not block user-triggered screensavers.
+- screensaver `idleTime = 600` (ByHost), not 0.
 
-```nix
-      # Screensaver off: it would blank the Edge HUD. ByHost domain ->
-      # -currentHost activation write, not CustomUserPreferences.
-      home.activation.edgeScreensaverOff = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-        run /usr/bin/defaults -currentHost write com.apple.screensaver idleTime -int 0
-      '';
-```
+Neither the hot-corner disable (`wvous-* = 1`) nor the idleTime zeroing
+ever landed in nix. If/when landing them: dock keys go in `systemConfig`
+`system.defaults.dock`; `com.apple.screensaver idleTime` is a ByHost
+domain nix-darwin CustomUserPreferences cannot set -- it needs a
+`defaults -currentHost write` home.activation step. Also durable-ize
+`mru-spaces = false` while there (live on the machine, hand-applied,
+declared nowhere -- auto-rearrange would shuffle the Space the Edge panel
+lives on).
 
 ## not included, on purpose
 
-- `dock.orientation`: DESIGN-v2 conditions it on the Edge sitting below the
-  mains; decide at wiring time, not here.
-- `displayplacer` (arrangement persistence) is homebrew, host-scoped, and
-  lands with the wiring change alongside `homebrew.brews`.
-- The khudson home-manager module import itself: this doc is substrate only;
-  module.nix is imported host-scoped by hosts/aw-chainguard/default.nix.
+- `dock.orientation`: decide at wiring time, not here.
+- `displayplacer` (arrangement persistence): homebrew, host-scoped, lands
+  with the wiring change alongside `homebrew.brews`.
+- The khudson module import itself: this doc is substrate only; module.nix
+  is imported host-scoped by hosts/aw-chainguard/default.nix.

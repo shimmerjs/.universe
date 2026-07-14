@@ -85,6 +85,14 @@ type Bus struct {
 	// waiter. nil runs the real exec.Command; tests stub it to observe (or
 	// suppress) process starts.
 	execStart func(argv []string) (wait func() error, err error)
+	// lastRowAct records the last dispatch per (widget, argv) for the retap
+	// debounce (see handleRowAct); touched only on the inputWorker
+	// goroutine, so no lock. actNow is its clock seam -- nil means time.Now
+	// -- so tests cross the window without sleeping.
+	lastRowAct map[string]time.Time
+	actNow     func() time.Time
+	// readGrace overrides dockReadGrace (tests); zero uses the constant.
+	readGrace time.Duration
 
 	recMu   sync.Mutex
 	rec     *gesture.Recognizer
@@ -305,12 +313,26 @@ func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hel
 	// kitty, so its palette is fetchable now (broadcast follows the fetch)
 	b.ensurePalette()
 
+	grace := b.readGrace
+	if grace <= 0 {
+		grace = dockReadGrace
+	}
+	why := "disconnected"
 	for {
+		// read-side liveness: any dock frame (heartbeat included) re-arms
+		// the deadline; a dock silent past the grace is reaped instead of
+		// lingering connected until a blocked write trips dockWriteGrace
+		_ = conn.SetReadDeadline(time.Now().Add(grace))
 		var m proto.Msg
 		if err := dec.Decode(&m); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				why = fmt.Sprintf("silent for %s, reaped", grace)
+			}
 			break
 		}
 		switch m.Type {
+		case proto.TypePing:
+			// keepalive only; the deadline re-arm above is the effect
 		case proto.TypeGrid:
 			b.setGrid(m.Cols, m.Rows)
 			b.setPanel(m.PanelCols, m.PanelRows)
@@ -341,7 +363,7 @@ func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hel
 	b.mu.Lock()
 	delete(b.docks, conn)
 	b.mu.Unlock()
-	log.Printf("khudson bus: dock disconnected")
+	log.Printf("khudson bus: dock %s", why)
 }
 
 func (b *Bus) serveCtl(enc *json.Encoder, dec *json.Decoder) {
@@ -467,6 +489,13 @@ func (b *Bus) setLayout(name string) error {
 // touch fan-out) behind one blocked Encode. On deadline the dock is evicted;
 // its stream is mid-message garbage anyway.
 const dockWriteGrace = 2 * time.Second
+
+// dockReadGrace bounds dock-side silence: the dock heartbeats every
+// proto.HeartbeatEvery, so 3x lets two lost or late beats slide and reaps
+// on the third. Write-side eviction alone only fires when a blocked write
+// trips dockWriteGrace -- a connected-but-mute dock that kept reading held
+// its fan-out slot forever.
+const dockReadGrace = 3 * proto.HeartbeatEvery
 
 func (b *Bus) broadcast(m proto.Msg) {
 	b.mu.Lock()

@@ -9,11 +9,15 @@ package hudlaunch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,9 +32,17 @@ type Options struct {
 	DockConfig  string        // khudson dock -config value ("" = embedded example)
 	DisplayName string        // NSScreen localizedName the HUD pins to
 	Socket      string        // RC socket path, passed via --listen-on (verbatim)
+	StateDir    string        // lock/pidfile/backoff state ("" = dir of Socket)
 	Poll        time.Duration // display presence poll interval
 	Query       QueryFunc     // nil = osascript-backed default
 	Logf        func(format string, args ...any)
+}
+
+func stateDirOf(opts Options) string {
+	if opts.StateDir != "" {
+		return opts.StateDir
+	}
+	return filepath.Dir(opts.Socket)
 }
 
 // QueryFunc returns the currently connected displays.
@@ -66,7 +78,31 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.Logf == nil {
 		opts.Logf = log.Printf
 	}
-	backoff := backoffFloor
+	sd := stateDirOf(opts)
+	// Singleton: a second launcher (a dev run racing the agent, or overlap
+	// around a KeepAlive respawn) exits loudly instead of stacking HUDs. This
+	// is also the flock'd sidecar sockclaim's probe-then-claim caveat names.
+	unlock, err := acquireLock(filepath.Join(sd, "hud-launcher.lock"))
+	if err != nil {
+		opts.Logf("hud-launcher: %v", err)
+		return err
+	}
+	defer unlock()
+	// A predecessor that died dirty (SIGKILLed under memory pressure) left
+	// its kitty+dock tree running unsupervised; reap it before launching or
+	// HUD instances stack -- the 2026-07-14 cascade.
+	sweepOrphan(opts, filepath.Join(sd, "hud-kitty.pid"))
+	// Resume the persisted relaunch schedule: backoff used to live only in
+	// process memory, so every launchd respawn relaunched at full speed.
+	backoffPath := filepath.Join(sd, "hud-backoff.state")
+	st := loadBackoff(backoffPath)
+	backoff := clampBackoff(st.Backoff)
+	if wait := resumeWait(st, time.Now()); wait > 0 {
+		opts.Logf("hud-launcher: resuming persisted backoff: %s", wait.Round(time.Second))
+		if !sleepCtx(ctx, wait) {
+			return nil
+		}
+	}
 	waitingLogged := false
 	for {
 		if ctx.Err() != nil {
@@ -102,6 +138,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 
 		start := time.Now()
+		saveBackoff(backoffPath, backoffState{LastLaunch: start, Backoff: backoff})
 		outcome := runChild(ctx, opts, x, y)
 		switch {
 		case ctx.Err() != nil:
@@ -110,6 +147,12 @@ func Run(ctx context.Context, opts Options) error {
 			// not a crash: wait for the display, no backoff
 			opts.Logf("hud-launcher: display %q disconnected; HUD torn down", opts.DisplayName)
 			continue
+		case outcome == childSignaled:
+			// a signaled child (jetsam, OOM killer, manual kill) is system
+			// pressure, not health: escalate even after a long run. The
+			// 2026-07-14 incident's 40m29s run resetting backoff to 1s while
+			// the machine drowned is the hole this closes.
+			backoff = min(backoff*2, backoffCap)
 		case time.Since(start) >= healthyRun:
 			backoff = backoffFloor
 		default:
@@ -125,7 +168,8 @@ func Run(ctx context.Context, opts Options) error {
 type childOutcome int
 
 const (
-	childExited childOutcome = iota
+	childExited   childOutcome = iota
+	childSignaled              // died by signal: treat as pressure, never resets backoff
 	childDisplayLost
 )
 
@@ -144,11 +188,18 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 	cmd := exec.Command(opts.KittyBin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Own process group: teardown signals the whole kitty+dock+module tree,
+	// and a launcher that dies uncleanly leaves a group the next instance's
+	// sweepOrphan can kill by pgid instead of orphaning it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	opts.Logf("hud-launcher: launching HUD at %dx%d", x, y)
 	if err := cmd.Start(); err != nil {
 		opts.Logf("hud-launcher: start kitty: %v", err)
 		return childExited
 	}
+	pidPath := filepath.Join(stateDirOf(opts), "hud-kitty.pid")
+	writePidfile(pidPath, cmd.Process.Pid)
+	defer os.Remove(pidPath)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
@@ -159,6 +210,9 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 		case err := <-done:
 			if err != nil {
 				opts.Logf("hud-launcher: HUD kitty: %v", err)
+			}
+			if exitedBySignal(err) {
+				return childSignaled
 			}
 			return childExited
 		case <-ctx.Done():
@@ -179,20 +233,165 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 	}
 }
 
-// terminate delivers SIGTERM, then SIGKILL after killGrace.
+// terminate delivers SIGTERM to the child's process group, then SIGKILL after
+// killGrace. Group delivery is the point: kitty alone dying leaves the dock
+// and module subprocesses running. Falls back to the single process if the
+// group signal fails (pgid already gone).
 func terminate(cmd *exec.Cmd, done <-chan error, logf func(string, ...any)) {
 	if cmd.Process == nil {
 		return
 	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
+	pid := cmd.Process.Pid
+	if syscall.Kill(-pid, syscall.SIGTERM) != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+	}
 	select {
 	case <-done:
 		return
 	case <-time.After(killGrace):
 		logf("hud-launcher: HUD kitty ignored SIGTERM; killing")
-		_ = cmd.Process.Kill()
+		if syscall.Kill(-pid, syscall.SIGKILL) != nil {
+			_ = cmd.Process.Kill()
+		}
 		<-done
 	}
+}
+
+// exitedBySignal reports whether a cmd.Wait error means the child died by
+// signal (jetsam/OOM/manual kill) rather than exiting on its own.
+func exitedBySignal(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	ws, ok := ee.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled()
+}
+
+// acquireLock takes the launcher singleton flock; the returned func releases
+// it. A held lock means another launcher is alive: fail loudly, never race.
+func acquireLock(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("launcher lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another hud-launcher holds %s", path)
+	}
+	return func() { f.Close() }, nil
+}
+
+// sweepOrphan reaps the previous launcher's child if it is still running: the
+// pidfile names the group leader, and the kill decision requires a live argv
+// matching OUR kitty binary and OUR socket -- never kill by name or title.
+func sweepOrphan(opts Options, pidPath string) {
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		os.Remove(pidPath)
+		return
+	}
+	argv := psCommand(pid)
+	if !orphanMatch(argv, opts.KittyBin, opts.Socket) {
+		// dead, pid reused by something not ours, or ps unusable -- refuse to
+		// kill what we cannot identify, but say so when the pid is live.
+		if argv == "" && processAlive(pid) {
+			opts.Logf("hud-launcher: pidfile pid %d alive but unverifiable (ps returned nothing); not killing", pid)
+		}
+		os.Remove(pidPath)
+		return
+	}
+	opts.Logf("hud-launcher: sweeping orphaned HUD group (pid %d)", pid)
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	deadline := time.Now().Add(killGrace)
+	for time.Now().Before(deadline) && processAlive(pid) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		opts.Logf("hud-launcher: orphan ignored SIGTERM; killing group %d", pid)
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}
+	os.Remove(pidPath)
+}
+
+// orphanMatch is the pure kill decision behind sweepOrphan.
+func orphanMatch(argv, kittyBin, socket string) bool {
+	return argv != "" && kittyBin != "" && socket != "" &&
+		strings.Contains(argv, kittyBin) && strings.Contains(argv, socket)
+}
+
+func psCommand(pid int) string {
+	out, err := exec.Command("/bin/ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func processAlive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
+
+func writePidfile(path string, pid int) {
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, []byte(strconv.Itoa(pid)+"\n"), 0o600) != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// backoffState is the relaunch schedule persisted across launcher deaths.
+type backoffState struct {
+	LastLaunch time.Time     `json:"last_launch"`
+	Backoff    time.Duration `json:"backoff_ns"`
+}
+
+// resumeWait: how long a fresh launcher must still wait to honor the
+// persisted schedule; zero when there is no prior launch or the window passed.
+func resumeWait(st backoffState, now time.Time) time.Duration {
+	if st.LastLaunch.IsZero() || st.Backoff <= 0 {
+		return 0
+	}
+	if w := st.LastLaunch.Add(st.Backoff).Sub(now); w > 0 {
+		return w
+	}
+	return 0
+}
+
+// clampBackoff maps a missing/corrupt persisted value to the floor.
+func clampBackoff(d time.Duration) time.Duration {
+	if d < backoffFloor || d > backoffCap {
+		return backoffFloor
+	}
+	return d
+}
+
+func loadBackoff(path string) backoffState {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return backoffState{}
+	}
+	var st backoffState
+	if json.Unmarshal(b, &st) != nil {
+		return backoffState{}
+	}
+	return st
+}
+
+func saveBackoff(path string, st backoffState) {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 // kittyArgs builds the kitty argv after the binary name. --listen-on goes on

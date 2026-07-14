@@ -13,6 +13,11 @@ func TestPollLiveHost(t *testing.T) {
 	if os.Getenv("KHUDSON_CLAUDE_LIVE") == "" {
 		t.Skip("live host poll: set KHUDSON_CLAUDE_LIVE=1")
 	}
+	// TestMain pins the identity seam for fixture determinism; the real
+	// host registry needs the real probe
+	prev := procStartTime
+	procStartTime = sysctlProcStartReal
+	defer func() { procStartTime = prev }()
 	data, err := New().Poll(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)

@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -116,8 +117,10 @@ func openMoonlander() (*hid.Device, error) {
 // reopening with backoff on device loss. Absence is QUIET: the board being
 // unplugged is a normal state, so only the first failure of an absence
 // episode and each (re)connect are logged -- never a retry-spam crash loop.
+// A parked absence backs off to reconnectCap (each attempt enumerates via
+// IOKit); a replug flips the failure class and resets the ramp.
 func moonLoop(ctx context.Context, emit func(KeyEvent)) {
-	backoff := reconnectMin
+	var bo reopenBackoff
 	loggedAbsent := false
 	for {
 		if ctx.Err() != nil {
@@ -126,18 +129,17 @@ func moonLoop(ctx context.Context, emit func(KeyEvent)) {
 		dev, err := openMoonlander()
 		if err != nil {
 			if !loggedAbsent {
-				fmt.Fprintf(os.Stderr, "moonlander absent: %v (quiet retry)\n", err)
+				fmt.Fprintf(os.Stderr, "moonlander absent: %v (quiet retry, backoff caps at %s)\n", err, reconnectCap)
 				loggedAbsent = true
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(bo.fail(errors.Is(err, errAbsent))):
 			}
-			backoff = min(backoff*2, reconnectMax)
 			continue
 		}
-		backoff = reconnectMin
+		bo.reset()
 		loggedAbsent = false
 		fmt.Println("moonlander open (shared), pairing init sent")
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -47,6 +48,16 @@ func printCollection(info *hid.DeviceInfo) error {
 	return nil
 }
 
+// errAbsent classifies an open failure as "collection not enumerable" --
+// the device is unplugged, as opposed to present but unopenable (seized,
+// not permitted). The reopen loops key their backoff reset on this class
+// flipping, so it must survive every wrap on the enumeration path.
+var errAbsent = errors.New("device connected?")
+
+func noCollectionErr(vid, pid, page, usage uint16) error {
+	return fmt.Errorf("no %04X:%04X collection with usage_page=0x%02X usage=0x%02X (%w)", vid, pid, page, usage, errAbsent)
+}
+
 func findCollection(vid, pid, page, usage uint16) (string, error) {
 	var path string
 	err := hid.Enumerate(vid, pid, func(info *hid.DeviceInfo) error {
@@ -59,7 +70,7 @@ func findCollection(vid, pid, page, usage uint16) (string, error) {
 		return "", fmt.Errorf("enumerate: %w", err)
 	}
 	if path == "" {
-		return "", fmt.Errorf("no %04X:%04X collection with usage_page=0x%02X usage=0x%02X (device connected?)", vid, pid, page, usage)
+		return "", noCollectionErr(vid, pid, page, usage)
 	}
 	return path, nil
 }

@@ -251,6 +251,140 @@ func TestMinimizedCadence(t *testing.T) {
 	}
 }
 
+// The exec pair (defaults export + lsappinfo) runs at most once per cadence
+// tick: between ticks the cached lists are reused without an exec -- every
+// lsappinfo exec floods the unified log with launchservicesd entitlement
+// denials, so the pair must never run at the widget poll. The param
+// overrides the default 30s.
+func TestAppsCadence(t *testing.T) {
+	calls := 0
+	clock := time.Unix(1000, 0)
+	m := New()
+	m.now = func() time.Time { return clock }
+	m.list = func(context.Context) ([]string, map[string]bool, error) {
+		calls++
+		return []string{"kitty"}, map[string]bool{"kitty": true}, nil
+	}
+
+	for range 3 {
+		if _, _, err := m.appsCached(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (cached between ticks)", calls)
+	}
+	clock = clock.Add(29 * time.Second)
+	if _, _, _ = m.appsCached(context.Background(), nil); calls != 1 {
+		t.Fatalf("calls = %d, want 1 at 29s (default 30s floor)", calls)
+	}
+	clock = clock.Add(2 * time.Second)
+	if _, _, _ = m.appsCached(context.Background(), nil); calls != 2 {
+		t.Fatalf("calls = %d, want 2 past the tick", calls)
+	}
+
+	// param override tightens the cadence
+	params := map[string]any{"appsEvery": "1s"}
+	clock = clock.Add(time.Second)
+	if _, _, _ = m.appsCached(context.Background(), params); calls != 3 {
+		t.Fatalf("calls = %d, want 3 with 1s override", calls)
+	}
+
+	// a cached ERROR is reused between ticks too: a failing lsappinfo must
+	// not re-open the per-tick exec flood
+	m.list = func(context.Context) ([]string, map[string]bool, error) {
+		calls++
+		return nil, nil, fmt.Errorf("lsappinfo: exit status 1")
+	}
+	clock = clock.Add(2 * time.Second)
+	if _, _, err := m.appsCached(context.Background(), params); err == nil || calls != 4 {
+		t.Fatalf("calls = %d err = %v, want fresh failing listing", calls, err)
+	}
+	if _, _, err := m.appsCached(context.Background(), params); err == nil || calls != 4 {
+		t.Fatalf("calls = %d err = %v, want the cached error without an exec", calls, err)
+	}
+}
+
+// A listing that failed because the poll budget expired is NOT cached:
+// appsLast stays unset and the very next call re-lists instead of pinning
+// the timeout for a whole cadence tick.
+func TestAppsTimeoutNotCached(t *testing.T) {
+	calls := 0
+	clock := time.Unix(1000, 0)
+	m := New()
+	m.now = func() time.Time { return clock }
+	m.list = func(ctx context.Context) ([]string, map[string]bool, error) {
+		calls++
+		return nil, nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := m.appsCached(ctx, nil); err == nil {
+		t.Fatal("canceled listing returned no error")
+	}
+	if !m.appsLast.IsZero() {
+		t.Fatalf("canceled listing pinned the cache: appsLast = %v", m.appsLast)
+	}
+	m.list = func(context.Context) ([]string, map[string]bool, error) {
+		calls++
+		return nil, map[string]bool{"kitty": true}, nil
+	}
+	_, running, err := m.appsCached(context.Background(), nil)
+	if err != nil || !running["kitty"] {
+		t.Fatalf("re-list = %v, %v; want the fresh listing", running, err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (timeout not cached)", calls)
+	}
+}
+
+// Poll end to end through the seams: repeated polls inside one cadence tick
+// exec nothing new and keep rendering the cached lists; a cached listing
+// error fails the poll without an exec.
+func TestPollUsesCachedApps(t *testing.T) {
+	listCalls := 0
+	clock := time.Unix(1000, 0)
+	m := New()
+	m.exe = fakeExe
+	m.now = func() time.Time { return clock }
+	m.list = func(context.Context) ([]string, map[string]bool, error) {
+		listCalls++
+		return parsePinnedApps(dockPlist), parseRunning(lsappinfoList), nil
+	}
+	m.sample = func(context.Context) ([]minWin, error) { return nil, nil }
+
+	var first module.Data
+	for i := range 3 {
+		d, err := m.Poll(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = d
+		} else if !reflect.DeepEqual(d, first) {
+			t.Fatalf("poll %d = %+v\nwant the cached render %+v", i, d, first)
+		}
+	}
+	if listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1 across 3 polls", listCalls)
+	}
+	if len(first.Rows) != 3 {
+		t.Fatalf("rows = %+v, want the 3 running apps", first.Rows)
+	}
+
+	m.list = func(context.Context) ([]string, map[string]bool, error) {
+		listCalls++
+		return nil, nil, fmt.Errorf("lsappinfo: exit status 1")
+	}
+	clock = clock.Add(31 * time.Second)
+	if _, err := m.Poll(context.Background(), nil); err == nil || listCalls != 2 {
+		t.Fatalf("calls = %d err = %v, want the fresh failure to fail the poll", listCalls, err)
+	}
+	if _, err := m.Poll(context.Background(), nil); err == nil || listCalls != 2 {
+		t.Fatalf("calls = %d err = %v, want the cached error without an exec", listCalls, err)
+	}
+}
+
 // Minimized windows follow the running rows as dim actionable rows: Text =
 // window title (owning app when untitled), Key = owning app, Act is the
 // per-window unminimize verb -- [exe, "ax", "unminimize", title], plus

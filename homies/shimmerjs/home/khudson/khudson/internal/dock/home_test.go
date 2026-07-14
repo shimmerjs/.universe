@@ -905,6 +905,43 @@ func TestHomeTapResolvesHomeByKind(t *testing.T) {
 	}
 }
 
+// The layout NAMED home outranks the config default: layout.state persists
+// the runtime selection into cfg.Layout, so parking on another home-KIND
+// layout (the fullscreen clod panel) across a bus restart made the config
+// default THE clod layout -- a kind-of-the-default pick then resolved home
+// to clod itself and the strip home icon no-opped (glass-reported).
+func TestHomeTapEscapesPersistedHomeKindDefault(t *testing.T) {
+	m := newHomeModel(320, 18)
+	// "claude": home-kind, single fill, mirroring edge.cue; persisted as
+	// the config default and currently active
+	m.cfg.Layouts["claude"] = config.Layout{Kind: "home", Regions: []config.Region{
+		{Widget: "cpumem", Edge: "fill"},
+	}}
+	m.cfg.Layout = "claude"
+	m.layout = "claude"
+	m.View()
+
+	if !m.resolveTap(1, 17) {
+		t.Fatal("tap on the strip home icon not consumed")
+	}
+	if m.layout != "home" {
+		t.Fatalf("layout = %q, want home (the NAMED home layout)", m.layout)
+	}
+
+	// and the alphabetical trap: "claude" sorts before "home", so the
+	// sorted-name fallback must not win while a named home exists
+	m.cfg.Layout = "skew" // not a layout: kind lookup misses
+	m.layout = "claude"
+	m.resetLayout()
+	m.View()
+	if !m.resolveTap(1, 17) {
+		t.Fatal("tap on the strip home icon not consumed (skew default)")
+	}
+	if m.layout != "home" {
+		t.Fatalf("layout = %q, want home over the alphabetically-first claude", m.layout)
+	}
+}
+
 func TestBrailleRuneLevels(t *testing.T) {
 	cases := []struct {
 		v    float64

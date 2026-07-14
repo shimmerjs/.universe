@@ -283,6 +283,54 @@ func TestBusAndSkewInvalidateHomeCache(t *testing.T) {
 	}
 }
 
+// The 1 s clock tick doubles as the bus keepalive: a connected dock pings
+// at proto.HeartbeatEvery (the bus reaps a dock silent past its read
+// grace), ticks inside the period stay quiet, and a bus-absent dock never
+// touches the conn.
+func TestTickHeartbeat(t *testing.T) {
+	m := newHomeModel(320, 18)
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	msgs := make(chan proto.Msg, 16)
+	go func() {
+		dec := json.NewDecoder(server)
+		for {
+			var msg proto.Msg
+			if err := dec.Decode(&msg); err != nil {
+				close(msgs)
+				return
+			}
+			msgs <- msg
+		}
+	}()
+	m.bus, m.busConn = busConnected, client
+
+	base := time.Now()
+	m.Update(tickMsg(base))
+	if msg := wantBusMsg(t, msgs); msg.Type != proto.TypePing {
+		t.Fatalf("first tick sent %q, want ping", msg.Type)
+	}
+	m.Update(tickMsg(base.Add(time.Second)))
+	select {
+	case msg := <-msgs:
+		t.Fatalf("tick inside the heartbeat period sent %q", msg.Type)
+	case <-time.After(50 * time.Millisecond):
+	}
+	m.Update(tickMsg(base.Add(proto.HeartbeatEvery + time.Second)))
+	if msg := wantBusMsg(t, msgs); msg.Type != proto.TypePing {
+		t.Fatalf("post-period tick sent %q, want ping", msg.Type)
+	}
+
+	// bus absent (mid-reconnect): the tick must not touch the conn
+	m.bus = busAbsent
+	m.Update(tickMsg(base.Add(3 * proto.HeartbeatEvery)))
+	select {
+	case msg := <-msgs:
+		t.Fatalf("bus-absent tick sent %q", msg.Type)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // A resize that lands while the dial Cmd is in flight must reach the bus:
 // connect re-asserts the CURRENT grid, not the dims captured at dial time.
 func TestBusConnectedReassertsCurrentGrid(t *testing.T) {

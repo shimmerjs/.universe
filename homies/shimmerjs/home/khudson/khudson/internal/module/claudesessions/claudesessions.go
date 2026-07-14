@@ -1,16 +1,23 @@
 // Package claudesessions is the Claude heads-up: sessions discovered by
-// scanning the projects tree (<projectsDir>/*/<session id>.jsonl), live
-// fleet counted from each session's subagents dir, named from the session
-// registry (<sessionsDir>/<pid>.json) or the hook-written spool
-// (<dir>/<session id>.json). The last prompt reads from the spool first
-// (the UserPromptSubmit hook writes it); the transcript tail fills
-// spool-less sessions and corrects a stale spool -- mid-turn steering
-// never fires the hook, so a strictly newer tail entry replaces the
-// prompt and dates attention staleness. One spans row per session, grouped by
-// cwd (groups newest-first by newest member start, newest start first
-// within) -- static-width columns (relative age, state glyph, fleet
-// counts, abbreviated cwd) left of the variable-length identifier (long
-// session name) -- with the live/recent tally riding the widget title.
+// scanning the projects tree (<projectsDir>/*/<session id>.jsonl) and
+// JOINed against the session registry (<sessionsDir>/<pid>.json, written
+// by Claude Code per running process) -- only sessions whose registry pid
+// is a live process render AT ALL (glass-directed: dead sessions are
+// noise, whatever their transcript age). The registry is also the
+// needs-user ground truth (status "waiting" vs "busy", flipped live by
+// Claude Code itself) and the name source; derived registry names
+// (nameSource "derived", "can-9b"-style handles) are dropped in favor of
+// the spool session_title. Live fleet counts from each session's
+// subagents dir; the hook-written spool (<dir>/<session id>.json) fills
+// the rest. The last prompt reads from the spool first (the
+// UserPromptSubmit hook writes it); the transcript tail fills spool-less
+// sessions and corrects a stale spool -- mid-turn steering never fires
+// the hook, so a strictly newer tail entry replaces the prompt and dates
+// attention staleness. One spans row per session, grouped by cwd (groups
+// newest-first by newest member start, newest start first within) --
+// static-width columns (relative age, state glyph, fleet counts,
+// abbreviated cwd) left of the variable-length identifier (long session
+// name) -- with the live/recent tally riding the widget title.
 package claudesessions
 
 import (
@@ -20,15 +27,19 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -75,6 +86,20 @@ type Mod struct {
 	tails     map[string]tailEntry
 	dirDisp   map[string]string
 	tailReads int // test seam: cache-missing tail reads
+
+	// live-registry grace state: sessions alive last poll, and which of
+	// them already spent their one-poll grace (aliveSessions)
+	alivePrev   map[string]bool
+	aliveGraced map[string]bool
+
+	// constant-cost seams (fscache.go): the projects-tree layout index and
+	// the fleet/agent-dir cache. Shared with the panel (NewPanel(m)).
+	idx projIndex
+	fs  fleetCache
+	// alive ids with no transcript, already rescued once: a durably
+	// transcript-less session (registered before its first write, or
+	// pruned) must not re-open a per-tick corpus walk. Clears on resync.
+	missingTx map[string]bool
 }
 
 // tailEntry memoizes one lastPromptEntry result against the transcript
@@ -93,9 +118,17 @@ func New() *Mod {
 
 func (*Mod) Name() string { return "claude-sessions" }
 
+// Essential opts the strip out of load shedding: its poll is O(live
+// sessions + hot files) by design, and it is the surface that reports the
+// workflow fan-outs that drive load past the shed threshold -- freezing
+// it under shed would blind the user exactly when steering matters.
+func (*Mod) Essential() {}
+
 // pollParams resolves the source params shared by the claude-sessions and
 // claude-panel modules: the projects tree, the hook-written spool dir, the
-// session registry dir, and the listing window.
+// session registry dir, and the listing window. The window is vestigial
+// since the live-registry gate (discover) replaced age pruning; it still
+// parses so a configured value keeps vetting instead of erroring.
 func pollParams(params map[string]any) (root, spoolDir, sessionsDir string, window time.Duration, err error) {
 	root, _ = params["projectsDir"].(string)
 	if root == "" {
@@ -108,10 +141,13 @@ func pollParams(params map[string]any) (root, spoolDir, sessionsDir string, wind
 	spoolDir, _ = params["dir"].(string)
 	sessionsDir, _ = params["sessionsDir"].(string)
 	if sessionsDir == "" {
-		// no resolvable home means no name registry, not an error
-		if home, err := os.UserHomeDir(); err == nil {
-			sessionsDir = filepath.Join(home, ".claude", "sessions")
+		// the registry is the visibility gate: an unresolvable home must
+		// error, or the widget renders the legit empty state on a fault
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", "", "", 0, err
 		}
+		sessionsDir = filepath.Join(home, ".claude", "sessions")
 	}
 	window = defaultWindow
 	if s, ok := params["window"].(string); ok && s != "" {
@@ -125,14 +161,14 @@ func pollParams(params map[string]any) (root, spoolDir, sessionsDir string, wind
 }
 
 func (m *Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error) {
-	root, spoolDir, sessionsDir, window, err := pollParams(params)
+	root, spoolDir, sessionsDir, _, err := pollParams(params)
 	if err != nil {
 		return module.Data{}, fmt.Errorf("claude-sessions: %w", err)
 	}
 	maxRows := module.IntParam(params, "max", defaultMax)
 
 	now := time.Now()
-	sessions, err := discover(ctx, root, spoolDir, sessionsDir, window, now)
+	sessions, err := m.discover(ctx, root, spoolDir, sessionsDir, now)
 	if err != nil {
 		return module.Data{}, err
 	}
@@ -336,9 +372,14 @@ type session struct {
 	dirs       []string  // session dirs across project dirs (satellites too)
 	dir        string    // spool cwd, else registry cwd
 	dirDisplay string    // cwd column text: repo-relative, else ~-compacted
-	name       string    // registry name over spool session_name
+	name       string    // explicit registry name over spool session_name
 	start      time.Time // fixed ordering key (transcript head)
 	mtime      time.Time // effective activity: max of transcript, fleet, spool times
+
+	// registry state (the live-process record; "" when the record lacks it)
+	regStatus  string    // "waiting" | "busy" -- Claude Code's own signal
+	regWaiting string    // what a waiting session waits for ("permission prompt")
+	regSince   time.Time // statusUpdatedAt: when regStatus last flipped
 
 	// freshness gate inputs: the raw file mtimes, before any maxing.
 	transcriptMtime time.Time // transcript mtime as discovered
@@ -368,68 +409,138 @@ type session struct {
 
 func isLive(mtime, now time.Time) bool { return now.Sub(mtime) <= liveWithin }
 
+// active reports the session working RIGHT NOW: file activity within the
+// live window, or the registry saying "busy" -- a turn parked inside one
+// long tool call (a minutes-long codex exec, a big build) appends nothing
+// to transcript/fleet/spool, so mtime alone reads a working session as
+// idle (glass-reported). The age column stays honest (last observable
+// output); active drives only the tone and the live tally.
+func (s session) active(now time.Time) bool {
+	return isLive(s.mtime, now) || s.regStatus == "busy"
+}
+
 // sessionDirRe matches uuid-named session dirs. Satellites live under the
 // project dir of the workflow cwd, which need not be the transcript's.
 var sessionDirRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// discover scans every project dir for top-level session transcripts
-// (<id>.jsonl) touched within window, then sums fleet over every session
-// dir carrying that id in any project dir. A session's effective mtime is
-// the max of its transcript and fleet mtimes, so fleet activity keeps a
-// blocked parent live. A missing root is empty, not an error.
-func discover(ctx context.Context, root, spoolDir, sessionsDir string, window time.Duration, now time.Time) ([]session, error) {
-	projects, err := os.ReadDir(root)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+// aliveSessions computes the live-registry set (regAlive) with a
+// one-poll grace: a session alive LAST poll that misses this poll -- a
+// torn read of a live-rewritten registry file, a transient I/O fault --
+// stays alive for ONE more poll before dropping. The gate is a hard
+// visibility gate, so a single bad read would otherwise flicker the list,
+// destroy the session's fold state (foldSnapshot prunes to the discovered
+// set), and hand the detail zone to another incumbent. A second
+// consecutive miss drops it for real; a fresh read clears the grace.
+func (m *Mod) aliveSessions(names map[string]reg, now time.Time) map[string]bool {
+	alive := make(map[string]bool, len(names))
+	for sid, r := range names {
+		if regAlive(r, now) {
+			alive[sid] = true
 		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	graced := map[string]bool{}
+	for sid := range m.alivePrev {
+		if alive[sid] || m.aliveGraced[sid] {
+			continue
+		}
+		alive[sid] = true
+		graced[sid] = true
+	}
+	m.aliveGraced = graced
+	prev := make(map[string]bool, len(alive))
+	maps.Copy(prev, alive)
+	m.alivePrev = prev
+	return alive
+}
+
+// discover lists sessions with a LIVE registry record -- a registry file
+// whose pid is verifiably the recorded process (regAlive). Sessions
+// without one do not render at all (glass-directed: a dead session is
+// noise, whatever its transcript age -- and the live process is the
+// cheap, socket-free stand-in for "in a live kitty window right now").
+// The projects-tree layout comes from the mtime-gated index and the
+// fleet sums from the fleet cache (fscache.go), so a tick costs
+// O(project dirs + live sessions + hot files), never a corpus walk.
+// Fleet sums over every session dir carrying that id in any project dir.
+// A session's effective mtime is the max of its transcript and fleet
+// mtimes, so fleet activity keeps a blocked parent live. A missing root
+// is empty, not an error; a failed registry read is one (readNames).
+func (m *Mod) discover(ctx context.Context, root, spoolDir, sessionsDir string, now time.Time) ([]session, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	names, err := readNames(sessionsDir)
+	if err != nil {
+		return nil, err
+	}
+	alive := m.aliveSessions(names, now)
+	force := m.fs.resyncDue(now)
+	transcripts, sessionDirs, err := m.idx.lookup(root, force)
+	if err != nil {
+		return nil, err
+	}
+	// a live session the index does not know yet (its transcript landed
+	// between project-dir stats) gets ONE forced re-read -- memoized, so a
+	// durably transcript-less session (registered before its first write,
+	// or pruned while alive) cannot re-open a per-tick corpus walk. The
+	// memo clears on the resync cadence, bounding retry cost to the same
+	// class as the resync itself.
+	m.mu.Lock()
+	if force || m.missingTx == nil {
+		m.missingTx = map[string]bool{}
+	}
+	rescue := false
+	for id := range alive {
+		if _, ok := transcripts[id]; !ok && !m.missingTx[id] {
+			rescue = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if rescue {
+		if transcripts, sessionDirs, err = m.idx.lookup(root, true); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		for id := range alive {
+			if _, ok := transcripts[id]; !ok {
+				m.missingTx[id] = true
+			}
+		}
+		m.mu.Unlock()
+	}
 	var sessions []session
-	sessionDirs := map[string][]string{}
-	for _, p := range projects {
+	var keepRoots []string
+	for id := range alive {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !p.IsDir() {
+		path, ok := transcripts[id]
+		if !ok {
 			continue
 		}
-		pdir := filepath.Join(root, p.Name())
-		entries, err := os.ReadDir(pdir)
-		if err != nil {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		for _, e := range entries {
-			if e.IsDir() {
-				if sessionDirRe.MatchString(e.Name()) {
-					sessionDirs[e.Name()] = append(sessionDirs[e.Name()], filepath.Join(pdir, e.Name()))
-				}
-				continue
-			}
-			if !strings.HasSuffix(e.Name(), ".jsonl") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil || !info.Mode().IsRegular() || now.Sub(info.ModTime()) > window {
-				continue
-			}
-			sessions = append(sessions, session{
-				id:              strings.TrimSuffix(e.Name(), ".jsonl"),
-				transcript:      filepath.Join(pdir, e.Name()),
-				mtime:           info.ModTime(),
-				transcriptMtime: info.ModTime(),
-			})
-		}
+		sessions = append(sessions, session{
+			id:              id,
+			transcript:      path,
+			mtime:           info.ModTime(),
+			transcriptMtime: info.ModTime(),
+		})
 	}
-	names := readNames(sessionsDir)
 	for i := range sessions {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		s := &sessions[i]
 		s.dirs = sessionDirs[s.id]
+		keepRoots = append(keepRoots, s.dirs...)
 		for _, dir := range s.dirs {
-			agents, workflows, newest := fleet(dir, now)
+			agents, workflows, newest := m.fs.fleetCached(dir, now, force)
 			s.agents += agents
 			s.workflows += workflows
 			if newest.After(s.mtime) {
@@ -438,11 +549,21 @@ func discover(ctx context.Context, root, spoolDir, sessionsDir string, window ti
 		}
 		overlay(s, spoolDir)
 		if r, ok := names[s.id]; ok {
-			if r.Name != "" {
+			// derived names are auto-generated short handles ("can-9b"):
+			// never display them -- the spool session_title or the cwd
+			// basename reads better (glass-directed)
+			if r.Name != "" && r.NameSource != "derived" {
 				s.name = r.Name
 			}
 			if s.dir == "" {
 				s.dir = r.Cwd
+			}
+			s.regStatus = r.Status
+			// external string to glass: same sanitizing bar as every
+			// spool field (scrubControl's none-may-reach-a-span invariant)
+			s.regWaiting = scrubControl(firstLine(r.WaitingFor))
+			if r.StatusUpdatedAt > 0 {
+				s.regSince = time.UnixMilli(r.StatusUpdatedAt)
 			}
 		}
 		// hook-written spool times are activity too: a turn completion or
@@ -455,73 +576,10 @@ func discover(ctx context.Context, root, spoolDir, sessionsDir string, window ti
 			}
 		}
 	}
+	// the cache tracks the rendered set, never the corpus: dirs of sessions
+	// that left the live set drop here and re-fill cold if they return
+	m.fs.prune(keepRoots)
 	return sessions, nil
-}
-
-// fleet counts live (mtime within liveWithin) subagent transcripts
-// (subagents/agent-*.jsonl) and workflow dirs (subagents/workflows/wf_*)
-// under one session dir. newest is the max mtime observed regardless of
-// liveness, so stale fleet activity still dates the session.
-func fleet(sessionDir string, now time.Time) (agents, workflows int, newest time.Time) {
-	subDir := filepath.Join(sessionDir, "subagents")
-	entries, err := os.ReadDir(subDir)
-	// workflows lives under subagents/: a missing subagents dir has none.
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0, 0, time.Time{}
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), "agent-") || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(newest) {
-			newest = info.ModTime()
-		}
-		if isLive(info.ModTime(), now) {
-			agents++
-		}
-	}
-	if entries, err := os.ReadDir(filepath.Join(subDir, "workflows")); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() || !strings.HasPrefix(e.Name(), "wf_") {
-				continue
-			}
-			mt := wfMtime(filepath.Join(sessionDir, "subagents", "workflows", e.Name()), e)
-			if mt.After(newest) {
-				newest = mt
-			}
-			if isLive(mt, now) {
-				workflows++
-			}
-		}
-	}
-	return agents, workflows, newest
-}
-
-// wfMtime is the newest file mtime inside a wf dir: appends touch files,
-// not the dir itself, so the dir's own mtime only stands in when the dir
-// is empty or unreadable.
-func wfMtime(dir string, e fs.DirEntry) time.Time {
-	var newest time.Time
-	if entries, err := os.ReadDir(dir); err == nil {
-		for _, f := range entries {
-			if f.IsDir() {
-				continue
-			}
-			if info, err := f.Info(); err == nil && info.ModTime().After(newest) {
-				newest = info.ModTime()
-			}
-		}
-	}
-	if newest.IsZero() {
-		if info, err := e.Info(); err == nil {
-			newest = info.ModTime()
-		}
-	}
-	return newest
 }
 
 // overlay enriches a session from <spoolDir>/<id>.json; a missing or
@@ -645,25 +703,46 @@ func modelName(raw json.RawMessage) string {
 }
 
 // reg is one session-registry record (<sessionsDir>/<pid>.json), written
-// per running Claude Code process.
+// per running Claude Code process. status/waitingFor are Claude Code's
+// own needs-user signal ("waiting" at a permission gate, plan approval,
+// or question; "busy" mid-turn; "idle" at the prompt -- all three
+// observed live), flipped live -- no hook, no heuristic.
+// startedAt (epoch ms) is the process-identity anchor: procStart renders
+// the same instant as a TIMEZONE-LESS string (observed UTC against a
+// local-time kernel lstart), so the epoch field is the one safe to
+// compare against the kernel start time.
 type reg struct {
-	SessionID string `json:"sessionId"`
-	Name      string `json:"name"`
-	Cwd       string `json:"cwd"`
-	UpdatedAt int64  `json:"updatedAt"`
+	SessionID       string `json:"sessionId"`
+	PID             int    `json:"pid"`
+	Name            string `json:"name"`
+	NameSource      string `json:"nameSource"`
+	Cwd             string `json:"cwd"`
+	Status          string `json:"status"`
+	WaitingFor      string `json:"waitingFor"`
+	StartedAt       int64  `json:"startedAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
 }
 
 // readNames loads the registry into id -> record. Files for dead pids can
 // linger, so the newest updatedAt wins per session id. A missing dir is
-// empty, and malformed records are skipped.
-func readNames(dir string) map[string]reg {
+// empty; any OTHER ReadDir failure is an error -- the registry is a hard
+// visibility gate now, so a permission or I/O fault must surface as a
+// Poll error, never render as the legit "no active sessions" state.
+// Malformed records are skipped (the discover grace absorbs a torn
+// concurrent rewrite). A record without a pid field takes it from the
+// filename stem (the file is named for the process).
+func readNames(dir string) (map[string]reg, error) {
 	m := map[string]reg{}
 	if dir == "" {
-		return m
+		return m, nil
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return m
+		if errors.Is(err, fs.ErrNotExist) {
+			return m, nil
+		}
+		return nil, err
 	}
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") {
@@ -683,11 +762,73 @@ func readNames(dir string) map[string]reg {
 		if err := json.Unmarshal(b, &r); err != nil || r.SessionID == "" {
 			continue
 		}
+		if r.PID == 0 {
+			if n, err := strconv.Atoi(strings.TrimSuffix(e.Name(), ".json")); err == nil {
+				r.PID = n
+			}
+		}
 		if prev, ok := m[r.SessionID]; !ok || r.UpdatedAt > prev.UpdatedAt {
 			m[r.SessionID] = r
 		}
 	}
-	return m
+	return m, nil
+}
+
+// pidAlive reports whether pid is a running process OF THIS USER: signal
+// 0 probes without touching it, and EPERM -- someone else's process at
+// that pid -- counts as dead, because every Claude Code session here runs
+// as this user; a same-pid process we cannot signal is a recycle, not the
+// session. Var: test seam.
+var pidAlive = func(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
+}
+
+// sysctlProcStart reads pid's kernel start time (kern.proc.pid); ok=false
+// when the process is gone or the sysctl is unavailable.
+func sysctlProcStart(pid int) (time.Time, bool) {
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return time.Time{}, false
+	}
+	tv := kp.Proc.P_starttime
+	return time.Unix(tv.Sec, int64(tv.Usec)*1000), true
+}
+
+// procStartTime is the process-identity seam over sysctlProcStart.
+var procStartTime = sysctlProcStart
+
+// regStartSlack tolerates the gap between the kernel start time and the
+// app-level startedAt stamp (observed ~3s on this machine).
+const regStartSlack = time.Minute
+
+// regMaxAge bounds identity-UNVERIFIABLE records (no startedAt, or the
+// sysctl failed): past it a lingering record cannot gate a session alive.
+// Identity-verified records get no age bound -- a session parked idle for
+// days in a live kitty tab must keep rendering.
+const regMaxAge = 7 * 24 * time.Hour
+
+// regAlive reports whether r's pid is the SAME live process that wrote
+// the record. A bare pid probe resurrects dead sessions on pid reuse
+// (registry files linger; the 6h window prune that used to age them out
+// is gone), so the kernel start time is cross-checked against startedAt;
+// records too old to verify fall to the updatedAt age backstop.
+func regAlive(r reg, now time.Time) bool {
+	if !pidAlive(r.PID) {
+		return false
+	}
+	if r.StartedAt > 0 {
+		if st, ok := procStartTime(r.PID); ok {
+			d := st.Sub(time.UnixMilli(r.StartedAt))
+			if d < 0 {
+				d = -d
+			}
+			return d <= regStartSlack
+		}
+	}
+	return r.UpdatedAt <= 0 || now.Sub(time.UnixMilli(r.UpdatedAt)) <= regMaxAge
 }
 
 // lastPromptEntry tails a transcript for the newest typed user prompt:
@@ -885,7 +1026,7 @@ func render(sessions []session, max int, now time.Time) (string, []module.Row) {
 	}
 	live := 0
 	for _, s := range sessions {
-		if isLive(s.mtime, now) {
+		if s.active(now) {
 			live++
 		}
 	}
@@ -907,8 +1048,10 @@ func render(sessions []session, max int, now time.Time) (string, []module.Row) {
 }
 
 // line is one session as a single spans row. Static-width columns lead --
-// relative age (accent when live, dim when stale: liveness is the column's
-// color, not a badge), one state glyph (typed attention, error, check),
+// relative age (accent while ACTIVE -- fresh files or registry-busy --
+// dim otherwise: activity is the column's color, not a badge; the text
+// stays the honest last-output age), one state glyph (typed attention,
+// error, check),
 // the two fleet counts (blanked at zero), and the abbreviated cwd padded
 // to cwdWidth -- so the variable-length identifier (long session name, hue
 // keyed by session id) plus the prompt snippet flow free on the right.
@@ -921,7 +1064,7 @@ func (s session) line(now time.Time) module.Row {
 // cell fit stays dock-side (fitCell); the cap only bounds the payload.
 func (s session) lineW(now time.Time, promptW int) module.Row {
 	style := module.StyleDim
-	if isLive(s.mtime, now) {
+	if s.active(now) {
 		style = module.StyleAccent
 	}
 	// the cwd column sits after the fixed lead block and before the name:
@@ -983,7 +1126,13 @@ const attentionHorizon = time.Hour
 // after notification_ts -- or a turn end at/after it -- marks the gate
 // answered. Truncated to seconds like every spool compare: a same-second
 // write must not answer the bell it announced. idle_prompt keeps
-// prompt-only answering -- the session really is waiting for the user.
+// prompt-only answering -- the session really is waiting for the user --
+// UNLESS the turn parked background work: the harness fires idle_prompt
+// in the gap between a turn end and the next background wakeup, and the
+// wakeup, not the user, answers it (observed live: bell 61s after a Stop
+// that recorded bg tasks, washed 56s later by the task notification). A
+// session with bg_tasks from its last Stop or live fleet is waiting on
+// its fleet, not the user.
 func (s session) attentionLive(now time.Time) bool {
 	if !s.attention {
 		return false
@@ -1008,6 +1157,10 @@ func (s session) attentionLive(now time.Time) bool {
 		if s.stopped.After(s.notified) {
 			return false
 		}
+	case "idle_prompt":
+		if s.bgTasks > 0 || s.agents > 0 || s.workflows > 0 {
+			return false
+		}
 	}
 	latest := s.promptTS
 	if s.tailPromptTS.After(latest) {
@@ -1016,35 +1169,93 @@ func (s session) attentionLive(now time.Time) bool {
 	return !latest.After(s.notified)
 }
 
-// attentionGlyph types the attention badge from notification_type. The enum
-// has 8 documented values in 2.1.201 and may grow, so the default branch is
-// mandatory: unknown types render a dim bell, never a blank or a panic.
-// An empty type is a pre-rank-1 spool -- keep the A4 warn bell.
+// regKnown reports a registry status this code understands (all three
+// observed live on this machine). Anything else -- a future Claude Code
+// enum value -- must NOT silently read as not-needing-user: unknown
+// statuses fall back to the spool heuristic wholesale (the
+// attentionGlyph default-branch doctrine).
+func (s session) regKnown() bool {
+	return s.regStatus == "waiting" || s.regStatus == "busy" || s.regStatus == "idle"
+}
+
+// needsUser reports the session blocked on the user RIGHT NOW. The
+// registry status is ground truth when it speaks our vocabulary: Claude
+// Code itself flips "waiting" (permission gate, plan approval, question),
+// "busy" (turn running), and "idle" (at the prompt, nothing pending)
+// live, so a granted gate un-washes on the next poll with none of the
+// transcript-activity heuristics attentionLive needs (glass-reported:
+// the wash tracked activity, not need). idle is hard-false: gates only
+// fire mid-turn, and an unanswered idle_prompt bell over a finished
+// session is exactly the resting state the wash must not mark. Two
+// escapes to the spool heuristic: an unknown/absent status, and a
+// notification STRICTLY newer than the busy flip -- a gate the registry
+// has not caught up to must not be silenced by the stale busy.
+func (s session) needsUser(now time.Time) bool {
+	switch s.regStatus {
+	case "waiting":
+		return true
+	case "idle":
+		return false
+	case "busy":
+		if !s.notified.After(s.regSince) {
+			return false
+		}
+	}
+	return s.attentionLive(now)
+}
+
+// needSince dates the needs-user state for oldest-first ordering: the
+// newer of the notification ts and the registry status flip -- a registry
+// wait can postdate (or never have had) a notification, and an old bell
+// must not date a new gate.
+func (s session) needSince() time.Time {
+	if s.regSince.After(s.notified) {
+		return s.regSince
+	}
+	return s.notified
+}
+
+// attentionGlyph types the attention badge from notification_type, or
+// from the registry's waitingFor when no notification fired -- or when
+// the registry wait postdates the bell (a gate can flip the registry
+// before, after, or without the Notification hook, and an old bell must
+// not type a new gate). The notification enum has 8 documented values in
+// 2.1.201 and may grow, so the default branch is mandatory: unknown types
+// render a dim bell, never a blank or a panic.
 func (s session) attentionGlyph() (glyph, style string) {
-	switch s.notifType {
+	typ := s.notifType
+	if s.regWaiting != "" && s.regSince.After(s.notified) {
+		typ = ""
+	}
+	switch typ {
 	case "permission_prompt":
 		return glyphPerm, module.StyleWarn // the actionable one
 	case "idle_prompt", "agent_needs_input":
 		return glyphAttention, module.StyleWarn
 	case "":
+		if strings.HasPrefix(s.regWaiting, "permission") {
+			return glyphPerm, module.StyleWarn
+		}
 		return glyphAttention, module.StyleWarn
 	default:
 		return glyphAttention, module.StyleDim
 	}
 }
 
-// stateSpan is the one-glyph state column: attention (unanswered
-// notification within the horizon, glyph typed from notification_type)
-// outranks an error-ended turn (StopFailure) outranks turn-complete (a
-// Stop at or after the last prompt); a turn in flight shows blank -- the
-// age column's accent already carries activity. An answered or
-// horizon-stale notification lowers to a dim bell, never warn.
+// stateSpan is the one-glyph state column: needs-user (registry "waiting",
+// or the spool heuristic on records without a KNOWN status; glyph typed
+// from notification_type/waitingFor) outranks an error-ended turn
+// (StopFailure) outranks turn-complete (a Stop at or after the last
+// prompt); a turn in flight shows blank -- the age column's accent
+// already carries activity. Without a known status an answered or
+// horizon-stale notification lowers to a dim bell, never warn; a known
+// busy is itself the answer.
 func (s session) stateSpan(now time.Time) module.Span {
-	if s.attentionLive(now) {
+	if s.needsUser(now) {
 		g, st := s.attentionGlyph()
 		return module.Span{Text: " " + g, Style: st}
 	}
-	if s.attention {
+	if !s.regKnown() && s.attention {
 		return module.Span{Text: " " + glyphAttention, Style: module.StyleDim}
 	}
 	if s.turnDone() {

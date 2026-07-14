@@ -15,15 +15,17 @@ widgets: {
 			module: "dock-mirror"
 			poll:   "5s"
 			params: {
-				nicknames: {"Google Chrome": "chrome", "Telegram": "tg"}
+				nicknames: {"Google Chrome": "chrome", "Telegram": "tg", "QuickTime Player": "qt"}
 			}
 		}
 	}
 	// left-column claude strip AND the full-fill control panel behind the
 	// strip's "clod" tab: pinned detail zone (one expanded session;
-	// header+outcome tap = focus) over the fixed-order collapsed list. Row
-	// Acts exec `khudson claude focus <sid>` on the bus host; resume stays
-	// staged behind the M9 allowlist.
+	// header+outcome tap = focus) over the fixed-order collapsed list.
+	// Lists ONLY sessions whose registry pid is a live process (the
+	// live-kitty gate; no window param -- age never hides a live one). Row
+	// Acts exec `khudson claude focus <sid>` on the bus host; resume is
+	// CLI-only (no row publishes it).
 	"claude-panel": {
 		title: "clod"
 		glyph: ""
@@ -32,9 +34,8 @@ widgets: {
 			module: "claude-panel"
 			poll:   "3s"
 			params: {
-				dir:    "@claudeSpool@"
-				window: "6h"
-				max:    10
+				dir: "@claudeSpool@"
+				max: 10
 			}
 		}
 	}
@@ -134,10 +135,10 @@ widgets: {
 			}
 		}
 	}
-	// main-kitty window list over the M9 RC socket; declaration only, not
-	// in any layout yet (visual exposure is a later milestone). socket and
-	// passwordFile default in Go to the state root's main-kitty.sock and
-	// ~/.config/kitty/rc-password.conf.
+	// main-kitty window list over the RC socket; declaration only, not
+	// in any layout yet (visual exposure is a later milestone). socket
+	// defaults in Go to the state root's main-kitty.sock (socket-only
+	// trust, passwordless).
 	"kitty-sessions": {
 		title: "kitty"
 		glyph: ""

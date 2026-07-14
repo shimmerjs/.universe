@@ -336,14 +336,14 @@ func TestSchedulerLifecycle(t *testing.T) {
 	now := time.Unix(1000, 0)
 
 	// no dock connected: nothing materializes
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if e, _, _ := sup.counts(); e != 0 {
 		t.Fatalf("ensured with no dock connected")
 	}
 
 	// dock arrives: widget materializes at the panel region
 	addFakeDock(t, b)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	st, _ := b.reg.Get("w")
 	if e, _, _ := sup.counts(); e != 1 || st.WindowID == 0 {
@@ -355,7 +355,7 @@ func TestSchedulerLifecycle(t *testing.T) {
 
 	// next pass: poll fires and the snapshot lands on the registry
 	now = now.Add(schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if scr.count() != 1 {
 		t.Fatalf("polls = %d, want 1", scr.count())
 	}
@@ -366,12 +366,12 @@ func TestSchedulerLifecycle(t *testing.T) {
 
 	// cadence respected: within the poll interval no second poll fires
 	now = now.Add(100 * time.Millisecond)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if scr.count() != 1 {
 		t.Fatalf("poll fired inside the interval")
 	}
 	now = now.Add(300 * time.Millisecond)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if scr.count() != 2 {
 		t.Fatalf("poll did not fire after the interval")
 	}
@@ -382,7 +382,7 @@ func TestSchedulerLifecycle(t *testing.T) {
 	b.panelCols, b.panelRows = 100, 30
 	b.mu.Unlock()
 	now = now.Add(schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if _, r, _ := sup.counts(); r != 1 {
 		t.Fatalf("resizes = %d, want 1", r)
@@ -398,7 +398,7 @@ func TestSchedulerLifecycle(t *testing.T) {
 		t.Fatal("scrape error did not mark errPending")
 	}
 	now = now.Add(schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if st.WindowID == 0 {
 		t.Fatal("binding dropped on unverifiable error")
@@ -412,12 +412,12 @@ func TestSchedulerLifecycle(t *testing.T) {
 	b.mu.Unlock()
 	lastVisible := entries["w"].lastVisible
 	now = lastVisible.Add(500 * time.Millisecond)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if _, _, r := sup.counts(); r != 0 {
 		t.Fatalf("released before idleKill elapsed")
 	}
 	now = lastVisible.Add(1100 * time.Millisecond)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if _, _, r := sup.counts(); r != 1 || st.WindowID != 0 {
 		t.Fatalf("idle release did not happen: releases=%d windowID=%d", r, st.WindowID)
@@ -455,7 +455,7 @@ func TestVerifyUnbindRace(t *testing.T) {
 		}
 	}()
 
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	close(stop)
 	wg.Wait()
@@ -481,7 +481,7 @@ func TestReloadQuiesce(t *testing.T) {
 	sup.ensureGate = gate
 	sup.mu.Unlock()
 
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if !entries["w"].busy {
 		t.Fatal("ensure not in flight")
 	}
@@ -554,7 +554,7 @@ func TestShutdownDrainsInFlightEnsure(t *testing.T) {
 	sup.ensureAwaitCtx = true
 	sup.mu.Unlock()
 
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if !entries["w"].busy {
 		t.Fatal("ensure not in flight")
 	}
@@ -623,7 +623,7 @@ func TestReloadRebindSameWidget(t *testing.T) {
 	busyCh := make(chan busyDone, 16)
 	now := time.Unix(1000, 0)
 
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	oldSt, _ := b.reg.Get("w")
 	winID, _, _ := oldSt.Binding()
@@ -658,7 +658,7 @@ func TestReloadRebindSameWidget(t *testing.T) {
 
 	ensuresBefore, _, _ := sup.counts()
 	now = now.Add(schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if e, _, _ := sup.counts(); e != ensuresBefore {
 		t.Fatalf("duplicate ensure after rebind: %d -> %d", ensuresBefore, e)
 	}
@@ -776,7 +776,7 @@ func TestNativeBackoff(t *testing.T) {
 	busyCh := make(chan busyDone, 16)
 	now := time.Unix(1000, 0)
 
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	r := <-b.natives
 	if r.err == nil {
@@ -788,7 +788,7 @@ func TestNativeBackoff(t *testing.T) {
 
 	// past nextPoll but inside the backoff window: no second poll
 	now = now.Add(time.Second + schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if entries["n"].busy {
 		t.Fatal("native repolled inside backoff")
 	}
@@ -818,7 +818,7 @@ func TestNoMaterializeWhileAdoptPending(t *testing.T) {
 		if b.adoptPending() {
 			b.tryAdopt()
 		}
-		b.schedulerPass(ctx, now, entries, busyCh, false)
+		b.schedulerPass(ctx, now, entries, busyCh, false, false)
 		now = now.Add(schedTick)
 	}
 	if e, _, _ := sup.counts(); e != 0 {
@@ -833,7 +833,7 @@ func TestNoMaterializeWhileAdoptPending(t *testing.T) {
 	if id, _, _ := st.Binding(); id != 42 {
 		t.Fatalf("adopt bound %d, want 42", id)
 	}
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if e, _, _ := sup.counts(); e != 0 {
 		t.Fatalf("ensured after adoption: %d", e)
 	}
@@ -1019,7 +1019,7 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 
 	scr.setCapture(true)
 
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	st, _ := b.reg.Get("w")
 	if st.WindowID == 0 {
@@ -1028,7 +1028,7 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 
 	// fire the poll: the sink parks, the get-text stays in flight
 	now = now.Add(schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	if scr.count() != 1 {
 		t.Fatalf("polls = %d, want 1", scr.count())
 	}
@@ -1040,7 +1040,7 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 	}
 	b.mu.Unlock()
 	now = entries["w"].lastVisible.Add(1100 * time.Millisecond)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if st.WindowID != 0 {
 		t.Fatal("release did not unbind")
@@ -1134,7 +1134,7 @@ func TestAdoptDoesNotBlockTick(t *testing.T) {
 	}()
 
 	for range 4 {
-		b.schedulerPass(ctx, now, entries, busyCh, false)
+		b.schedulerPass(ctx, now, entries, busyCh, false, false)
 		now = now.Add(schedTick + 100*time.Millisecond)
 	}
 	if scr.count() < 2 {
@@ -1204,10 +1204,10 @@ func TestSnapshotStaleFlag(t *testing.T) {
 
 	// materialize, then one fresh snapshot; PolledAt stamps wall-clock now
 	now := time.Now()
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	now = now.Add(schedTick)
-	b.schedulerPass(ctx, now, entries, busyCh, false)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	b.applySnapshot(<-b.snapshots, entries)
 	if m := read(); m.Type != proto.TypeSnapshot || m.Stale || m.ANSI == "" {
 		t.Fatalf("fresh snapshot = %+v, want live TypeSnapshot", m)
@@ -1216,7 +1216,7 @@ func TestSnapshotStaleFlag(t *testing.T) {
 	// scrapes freeze; the frame ages past 3x Poll (300ms)
 	scr.setCapture(true)
 	time.Sleep(1100 * time.Millisecond)
-	b.schedulerPass(ctx, time.Now(), entries, busyCh, false)
+	b.schedulerPass(ctx, time.Now(), entries, busyCh, false, false)
 	if m := read(); m.Type != proto.TypeSnapshot || m.Widget != "w" || !m.Stale || m.ANSI != "" {
 		t.Fatalf("stale pulse = %+v, want ANSI-less TypeSnapshot{Stale:true}", m)
 	}
@@ -1316,7 +1316,7 @@ func TestChromeNeverScheduled(t *testing.T) {
 	now := time.Unix(1000, 0)
 
 	for range 4 {
-		b.schedulerPass(ctx, now, entries, busyCh, false)
+		b.schedulerPass(ctx, now, entries, busyCh, false, false)
 		now = now.Add(schedTick)
 	}
 	if e, r, rel := sup.counts(); e != 0 || r != 0 || rel != 0 {
@@ -1353,7 +1353,7 @@ func TestAdoptInFlightClosesMaterializeGate(t *testing.T) {
 	b.needAdopt = false
 	b.mu.Unlock()
 
-	b.schedulerPass(ctx, now, entries, busyCh, true)
+	b.schedulerPass(ctx, now, entries, busyCh, true, false)
 	// nothing may be busy: the gate suppressed the materialize entirely
 	for id, e := range entries {
 		if e.busy {
@@ -1363,7 +1363,7 @@ func TestAdoptInFlightClosesMaterializeGate(t *testing.T) {
 	if e, _, _ := sup.counts(); e != 0 {
 		t.Fatalf("ensures = %d, want 0 while an adopt is in flight", e)
 	}
-	b.schedulerPass(ctx, now.Add(time.Second), entries, busyCh, false)
+	b.schedulerPass(ctx, now.Add(time.Second), entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if e, _, _ := sup.counts(); e != 1 {
 		t.Fatalf("ensures = %d, want 1 once the adopt completes", e)

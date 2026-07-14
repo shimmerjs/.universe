@@ -116,9 +116,8 @@ widgets: {
 		}
 	}
 	// main-kitty window list over the RC socket. params.socket defaults to
-	// the khudson state root's main-kitty.sock; params.passwordFile to
-	// ~/.config/kitty/rc-password.conf (the same include the main kitty
-	// loads, so client and server auth stay in sync).
+	// the khudson state root's main-kitty.sock (passwordless socket-only
+	// trust; the socket file's mode is the auth).
 	"kitty-sessions": {
 		title: "kitty"
 		glyph: "\uf120"

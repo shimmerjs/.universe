@@ -18,16 +18,18 @@ gotchas and the verified-constraint history live in the author's memory
   2-row status strip under the body hosts the nav band -- chrome home glyph,
   config tab entries (top-level `strip` CUE block, not a widget), state
   toggles (cup, warn on bus-absent/skew) -- ahead of layout/bus/gesture
-  status and the clock. The home-return affordance is layout-NAME based:
-  any active layout not named `home` wraps in the right-edge return strip,
-  home-KIND or not (kind drives the engine, name drives the affordance).
+  status and the clock. The home-return affordance is the strip's
+  persistent home glyph, layout-NAME based: homeLayout prefers the layout
+  named `home` (kind drives the engine, name drives the affordance).
 - **Widget taxonomy.** Bespoke native builtins (khudson-rendered, full khudson
   touch) vs foreign TUIs as config-driven kitty-native split panes (NO khudson
   touch forwarding -- kitty routes clicks/scroll to the pane natively under
   the current driver; scroll is momentum-wheel-free, or `kitten @
-  scroll-window` for scrollback). Panes retire the scrape/substrate/blit/
-  injection machinery (keepAlive is a background tab; no invisible-paint
-  requirement). First-class seams: khudson styles split borders/colors/margins
+  scroll-window` for scrollback). OPEN DECISION, not yet executed: panes
+  would retire the scrape/substrate/blit/injection machinery (keepAlive as
+  a background tab; no invisible-paint requirement) -- the exec/scrape
+  stack is still deployed and load-bearing (btop, spotatui).
+  First-class seams: khudson styles split borders/colors/margins
   via kitty so foreign panes feel native; richer adornments draw in chrome
   cells adjacent to the slot (no per-split titlebars).
 - **Dock-rail per-window unminimize = Dock-item AXPress, direct AX**
@@ -53,8 +55,7 @@ gotchas and the verified-constraint history live in the author's memory
   / series / resource / spans) renders through one shared path, so a new kind
   works in every panel by construction; one `resolveTap` over one hit table
   serves both mouse and gesture input. Home bodies are cached between data
-  changes. (Ledger: hand-rolled ASCII box math should move to lipgloss-native
-  `.Align` -- it leans even-length names left in odd-width buttons.)
+  changes.
 - **The compositor owns the wire** (probed + test-pinned 2026-07-08).
   bubbletea v2 composites View() through ultraviolet, which forwards ONLY
   SGR and OSC 8 to the pty: OSC 66 text-sizing, cursor-motion escapes, and
@@ -103,12 +104,16 @@ gotchas and the verified-constraint history live in the author's memory
 
 ## claude widget
 
-- **Control-center identity, NOT per-session metrics.** Model / cost / ctx
-  removed (ctx-from-cache lied at 100%; token/burn unwanted here). One line
-  per session: fixed-width truncated cwd FIRST (fish-style abbreviation),
-  identity-colored kebab session name (hue keyed to the sid, stable across
-  name appearance), fixed activity clock carrying liveness by style, glyph
-  agent/wf counts, last-prompt tail. Rows GROUP by cwd; groups order by
+- **Control-center identity, NOT per-session metrics.** Cost / ctx
+  removed (ctx-from-cache lied at 100%; token/burn unwanted here); model +
+  effort deliberately returned as dim context on the panel detail header
+  only. One line per session, static-width columns leading: activity
+  clock first (tone carries active, text stays honest last-output age),
+  typed state glyph (needs-you / error / done / in-flight blank), glyph
+  agent/wf counts, fixed-width cwd (repo-relative primary, fish-style
+  abbreviation as the overflow fallback), then the identity-colored
+  session name (hue keyed to the sid, stable across name appearance) and
+  last-prompt tail. Rows GROUP by cwd; groups order by
   NEWEST member start (user pick 2026-07-08: a session birth floats its
   group; zero starts excluded from the fold), rows within
   by first-transcript timestamp -- every ordering key immutable per
@@ -117,8 +122,10 @@ gotchas and the verified-constraint history live in the author's memory
 - **Discovery.** `~/.claude/projects` fs layout (general case, no deploy dep)
   + cross-project uuid SATELLITE join (28/52 dirs are satellites -- fleet
   files land under the workflow's cwd dir) + fleet-driven liveness (busiest
-  sessions read dead by parent mtime alone) + `~/.claude/sessions` pid-registry
-  for names/cwd/status + module-owned claude hooks for prompt/cwd.
+  sessions read dead by parent mtime alone) + `~/.claude/sessions`
+  pid-registry as the membership gate and needs-user/activity truth
+  (waiting/busy/idle; identity-checked pid; no age prune -- the 6h window
+  param is vestigial) + module-owned claude hooks for prompt/cwd.
 - **Hook economics (measured).** Hooks run `khudson hook <event>` -- one
   static-binary fork, ~12ms median per fire (50-run measure; the bash+jq
   scripts it replaced forked 4-9 children at ~65-70ms). Per-batch events
@@ -139,7 +146,9 @@ gotchas and the verified-constraint history live in the author's memory
   open SHARED (`hid_darwin_set_open_exclusive(0)`), single-owner vs Keymapp.
   Reader folds into touchd (holds Input Monitoring TCC, vendors go-hid,
   broadcasts on a socket).
-- **Static all-layers view** reads the user's real layout from the local
+- **Static layer view** (one layer at a time, tap-to-cycle selector --
+  4-8 layers of tap+hold legends cannot legibly coexist at 196x24) reads
+  the user's real layout from the local
   `keymapp.sqlite3` (offline, no network/hashId gate; requires Keymapp to have
   synced; oryx GraphQL fetch is the fallback; "open Keymapp to sync" empty
   state). Static layout + LiveSource JOIN at a renderer: static view = static
@@ -149,20 +158,23 @@ gotchas and the verified-constraint history live in the author's memory
 ## Packaging + lifecycle
 
 - **Module owns upstream-app config.** Enabling `universe.home.khudson`
-  brings up its own claude integration (module-owned UserPromptSubmit /
-  SessionEnd spool hooks, merged into `programs.claude-code.settings.hooks`)
-  and kitty integration (hud-kitty.conf, `mainKittyIntegration` option). The
+  brings up its own claude integration (the six module-owned spool hooks:
+  UserPromptSubmit, SessionStart, SessionEnd, Notification, Stop,
+  StopFailure, merged into `programs.claude-code.settings.hooks`) and
+  kitty integration (hud-kitty.conf, `mainKittyIntegration` option). The
   module touches the user's claude settings only when enabled.
 - **Deps via vendorHash, not committed vendor.** khudson + touchd fetch from
   go.mod/go.sum (nix builds the go-modules FOD). Recompute after a dep bump
-  with `nix develop .#khudson -> khudson-vendorhash`. (Repo-wide, other Go builds
+  with `khudson-vendorhash` inside the devShell. (Repo-wide, other Go builds
   use committed vendor; khudson is the exception, chosen to keep the tree
   lean.)
-- **Dev lifecycle in a devShell.** `nix develop .#khudson` provides go + the
+- **Dev lifecycle in a devShell.** `nix-shell` from the khudson dir (the
+  project-local shell.nix; deliberately NOT wired into the root flake,
+  user 2026-07-07) provides go + the
   host tools the tests/modules exec (m1ddc, gh, kitten, btop, sqlite) and the
-  `khudson-{test,race,build,vet,live,vendorhash}` tasks. `doCheck = false` on the
-  module builds because those tests exec host tools absent from the nix
-  sandbox -- they run in the devShell, not the hermetic build.
+  `khudson-{test,race,build,vet,live,vendorhash}` tasks. `doCheck = true` on
+  the module builds (darwin builds run sandbox-off; host-tool-gated tests
+  skip-on-missing and run in the devShell instead).
 
 ## Working discipline (hard-won)
 
@@ -170,5 +182,4 @@ gotchas and the verified-constraint history live in the author's memory
   rounds).
 - Live-debug over fixtures: scrape the glass + dump the real widgetData +
   replay through the real render path. Fixtures modeled runtime wrongly twice.
-- Compiler / test output over LSP diagnostics (which go stale mid-edit).
 - `grep -c` and `| tail` eat exit codes -- check exits unpiped.

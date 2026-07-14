@@ -14,8 +14,48 @@ import (
 const (
 	readTimeout  = 500 * time.Millisecond
 	reconnectMin = 500 * time.Millisecond
-	reconnectMax = 5 * time.Second
+	// seized/present-but-unopenable converges here: every attempt costs an
+	// IOKit enumeration plus runningboardd churn, and a seize holds for
+	// hours (the incident's 5s retries were this class).
+	reconnectCap = 5 * time.Minute
+	// absent converges lower: a replug is only observed when the current
+	// timer expires, so this cap IS the worst-case reattach latency, and
+	// absent enumerations are the cheap failure class.
+	absentCap = 30 * time.Second
 )
+
+// reopenBackoff schedules the wait between open attempts for a source that
+// will not open. Every attempt costs an IOKit enumeration (runningboardd
+// resolves the client each time), so a chronic failure -- a seize-holding
+// driver, a parked absence -- must converge to its class cap, not poll at
+// seconds all day. The wait doubles from reconnectMin to the class cap and
+// resets on success or on a failure-class flip (absent <-> present but
+// unopenable), the cheap device-set-change signal: replugging or freeing the
+// device flips the class, so reattach latency stays on the fast ramp, while
+// error-text churn inside one class cannot pin the schedule at the floor.
+type reopenBackoff struct {
+	next   time.Duration // 0 = fresh episode
+	absent bool
+}
+
+// fail records one failed attempt and returns how long to wait before the
+// next; absent is the failure class (true = collection not enumerable).
+func (b *reopenBackoff) fail(absent bool) time.Duration {
+	ceil := reconnectCap
+	if absent {
+		ceil = absentCap
+	}
+	if b.next == 0 || absent != b.absent {
+		b.next = reconnectMin
+	}
+	b.absent = absent
+	wait := min(b.next, ceil)
+	b.next = min(b.next*2, ceil)
+	return wait
+}
+
+// reset marks a successful open; the next failure starts a fresh episode.
+func (b *reopenBackoff) reset() { b.next = 0 }
 
 // runDaemon serves parsed frames on the touch socket from BOTH Edge input
 // collections concurrently: the digitizer (tier 1 -- silent until the vendor
@@ -59,16 +99,17 @@ func runDaemon(ctx context.Context, b, kb *broadcaster, rec *recorder, noMode bo
 
 // collectionLoop opens one collection and pumps it into emit, reopening with
 // backoff on device loss or open failure (a missing Input Monitoring grant or
-// a seize-holding driver surfaces here as repeated loud open errors).
+// a seize-holding driver surfaces here as repeated open errors).
 func collectionLoop(ctx context.Context, mouse, noMode bool, emit func(int64, []byte)) {
 	name := "digitizer"
 	if mouse {
 		name = "mouse"
 	}
-	backoff := reconnectMin
 	// a permanently seized collection (gestures driver holding the
-	// digitizer, a user-parked state) retries forever at reconnectMax --
-	// log only when the error changes or hourly, not per attempt
+	// digitizer, a user-parked state) retries forever -- the wait backs
+	// off to reconnectCap so an all-day failure goes quiet, and logs only
+	// when the error changes or hourly, not per attempt
+	var bo reopenBackoff
 	var lastErr string
 	var lastLog time.Time
 	for {
@@ -77,20 +118,20 @@ func collectionLoop(ctx context.Context, mouse, noMode bool, emit func(int64, []
 		}
 		dev, asserted, err := openCollection(mouse, noMode, false)
 		if err != nil {
+			wait := bo.fail(errors.Is(err, errAbsent))
 			if err.Error() != lastErr || time.Since(lastLog) >= time.Hour {
-				fmt.Fprintf(os.Stderr, "%s open: %v (retrying every %s, logging on change or hourly)\n", name, err, reconnectMax)
+				fmt.Fprintf(os.Stderr, "%s open: %v (retrying in %s, backoff caps at %s, logging on change or hourly)\n", name, err, wait, reconnectCap)
 				lastErr = err.Error()
 				lastLog = time.Now()
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			}
-			backoff = min(backoff*2, reconnectMax)
 			continue
 		}
-		backoff = reconnectMin
+		bo.reset()
 		lastErr = ""
 		fmt.Printf("%s open (mode asserted: %v)\n", name, asserted)
 

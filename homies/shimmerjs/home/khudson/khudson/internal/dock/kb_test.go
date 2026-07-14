@@ -118,10 +118,12 @@ func TestKeyboardViewFullRegion(t *testing.T) {
 	}
 }
 
-// The physical thumb cluster: the wide piano key's legend renders on a line
-// ABOVE the 3-key arc's line, for both halves (fixture home layer: left
-// wide=down-arrow over spc/bksp/tab, right wide=up-arrow over esc/../enter).
-func TestKeyboardThumbClusterRaised(t *testing.T) {
+// The thumb cluster is one 4-key row: the wide piano key's legend renders
+// on the SAME line as the 3-key arc, at the cluster's inner end, for both
+// halves (fixture home layer: left wide=down-arrow with spc/bksp/tab,
+// right wide=up-arrow with esc/../enter) -- seated with the cluster below
+// every main row, never up in row 4.
+func TestKeyboardThumbClusterSeated(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	bodyH := m.height - stripH
 	plain := ansi.Strip(m.renderKeyboard(bodyH))
@@ -139,20 +141,29 @@ func TestKeyboardThumbClusterRaised(t *testing.T) {
 
 	wide := lineOf(kbDownArrow) // left wide key
 	arc := lineOf("spc")        // left arc first key
-	if wide >= arc {
-		t.Errorf("wide key line %d not raised above arc line %d", wide, arc)
+	if wide != arc {
+		t.Errorf("left wide key line %d not seated on the arc line %d", wide, arc)
 	}
 	rwide := lineOf(kbUpArrow) // right wide key
 	rarc := lineOf("Esc")      // right arc first key
-	if rwide >= rarc {
-		t.Errorf("right wide key line %d not raised above arc line %d", rwide, rarc)
+	if rwide != rarc {
+		t.Errorf("right wide key line %d not seated on the arc line %d", rwide, rarc)
 	}
-	if wide != rwide || arc != rarc {
-		t.Errorf("thumb rows misaligned: left %d/%d right %d/%d", wide, arc, rwide, rarc)
+	if wide != rwide {
+		t.Errorf("thumb rows misaligned: left %d right %d", wide, rwide)
 	}
-	// the thumb cluster sits below every main row (Q is on main row 1)
-	if q := lineOf("Q"); q >= wide {
-		t.Errorf("main row Q at line %d not above thumb cluster at %d", q, wide)
+	// the whole cluster sits below every main row (rctl is on main row 4)
+	if r4 := lineOf("rctl"); r4 >= wide {
+		t.Errorf("main row 4 at line %d not above the thumb cluster at %d", r4, wide)
+	}
+	// the wide key sits at the cluster's inner end: left half arc-then-wide,
+	// right half wide-then-arc, mirrored around the center gap
+	l := lines[wide]
+	if strings.Index(l, "spc") > strings.Index(l, kbDownArrow) {
+		t.Error("left wide key not at the cluster's inner end (want arc then wide)")
+	}
+	if strings.Index(l, kbUpArrow) > strings.Index(l, "Esc") {
+		t.Error("right wide key not at the cluster's inner end (want wide then arc)")
 	}
 }
 
@@ -458,25 +469,35 @@ func TestKBLiveRegionRender(t *testing.T) {
 	}
 }
 
-// kbThumbFolded reports whether out renders the left wide key and the left
-// arc on one line (the compact fold) or on separate lines (the full render's
-// raised wide key). Fails the test when either legend is missing entirely.
-func kbThumbFolded(t *testing.T, out string) bool {
+// kbCompact reports whether out is the compact render: main rows fold to
+// single tap lines, so the Q row (main row 1) and Z row (main row 3) sit
+// 2 lines apart instead of the full render's 4 (tap+hold pairs). The thumb
+// cluster no longer discriminates -- both modes seat the wide key on the
+// arc line -- so this asserts the legends exist and reads the row pitch.
+func kbCompact(t *testing.T, out string) bool {
 	t.Helper()
-	sameLine, wideSeen, arcSeen := false, false, false
-	for _, l := range strings.Split(ansi.Strip(out), "\n") {
-		hasWide := strings.Contains(l, kbDownArrow)
-		hasArc := strings.Contains(l, "spc")
-		if hasWide && hasArc {
-			sameLine = true
+	lines := strings.Split(ansi.Strip(out), "\n")
+	lineOf := func(sub string) int {
+		for i, l := range lines {
+			if strings.Contains(l, sub) {
+				return i
+			}
 		}
-		wideSeen = wideSeen || hasWide
-		arcSeen = arcSeen || hasArc
+		t.Fatalf("legend %q not rendered", sub)
+		return -1
 	}
-	if !wideSeen || !arcSeen {
-		t.Fatalf("thumb legends missing (wide %v, arc %v)", wideSeen, arcSeen)
+	if wide, arc := lineOf(kbDownArrow), lineOf("spc"); wide != arc {
+		t.Fatalf("wide key line %d off the cluster line %d", wide, arc)
 	}
-	return sameLine
+	switch pitch := lineOf("Z") - lineOf("Q"); pitch {
+	case 2:
+		return true
+	case 4:
+		return false
+	default:
+		t.Fatalf("main row pitch %d, want 2 (compact) or 4 (full)", pitch)
+		return false
+	}
 }
 
 // The kb-live region as a short full-width strip (194x9, a size-9 bottom
@@ -506,8 +527,8 @@ func TestKBLiveCompactStripRender(t *testing.T) {
 	if !strings.Contains(ansi.Strip(out), "Q") {
 		t.Error("expected the Q key legend in the compact render")
 	}
-	if !kbThumbFolded(t, out) {
-		t.Error("compact render did not fold the thumb cluster to one line")
+	if !kbCompact(t, out) {
+		t.Error("short region did not engage the compact render")
 	}
 	if !strings.Contains(out, "\x1b[1;7m") {
 		t.Error("no reverse-video run on a held compact render")
@@ -520,9 +541,10 @@ func TestKBLiveCompactStripRender(t *testing.T) {
 	}
 }
 
-// Auto mode flips on the region interior: 17 rows still holds the full
-// render, one row less engages compact; an explicit params mode overrides
-// auto in BOTH directions.
+// Auto mode flips on the region interior: 15 rows (blank + the cluster
+// pair below the main rows) still holds the full render, one row less
+// engages compact; an explicit params mode overrides auto in BOTH
+// directions.
 func TestKBLiveModeSelection(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	render := func(params map[string]any, h int) string {
@@ -532,16 +554,16 @@ func TestKBLiveModeSelection(t *testing.T) {
 		return m.renderKBLive(w, rect{120, 1, 75, h})
 	}
 
-	if kbThumbFolded(t, render(nil, 19)) { // interior 17 = full height
-		t.Error("interior 17 rendered compact, want full")
+	if kbCompact(t, render(nil, 17)) { // interior 15 = full height
+		t.Error("interior 15 rendered compact, want full")
 	}
-	if !kbThumbFolded(t, render(nil, 18)) { // interior 16 < 17
-		t.Error("interior 16 rendered full, want compact")
+	if !kbCompact(t, render(nil, 16)) { // interior 14 < 15
+		t.Error("interior 14 rendered full, want compact")
 	}
-	if !kbThumbFolded(t, render(map[string]any{"mode": "compact"}, 19)) {
+	if !kbCompact(t, render(map[string]any{"mode": "compact"}, 17)) {
 		t.Error("mode=compact override ignored on a tall region")
 	}
-	if kbThumbFolded(t, render(map[string]any{"mode": "full"}, 18)) {
+	if kbCompact(t, render(map[string]any{"mode": "full"}, 16)) {
 		t.Error("mode=full override ignored on a short region")
 	}
 }

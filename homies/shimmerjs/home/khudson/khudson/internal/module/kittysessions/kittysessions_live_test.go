@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestPollLive drives Poll against the real main kitty: default socket,
-// real rc-password.conf, env-var auth. Gated -- needs a running LS-launched
-// kitty with mainKittyIntegration enabled.
+// TestPollLive drives Poll against the real main kitty over the default
+// socket -- no password, socket-only trust. Gated -- needs a running
+// LS-launched kitty with mainKittyIntegration enabled.
 func TestPollLive(t *testing.T) {
 	if os.Getenv("KHUDSON_MAIN_KITTY_LIVE") == "" {
 		t.Skip("KHUDSON_MAIN_KITTY_LIVE not set")

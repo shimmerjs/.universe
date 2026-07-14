@@ -96,19 +96,20 @@ func (m *model) flashLive(key string) bool {
 	return ok && m.now.Sub(at) < flashWindow(key)
 }
 
-// tapFlashStep is how far a tapped control's background lifts while the
-// flash is live.
-const tapFlashStep = 0.12
-
-// tapStyle is base with the tap-flash treatment: the theme background lifted
-// a small step under the control when the palette carries one; bright fg
-// emphasis as the indexed fallback. Background/foreground only -- zero
-// geometry change.
+// tapStyle is base with the tap-press treatment: an accent-filled chip
+// (theme accent behind background-toned text) while the flash is live --
+// unmistakably a pressed control. The old treatment lifted the theme
+// background a hair under the label, which on glass read as TEXT
+// SELECTION, twice reported (worse over a control whose action was
+// broken: highlight, no effect). Background/foreground only -- zero
+// geometry change; bright reverse as the indexed fallback.
 func (m *model) tapStyle(base lipgloss.Style) lipgloss.Style {
-	if bg, ok := m.palette.color("background"); ok {
-		return base.Background(lipgloss.Lighten(bg, tapFlashStep))
+	if ac, ok := m.palette.color("color2"); ok {
+		if bg, ok := m.palette.color("background"); ok {
+			return base.Foreground(bg).Background(ac).Bold(true)
+		}
 	}
-	return base.Foreground(lipgloss.BrightWhite).Bold(true)
+	return base.Foreground(lipgloss.BrightWhite).Bold(true).Reverse(true)
 }
 
 // homeCache is the memoized home frame; ok=false means rebuild.

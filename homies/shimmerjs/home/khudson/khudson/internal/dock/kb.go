@@ -8,9 +8,11 @@
 //
 // Render v2 is minimal -- no box per key. Each key is one padded legend
 // cell (tap line + dim hold line), rows separated by whitespace, the two
-// halves mirrored around a center gap. The thumb cluster is physical: the
-// wide "piano" key raised one row ABOVE the 3-key arc, each cluster against
-// the center gap with the wide key over the arc end nearest the main block.
+// halves mirrored around a center gap. The thumb cluster is one 4-key row
+// hanging a blank row below the main block: the wide "piano" key at the
+// cluster's inner end against the center gap (the 2u red key is the
+// cluster's inner key on the board), the 3-key arc outward from it --
+// seated WITH the arc, not up in row 4, so the cluster reads as one piece.
 // Pressed keys render as reverse-video blocks.
 //
 // One layer at a time (not all-at-once): 4-8 layers of per-key tap+hold
@@ -48,10 +50,11 @@ const (
 )
 
 // kbFullLines is the full render's body line count: selector + blank +
-// 5 main rows x 2 (tap+hold) + blank + 4 thumb lines. A region interior
-// shorter than this auto-engages the compact render (tap legends only,
-// thumb cluster folded to one line): selector + 5 main + 1 thumb = 7 lines.
-const kbFullLines = 17
+// 5 main rows x 2 (tap+hold) + blank + the 2-line thumb cluster pair. A
+// region interior shorter than this auto-engages the compact render (tap
+// legends only, thumb cluster folded to one line): selector + 5 main +
+// 1 thumb = 7 lines.
+const kbFullLines = 15
 
 // ensureBoard loads the static board once. Since kb-live sits on the default
 // home layout the first attempt fires at dock startup, so a MISSING store
@@ -619,9 +622,11 @@ func kbKeyW(cols int) int {
 
 // kbLayerGrid renders one layer's 72 keys as the two Moonlander halves:
 // 5 main rows of legend cells (each a tap line over a dim hold line), then
-// the physical thumb cluster. held marks pressed slots. compact drops the
-// hold lines (tap legends only) and folds each thumb cluster onto the main
-// rows' trailing line: 6 lines instead of 15. chip is the active layer's
+// the thumb cluster as one 4-key line pair a blank row below -- the wide
+// piano key at the cluster's inner end against the center gap, the arc
+// outward. held marks pressed slots. compact drops the hold lines (tap
+// legends only) and folds each thumb cluster onto the main rows'
+// trailing line: 6 lines instead of 13. chip is the active layer's
 // fill background (nil = none): key cells AND every gap/pad cell carry
 // it, so the ENTIRE board reads as one tinted surface. fill paints the
 // non-key cells at absolute body coordinates (textures are per-cell); y0 is
@@ -649,19 +654,29 @@ func kbLayerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool
 			rightMain[k.Slot.Row] = append(rightMain[k.Slot.Row], p)
 		}
 	}
-
 	kw := kbKeyW(cols)
 	halfW := keyboard.MainCols*kw + (keyboard.MainCols-1)*kbColGap
 	pad := max(0, (cols-(halfW*2+kbHalfGap))/2)
 	xL, xR := pad, pad+halfW+kbHalfGap
 
-	// row lays out one half-row of up to MainCols cells at x0 on the tap
-	// and hold lines yt/yh; short rows anchor at the outer edge like the
-	// physical board (left half left-aligned, right half right-aligned --
-	// the missing keys are the inner ones), missing cells filled at their
-	// own coordinates
-	row := func(cells []placed, left bool, x0, yt, yh int) (tap, hold string) {
-		blanks := keyboard.MainCols - len(cells)
+	// place pins one half-row's cells to grid columns: short rows anchor at
+	// the outer edge like the physical board (left half left-aligned, right
+	// half right-aligned -- the missing keys are the inner ones)
+	place := func(cells []placed, left bool) [keyboard.MainCols]*placed {
+		var out [keyboard.MainCols]*placed
+		off := 0
+		if !left {
+			off = keyboard.MainCols - len(cells)
+		}
+		for i := range cells {
+			out[off+i] = &cells[i]
+		}
+		return out
+	}
+
+	// row lays out one placed half-row at x0 on the tap and hold lines
+	// yt/yh, empty columns filled at their own coordinates
+	row := func(slots [keyboard.MainCols]*placed, x0, yt, yh int) (tap, hold string) {
 		var tb, hb strings.Builder
 		for j := range keyboard.MainCols {
 			xj := x0 + j*(kw+kbColGap)
@@ -669,16 +684,12 @@ func kbLayerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool
 				tb.WriteString(fill(xj-kbColGap, yt, kbColGap))
 				hb.WriteString(fill(xj-kbColGap, yh, kbColGap))
 			}
-			i := j
-			if !left {
-				i = j - blanks
-			}
-			if i < 0 || i >= len(cells) {
+			if slots[j] == nil {
 				tb.WriteString(fill(xj, yt, kw))
 				hb.WriteString(fill(xj, yh, kw))
 				continue
 			}
-			ct, ch := kbKeyCell(cells[i].key, kw, held[cells[i].slot], chip)
+			ct, ch := kbKeyCell(slots[j].key, kw, held[slots[j].slot], chip)
 			tb.WriteString(ct)
 			hb.WriteString(ch)
 		}
@@ -692,15 +703,17 @@ func kbLayerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool
 	var lines []string
 	y := y0
 	for r := range 5 {
+		ls := place(leftMain[r], true)
+		rs := place(rightMain[r], false)
 		if compact {
-			lt, _ := row(leftMain[r], true, xL, y, y)
-			rt, _ := row(rightMain[r], false, xR, y, y)
+			lt, _ := row(ls, xL, y, y)
+			rt, _ := row(rs, xR, y, y)
 			lines = append(lines, join(lt, rt, y))
 			y++
 			continue
 		}
-		lt, lh := row(leftMain[r], true, xL, y, y+1)
-		rt, rh := row(rightMain[r], false, xR, y, y+1)
+		lt, lh := row(ls, xL, y, y+1)
+		rt, rh := row(rs, xR, y, y+1)
 		lines = append(lines, join(lt, rt, y), join(lh, rh, y+1))
 		y += 2
 	}
@@ -723,33 +736,40 @@ func kbLayerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool
 		return s
 	}
 
-	if compact {
-		// thumb clusters folded to ONE line: wide key beside the arc, each
-		// cluster against the center gap with the wide key adjacent to the
-		// arc end it sits over in the full render
-		flat := func(keys []placed, left bool, x0 int) string {
-			wide := ""
-			var arc []string
-			for _, p := range keys {
-				t, _ := kbKeyCell(p.key, kw, held[p.slot], chip)
-				if p.key.Slot.ThumbIdx == 0 {
-					wide = t
-				} else {
-					arc = append(arc, t)
-				}
-			}
-			// element order against the gap: left = wide then arc, right
-			// mirrored = arc then wide
-			elems := make([]string, 4)
-			offW := 0
-			if left {
-				offW = max(0, halfW-(4*kw+3*kbColGap))
-				elems[0] = wide
-				copy(elems[1:], arc)
+	// cluster lays out one thumb cluster as a 4-key line pair: the wide
+	// piano key at the cluster's inner end against the center gap, the
+	// 3-key arc outward from it (left = arc then wide, right mirrored =
+	// wide then arc) -- the wide key seated WITH the arc, so the cluster
+	// reads as one piece instead of a floater in the main block. Tap at
+	// yt, holds at yh; compact passes yt == yh and drops the hold line.
+	cluster := func(keys []placed, left bool, x0, yt, yh int) (tap, hold string) {
+		var wt, wh string
+		var arcT, arcH []string
+		for _, p := range keys {
+			t, h := kbKeyCell(p.key, kw, held[p.slot], chip)
+			if p.key.Slot.ThumbIdx == 0 {
+				wt, wh = t, h
 			} else {
+				arcT = append(arcT, t)
+				arcH = append(arcH, h)
+			}
+		}
+		offW := 0
+		if left {
+			offW = max(0, halfW-(4*kw+3*kbColGap))
+		}
+		order := func(wide string, arc []string) []string {
+			elems := make([]string, 4)
+			if left {
 				copy(elems[:3], arc)
 				elems[3] = wide
+			} else {
+				elems[0] = wide
+				copy(elems[1:], arc)
 			}
+			return elems
+		}
+		line := func(elems []string, y int) string {
 			var b strings.Builder
 			b.WriteString(fill(x0, y, offW))
 			for i, e := range elems {
@@ -761,62 +781,25 @@ func kbLayerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool
 			}
 			return b.String()
 		}
-		return append(lines, join(fit(flat(leftThumb, true, xL), xL, y), fit(flat(rightThumb, false, xR), xR, y), y))
+		return line(order(wt, arcT), yt), line(order(wh, arcH), yh)
 	}
 
-	// thumb clusters: ThumbIdx 0 is the wide piano key, raised one key row
-	// ABOVE the 3-key arc (idx 1-3); each cluster sits against the center
-	// gap, the wide key over the arc end nearest the main block. y is the
-	// wide tap line; hold and the arc pair follow it.
-	thumb := func(keys []placed, left bool, x0, y int) (wideTap, wideHold, arcTap, arcHold string) {
-		wt, wh := "", ""
-		var arcT, arcH []string
-		for _, p := range keys {
-			t, h := kbKeyCell(p.key, kw, held[p.slot], chip)
-			if p.key.Slot.ThumbIdx == 0 {
-				wt, wh = t, h
-			} else {
-				arcT = append(arcT, t)
-				arcH = append(arcH, h)
-			}
-		}
-		arcW := 3*kw + 2*kbColGap
-		// left: arc right-aligned against the gap, wide raised above
-		// arc[0]; right mirrored: arc left-aligned, wide above arc[2]
-		wideOff, arcOff := 2*(kw+kbColGap), 0
-		if left {
-			wideOff = max(0, halfW-arcW)
-			arcOff = wideOff
-		}
-		wideLine := func(s string, y int) string {
-			return fill(x0, y, wideOff) + cell(s, x0+wideOff, y)
-		}
-		arcLine := func(cells []string, y int) string {
-			var b strings.Builder
-			b.WriteString(fill(x0, y, arcOff))
-			for j := range 3 {
-				xj := x0 + arcOff + j*(kw+kbColGap)
-				if j > 0 {
-					b.WriteString(fill(xj-kbColGap, y, kbColGap))
-				}
-				if j < len(cells) {
-					b.WriteString(cell(cells[j], xj, y))
-				} else {
-					b.WriteString(fill(xj, y, kw))
-				}
-			}
-			return b.String()
-		}
-		return wideLine(wt, y), wideLine(wh, y+1), arcLine(arcT, y+2), arcLine(arcH, y+3)
+	if compact {
+		// thumb cluster folded to ONE line, tap legends only
+		lt, _ := cluster(leftThumb, true, xL, y, y)
+		rt, _ := cluster(rightThumb, false, xR, y, y)
+		return append(lines, join(fit(lt, xL, y), fit(rt, xR, y), y))
 	}
 
-	lwt, lwh, lat, lah := thumb(leftThumb, true, xL, y+1)
-	rwt, rwh, rat, rah := thumb(rightThumb, false, xR, y+1)
-	lines = append(lines, "",
-		join(fit(lwt, xL, y+1), fit(rwt, xR, y+1), y+1),
-		join(fit(lwh, xL, y+2), fit(rwh, xR, y+2), y+2),
-		join(fit(lat, xL, y+3), fit(rat, xR, y+3), y+3),
-		join(fit(lah, xL, y+4), fit(rah, xR, y+4), y+4),
+	// the cluster pair hangs one blank fill row below the bottom main row:
+	// breathing room, glass-tuned -- packed directly under row 4 the board
+	// read as too crowded
+	lt, lh := cluster(leftThumb, true, xL, y+1, y+2)
+	rt, rh := cluster(rightThumb, false, xR, y+1, y+2)
+	lines = append(lines,
+		fill(0, y, cols),
+		join(fit(lt, xL, y+1), fit(rt, xR, y+1), y+1),
+		join(fit(lh, xL, y+2), fit(rh, xR, y+2), y+2),
 	)
 	return lines
 }

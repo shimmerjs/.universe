@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
@@ -14,6 +15,13 @@ import (
 // wheelBurstCap bounds how many wheel reports one forwarded gesture may
 // inject.
 const wheelBurstCap = 5
+
+// rowActDebounce is the identical-retap window: the same (widget, argv) row
+// act dispatched again within it is dropped. Every act execs a subprocess or
+// an RC roundtrip, so retaps on a lagging panel compound the very load that
+// caused the lag; 2s outlasts a laggy repaint without eating a deliberate
+// re-run.
+const rowActDebounce = 2 * time.Second
 
 // inputWorker drains forwarded pointer events and config actions on one
 // goroutine so a tap's press/release pair can never interleave with
@@ -52,8 +60,15 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 		return
 	}
 	if handler != nil && handler.HandleAct(m.Argv) {
+		// in-process acts are cheap view flips and NEVER debounced: the
+		// panel's fold act is a toggle whose argv is identical in both
+		// directions, so a window here would eat the unfold retap.
 		log.Printf("khudson bus: row act %s handled in-process: %v", m.Widget, m.Argv)
 		b.pokePoll(m.Widget)
+		return
+	}
+	if b.debounceRowAct(m) {
+		log.Printf("khudson bus: debounced repeat act %s: %v", m.Widget, m.Argv)
 		return
 	}
 	wait, err := b.startArgv(m.Argv)
@@ -66,6 +81,47 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 	}
 	log.Printf("khudson bus: row act %s: %v", m.Widget, m.Argv)
 	go b.reapCmd("row act", m.Argv, wait)
+}
+
+// debounceRowAct reports whether a vetted act is an identical retap of one
+// dispatched within rowActDebounce. Sits after the vet so refusals stay loud
+// on every occurrence, and guards ONLY the exec path: retap amplification
+// costs a subprocess there (the incident's 3x `open -a Xcode`), while an
+// in-process handled act costs one repoll and includes same-argv toggles.
+// inputWorker is the only caller, so the record needs no lock; lazy
+// init keeps bare test buses working.
+func (b *Bus) debounceRowAct(m proto.Msg) bool {
+	now := time.Now() // monotonic: wall-clock jumps must not reopen or stretch the window
+	if b.actNow != nil {
+		now = b.actNow()
+	}
+	if b.lastRowAct == nil {
+		b.lastRowAct = make(map[string]time.Time)
+	}
+	return debounceRepeat(b.lastRowAct, rowActKey(m.Widget, m.Argv), now)
+}
+
+// rowActKey joins widget and argv with NUL so ["open", "-a Xcode"] cannot
+// alias ["open", "-a", "Xcode"].
+func rowActKey(widget string, argv []string) string {
+	return widget + "\x00" + strings.Join(argv, "\x00")
+}
+
+// debounceRepeat drops key if it was recorded within rowActDebounce of now; a
+// pass records now. Drops do NOT refresh the record, so a sustained hammer
+// still lands one act per window. Expired entries are swept first, bounding
+// the map by acts dispatched in the last window.
+func debounceRepeat(last map[string]time.Time, key string, now time.Time) bool {
+	for k, t := range last {
+		if now.Sub(t) >= rowActDebounce {
+			delete(last, k)
+		}
+	}
+	if _, ok := last[key]; ok {
+		return true
+	}
+	last[key] = now
+	return false
 }
 
 // pokePoll asks the scheduler to poll widget on its next tick. Best-effort:

@@ -77,6 +77,7 @@ func (b *Bus) scheduler(ctx context.Context) {
 	// deadlines, and a hung substrate must not freeze polls/fan-out per tick
 	adoptBusy := false
 	adoptDone := make(chan struct{}, 1)
+	var shed loadShedder
 
 	tick := time.NewTicker(schedTick)
 	defer tick.Stop()
@@ -123,7 +124,7 @@ func (b *Bus) scheduler(ctx context.Context) {
 					adoptDone <- struct{}{}
 				}()
 			}
-			b.schedulerPass(ctx, now, entries, busyCh, adoptBusy)
+			b.schedulerPass(ctx, now, entries, busyCh, adoptBusy, shed.active(now))
 		}
 	}
 }
@@ -241,7 +242,10 @@ func (b *Bus) tryAdopt() {
 // the adopt goroutine, and an Ensure racing it can have its fresh
 // binding overwritten; the launched window then leaks hidden until
 // the next reload adopt.
-func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[string]*schedEntry, busyCh chan<- busyDone, adoptInFlight bool) {
+// shed (load shedding, loadshed.go) skips non-essential polls this tick;
+// due polls stay due, so they fire on the first non-shed tick. Lifecycle
+// work (materialize/resize/release/verify) never sheds.
+func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[string]*schedEntry, busyCh chan<- busyDone, adoptInFlight, shed bool) {
 	// runRC is the one-busyDone-per-busy single-flight protocol shared by the
 	// Ensure/Resize/Release branches below.
 	runRC := func(e *schedEntry, st *WidgetState, call func() error) {
@@ -292,6 +296,9 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 
 		if kind == "native" {
 			if vis && !now.Before(e.nextPoll) && now.After(e.backoffUntil) {
+				if shed && b.sheddable(st.Widget.Render.Module) {
+					continue
+				}
 				e.nextPoll = now.Add(st.Widget.Render.PollInterval())
 				e.busy = true
 				go func(st *WidgetState, id string) {
@@ -347,6 +354,9 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 			runRC(e, st, func() error { return b.sup.Resize(ctx, st, panelCols, panelRows) })
 
 		case vis && win != 0 && !now.Before(e.nextPoll):
+			if shed {
+				break
+			}
 			e.nextPoll = now.Add(st.Widget.Render.PollInterval())
 			b.scrape.Poll(st, func(_ string, snapshot []byte, err error) {
 				b.snapshots <- snapshotResult{id: id, win: win, data: snapshot, err: err}

@@ -268,6 +268,10 @@ func TestApplyNativePublishesActsEndToEnd(t *testing.T) {
 		starts = append(starts, argv)
 		return func() error { return nil }, nil
 	}
+	// step the clock past the debounce window per act: this test exercises
+	// publication, not retap suppression
+	clock := time.Now()
+	b.actNow = func() time.Time { clock = clock.Add(rowActDebounce); return clock }
 
 	fold := []string{"mod:act", "sid", "agents"}
 	focus := []string{"khudson", "claude", "focus", "sid"}
@@ -299,6 +303,104 @@ func TestApplyNativePublishesActsEndToEnd(t *testing.T) {
 	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: fold})
 	if len(mod.handled) != 2 {
 		t.Fatal("error poll dropped the published act set")
+	}
+}
+
+// The debounce decision table: an identical key within the window drops, a
+// different key or an elapsed window passes, and a drop never stretches the
+// window (it is measured from the last DISPATCH).
+func TestDebounceRepeat(t *testing.T) {
+	base := time.Now()
+	keyA := rowActKey("dock-rail", []string{"open", "-a", "Xcode"})
+	keyB := rowActKey("claude-panel", []string{"khudson", "claude", "focus", "468d7b14"})
+	last := map[string]time.Time{}
+	steps := []struct {
+		key  string
+		at   time.Duration
+		drop bool
+		why  string
+	}{
+		{keyA, 0, false, "first act passes"},
+		{keyA, 500 * time.Millisecond, true, "identical retap within the window drops"},
+		{keyB, 600 * time.Millisecond, false, "different (widget, argv) passes inside another act's window"},
+		{keyA, 1900 * time.Millisecond, true, "still inside the window"},
+		{keyA, 2 * time.Second, false, "window measured from the dispatch, not the last drop"},
+		{keyA, 4100 * time.Millisecond, false, "window reopens after each dispatch"},
+	}
+	for _, s := range steps {
+		if got := debounceRepeat(last, s.key, base.Add(s.at)); got != s.drop {
+			t.Fatalf("%s: at %v drop = %v, want %v", s.why, s.at, got, s.drop)
+		}
+	}
+	// the final call swept keyB (expired) and re-recorded keyA
+	if len(last) != 1 {
+		t.Fatalf("expired entries not swept: %d live", len(last))
+	}
+}
+
+// The NUL join keeps a joined argv from aliasing a split one, and the widget
+// is part of the key.
+func TestRowActKeyDistinct(t *testing.T) {
+	if rowActKey("w", []string{"open", "-a Xcode"}) == rowActKey("w", []string{"open", "-a", "Xcode"}) {
+		t.Fatal("rowActKey collides across argv splits")
+	}
+	if rowActKey("w", []string{"x"}) == rowActKey("v", []string{"x"}) {
+		t.Fatal("rowActKey ignores the widget")
+	}
+}
+
+// A retap of the same vetted act within rowActDebounce is dropped at the
+// dispatch seam -- on the exec path AND the in-process module path; a
+// different argv or an elapsed window passes.
+func TestHandleRowActDebouncesRetaps(t *testing.T) {
+	b, _ := inputTestBus()
+	mod := &fakeActMod{}
+	b.cfg.Widgets["n"] = config.Widget{ID: "n",
+		Render: config.Render{Kind: "native", Module: "fake-act"}}
+	b.reg = NewRegistry(b.cfg)
+	b.mods = map[string]module.Module{"fake-act": mod}
+	b.repoll = make(chan string, 4)
+	var starts [][]string
+	b.execStart = func(argv []string) (func() error, error) {
+		starts = append(starts, argv)
+		return func() error { return nil }, nil
+	}
+	now := time.Now()
+	b.actNow = func() time.Time { return now }
+
+	execA := []string{"open", "-a", "Xcode"}
+	execB := []string{"khudson", "claude", "focus", "468d7b14"}
+	handled := []string{"mod:act", "sid", "node"}
+	st, _ := b.reg.Get("n")
+	st.setActs([][]string{execA, execB, handled})
+	act := func(argv []string) {
+		b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: argv})
+	}
+
+	act(execA)
+	act(execA) // identical retap within the window
+	if len(starts) != 1 {
+		t.Fatalf("retap exec'd: %d starts", len(starts))
+	}
+	act(execB) // different argv inside execA's window
+	if len(starts) != 2 {
+		t.Fatalf("distinct act debounced: %d starts", len(starts))
+	}
+	now = now.Add(rowActDebounce)
+	act(execA) // window elapsed: dispatches again
+	if len(starts) != 3 {
+		t.Fatalf("act after the window debounced: %d starts", len(starts))
+	}
+
+	// the in-process path is NEVER debounced: fold acts are toggles whose
+	// argv is identical in both directions, so an immediate retap must land
+	act(handled)
+	act(handled)
+	if len(mod.handled) != 2 {
+		t.Fatalf("in-process retap dropped: %v", mod.handled)
+	}
+	if got := len(b.repoll); got != 2 {
+		t.Fatalf("repoll pokes = %d, want 2", got)
 	}
 }
 

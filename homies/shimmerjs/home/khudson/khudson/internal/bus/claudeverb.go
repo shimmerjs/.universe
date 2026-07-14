@@ -3,9 +3,12 @@
 // acts and surfaces a nonzero exit, so all smarts live here -- a FRESH
 // `kitten @ ls` before acting (never trust poll-time window ids), the
 // resolution chain, and miss logging to <state root>/log/claude-verbs.log
-// (the log is the observable). RC auth mirrors kittysessions: the M9 password rides
-// the KITTY_RC_PASSWORD env var only -- never argv (ps-visible), never
-// logged, never in errors.
+// (the log is the observable). RC auth is the socket itself: the daily
+// kitty runs allow_remote_control=socket-only, which trusts peers on the
+// user-write-only socket file -- no password (kitty never consults
+// remote_control_password for socket peers; the retired password arc sent
+// one anyway and hard-failed on the missing KITTY_PUBLIC_KEY from launchd,
+// so no verb ever worked until it was dropped).
 //
 // Resolution chain, in order:
 //  1. user var claude_session=<sid> (panel-launched windows plant it via
@@ -16,14 +19,10 @@
 //  3. registry-pid join over ALL foreground_processes[].pid (fg[0] is
 //     caffeinate/-zsh in captured data; claude sits later in the group).
 //
-// Resume is STAGED behind a user gate: `launch` must be hand-added to the
-// M9 verb allowlist in rc-password.conf, and any RC-surface change re-opens
-// the unbounded stale-posture window (listen_on binds at kitty startup
-// only). Relaunch checklist when the user flips it: (1) add `launch` to the
-// remote_control_password line, (2) quit + relaunch the daily kitty, (3)
-// verify runtime: the socket file exists and `kitten @ --to unix:<sock> ls`
-// round-trips with the password. Until then Resume detects the missing verb
-// and reports the staged state honestly.
+// Resume launches for real (tab in the daily kitty, `claude --resume`).
+// It is reachable only by hand-running the CLI -- no panel row publishes
+// it -- so running the command carries the consent; the old rc-password verb
+// allowlist gate retired with the password machinery.
 package bus
 
 import (
@@ -38,7 +37,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module/kittysessions"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	"github.com/shimmerjs/khudson/khudson/internal/rc"
 )
@@ -47,23 +45,22 @@ import (
 // panel-launched windows.
 const claudeSessionVar = "claude_session"
 
-// kittenRunner execs one `kitten @` command against a socket; the password
-// rides env only. Seam for tests.
-type kittenRunner func(ctx context.Context, socket, password string, args ...string) ([]byte, error)
+// kittenRunner execs one `kitten @` command against a socket. Seam for
+// tests.
+type kittenRunner func(ctx context.Context, socket string, args ...string) ([]byte, error)
 
 // ClaudeVerbs is the wrapper's wiring: sockets, source dirs, the miss log,
 // and the exec seam.
 type ClaudeVerbs struct {
-	Socket       string // main kitty RC socket
-	PasswordFile string // rc-password.conf (M9 password + verb allowlist)
-	SpoolDir     string // hook-written session spool
-	SessionsDir  string // claude session registry (<pid>.json)
-	LogPath      string // append-only verb log; "" = stderr only
-	Run          kittenRunner
+	Socket      string // main kitty RC socket
+	SpoolDir    string // hook-written session spool
+	SessionsDir string // claude session registry (<pid>.json)
+	LogPath     string // append-only verb log; "" = stderr only
+	Run         kittenRunner
 }
 
-// NewClaudeVerbs wires the defaults: state-root sockets/spool/log, the
-// user's rc-password.conf, ~/.claude/sessions.
+// NewClaudeVerbs wires the defaults: state-root sockets/spool/log,
+// ~/.claude/sessions.
 func NewClaudeVerbs() (*ClaudeVerbs, error) {
 	p, err := paths.Resolve()
 	if err != nil {
@@ -74,12 +71,11 @@ func NewClaudeVerbs() (*ClaudeVerbs, error) {
 		return nil, fmt.Errorf("resolve home: %w", err)
 	}
 	return &ClaudeVerbs{
-		Socket:       p.MainKittySocket(),
-		PasswordFile: filepath.Join(home, ".config", "kitty", "rc-password.conf"),
-		SpoolDir:     p.ClaudeSpool(),
-		SessionsDir:  filepath.Join(home, ".claude", "sessions"),
-		LogPath:      filepath.Join(p.Dir, "log", "claude-verbs.log"),
-		Run:          runKitten,
+		Socket:      p.MainKittySocket(),
+		SpoolDir:    p.ClaudeSpool(),
+		SessionsDir: filepath.Join(home, ".claude", "sessions"),
+		LogPath:     filepath.Join(p.Dir, "log", "claude-verbs.log"),
+		Run:         runKitten,
 	}, nil
 }
 
@@ -106,12 +102,7 @@ func (v *ClaudeVerbs) logf(format string, args ...any) {
 // Focus resolves the kitty window hosting session sid via a fresh ls and
 // focuses it. Nonzero return on miss, after logging.
 func (v *ClaudeVerbs) Focus(ctx context.Context, sid string) error {
-	auth, err := kittysessions.ReadRCAuth(v.PasswordFile)
-	if err != nil {
-		v.logf("focus %s: %v", sid, err)
-		return err
-	}
-	tree, err := v.freshLS(ctx, auth.Password)
+	tree, err := v.freshLS(ctx)
 	if err != nil {
 		v.logf("focus %s: ls: %v", sid, err)
 		return err
@@ -122,7 +113,7 @@ func (v *ClaudeVerbs) Focus(ctx context.Context, sid string) error {
 		v.logf("focus %s: MISS: %v", sid, err)
 		return err
 	}
-	if _, err := v.Run(ctx, v.Socket, auth.Password, "focus-window", "--match", "id:"+strconv.Itoa(win)); err != nil {
+	if _, err := v.Run(ctx, v.Socket, "focus-window", "--match", "id:"+strconv.Itoa(win)); err != nil {
 		v.logf("focus %s: focus-window id:%d (%s): %v", sid, win, how, err)
 		return err
 	}
@@ -131,21 +122,11 @@ func (v *ClaudeVerbs) Focus(ctx context.Context, sid string) error {
 }
 
 // Resume relaunches a spool-backed session (`claude --resume` reuses the
-// original sid, so the planted user var stays correct). Gated on `launch`
-// in the M9 allowlist -- a hand-owned file; see the package comment for the
-// relaunch checklist. A still-running session is focused, never duplicated
-// (revalidate-at-exec).
+// original sid, so the planted user var stays correct). Reachable only by
+// hand-running the CLI -- no panel row publishes it -- so running the
+// command carries the consent. A still-running session is focused, never
+// duplicated (revalidate-at-exec).
 func (v *ClaudeVerbs) Resume(ctx context.Context, sid, cwd string) error {
-	auth, err := kittysessions.ReadRCAuth(v.PasswordFile)
-	if err != nil {
-		v.logf("resume %s: %v", sid, err)
-		return err
-	}
-	if !auth.Allows("launch") {
-		err := fmt.Errorf("staged: `launch` is not in the M9 verb allowlist (%s); add it to the remote_control_password line, quit + relaunch the daily kitty (listen_on binds at startup only), then verify `kitten @ ls` round-trips", v.PasswordFile)
-		v.logf("resume %s: %v", sid, err)
-		return err
-	}
 	if cwd == "" {
 		cwd = v.spoolCwd(sid)
 	}
@@ -154,21 +135,21 @@ func (v *ClaudeVerbs) Resume(ctx context.Context, sid, cwd string) error {
 		v.logf("resume %s: %v", sid, err)
 		return err
 	}
-	tree, err := v.freshLS(ctx, auth.Password)
+	tree, err := v.freshLS(ctx)
 	if err != nil {
 		v.logf("resume %s: ls: %v", sid, err)
 		return err
 	}
 	if win, how := v.resolveWindow(tree, sid); win != 0 {
 		// already running: focus instead of forking a duplicate session
-		if _, err := v.Run(ctx, v.Socket, auth.Password, "focus-window", "--match", "id:"+strconv.Itoa(win)); err != nil {
+		if _, err := v.Run(ctx, v.Socket, "focus-window", "--match", "id:"+strconv.Itoa(win)); err != nil {
 			v.logf("resume %s: still running (window %d via %s) but focus failed: %v", sid, win, how, err)
 			return err
 		}
 		v.logf("resume %s: still running -> focused window %d via %s", sid, win, how)
 		return nil
 	}
-	if _, err := v.Run(ctx, v.Socket, auth.Password,
+	if _, err := v.Run(ctx, v.Socket,
 		"launch", "--type", "tab", "--cwd", cwd, "--var", claudeSessionVar+"="+sid,
 		"claude", "--resume", sid); err != nil {
 		v.logf("resume %s: launch: %v", sid, err)
@@ -181,8 +162,8 @@ func (v *ClaudeVerbs) Resume(ctx context.Context, sid, cwd string) error {
 // freshLS is the revalidation read: a fresh `kitten @ ls` unmarshaled into
 // the rc types (UserVars + per-process PID are modeled there; the
 // kittysessions widget structs drop both).
-func (v *ClaudeVerbs) freshLS(ctx context.Context, password string) ([]rc.OSWindow, error) {
-	out, err := v.Run(ctx, v.Socket, password, "ls")
+func (v *ClaudeVerbs) freshLS(ctx context.Context) ([]rc.OSWindow, error) {
+	out, err := v.Run(ctx, v.Socket, "ls")
 	if err != nil {
 		return nil, err
 	}
@@ -352,10 +333,9 @@ func registryPID(dir, sid string) int {
 	return pid
 }
 
-// runKitten execs `kitten @ --to unix:<socket> <args...>`. The password
-// rides KITTY_RC_PASSWORD only; errors carry kitten's first stderr line,
-// never the password.
-func runKitten(ctx context.Context, socket, password string, args ...string) ([]byte, error) {
+// runKitten execs `kitten @ --to unix:<socket> <args...>`; errors carry
+// kitten's first stderr line.
+func runKitten(ctx context.Context, socket string, args ...string) ([]byte, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
@@ -363,9 +343,6 @@ func runKitten(ctx context.Context, socket, password string, args ...string) ([]
 	}
 	argv := append([]string{"@", "--to", "unix:" + socket}, args...)
 	cmd := exec.CommandContext(ctx, "kitten", argv...)
-	if password != "" {
-		cmd.Env = append(os.Environ(), "KITTY_RC_PASSWORD="+password)
-	}
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

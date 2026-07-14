@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -124,6 +125,69 @@ func TestOfferDropsOldest(t *testing.T) {
 	}
 	if got := string(<-ch); got != "c" {
 		t.Fatalf("newest %q, want c", got)
+	}
+}
+
+// The reopen schedule is the runningboardd-load contract: a chronic open
+// failure must converge to reconnectCap, and only success or a failure-class
+// flip may put it back on the fast ramp.
+func TestReopenBackoff(t *testing.T) {
+	var b reopenBackoff
+
+	// chronic same-class failure doubles from reconnectMin and pins at cap
+	want := reconnectMin
+	for i := range 12 {
+		if got := b.fail(false); got != want {
+			t.Fatalf("attempt %d: wait %s, want %s", i, got, want)
+		}
+		want = min(want*2, reconnectCap)
+	}
+	if got := b.fail(false); got != reconnectCap {
+		t.Fatalf("steady state %s, want cap %s", got, reconnectCap)
+	}
+
+	// class flip (unplug/replug = device-set change) resets to the floor
+	if got := b.fail(true); got != reconnectMin {
+		t.Fatalf("flip to absent: %s, want %s", got, reconnectMin)
+	}
+	if got := b.fail(true); got != 2*reconnectMin {
+		t.Fatalf("absent again: %s, want %s", got, 2*reconnectMin)
+	}
+	// chronic absence pins at absentCap, not reconnectCap: the timer is the
+	// only replug observer, so its ceiling is the worst-case reattach latency
+	for range 10 {
+		b.fail(true)
+	}
+	if got := b.fail(true); got != absentCap {
+		t.Fatalf("chronic absent: %s, want absent cap %s", got, absentCap)
+	}
+	if got := b.fail(false); got != reconnectMin {
+		t.Fatalf("flip to present: %s, want %s", got, reconnectMin)
+	}
+
+	// successful open resets even when the next failure is the same class
+	b.fail(false)
+	b.reset()
+	if got := b.fail(false); got != reconnectMin {
+		t.Fatalf("after reset: %s, want %s", got, reconnectMin)
+	}
+}
+
+// The absent class must survive the not-found wrap (the reopen loops key on
+// it), and an open failure on a present device must not classify as absent.
+func TestOpenErrorClass(t *testing.T) {
+	err := noCollectionErr(edgeVID, edgePID, usagePageDigitizer, usageTouchScreen)
+	if !errors.Is(err, errAbsent) {
+		t.Fatalf("not-found error not classified absent: %v", err)
+	}
+	want := "no 27C0:0859 collection with usage_page=0x0D usage=0x04 (device connected?)"
+	if err.Error() != want {
+		t.Fatalf("message %q, want %q", err.Error(), want)
+	}
+	seized := fmt.Errorf("open (Input Monitoring granted?): %w",
+		errors.New("hid_open_path: failed to open IOHID device: (0xE00002C5) exclusive access and device already open"))
+	if errors.Is(seized, errAbsent) {
+		t.Fatal("present-but-seized error misclassified as absent")
 	}
 }
 

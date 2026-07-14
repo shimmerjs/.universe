@@ -35,14 +35,22 @@ func TestPanelGeometryOccupied(t *testing.T) {
 		t.Errorf("header/outcome acts = %q / %q, want the focus verb on both (one tap target)",
 			actOf(rows[0]), actOf(rows[1]))
 	}
+	// every detail-zone row leads with the occupant-hued rail (the zone
+	// card); pads included, so the card extent is visible
+	for i := 0; i < panelDetailRows; i++ {
+		if len(rows[i].Spans) == 0 || rows[i].Spans[0].Text != railGlyph+" " ||
+			rows[i].Spans[0].Ident != "aaaaaaaa-live" {
+			t.Errorf("detail row %d = %+v, want the occupant rail leading", i, rows[i])
+		}
+	}
 	// row 2 is the dim "no agents" hint (the reserved zone stays legible);
 	// the rest of the zone pads blank and actless
-	if rows[2].Text != "    no agents" || rows[2].Style != module.StyleDim || len(rows[2].Act) != 0 {
-		t.Errorf("agents hint row = %+v, want the dim no-agents hint", rows[2])
+	if lineText(rows[2]) != railGlyph+"     no agents" || rows[2].Style != module.StyleDim || len(rows[2].Act) != 0 {
+		t.Errorf("agents hint row = %+v, want the railed dim no-agents hint", rows[2])
 	}
 	for i := 3; i < panelDetailRows; i++ {
-		if rows[i].Text != "" || len(rows[i].Act) != 0 {
-			t.Errorf("detail pad row %d = %+v, want blank actless", i, rows[i])
+		if lineText(rows[i]) != railGlyph+" " || len(rows[i].Act) != 0 {
+			t.Errorf("detail pad row %d = %+v, want rail-only actless", i, rows[i])
 		}
 	}
 	if actOf(rows[panelDetailRows]) != focusOf("aaaaaaaa-live") {
@@ -288,6 +296,20 @@ func TestAttentionLive(t *testing.T) {
 			notified: now.Add(-3 * time.Minute), transcriptMtime: now.Add(-time.Minute)}, false},
 		{"idle bell survives transcript churn (wakeups do not answer it)", session{attention: true, notifType: "idle_prompt",
 			notified: now.Add(-3 * time.Minute), transcriptMtime: now.Add(-time.Minute)}, true},
+		// parked background work: idle_prompt fires in the gap between a
+		// turn end and the next background wakeup, and the wakeup -- not
+		// the user -- answers it, so the bell must not ring over bg tasks
+		// or live fleet
+		{"idle bell suppressed over parked bg tasks", session{attention: true, notifType: "idle_prompt",
+			notified: now, bgTasks: 2}, false},
+		{"idle bell suppressed over a live workflow", session{attention: true, notifType: "idle_prompt",
+			notified: now, workflows: 1}, false},
+		{"idle bell suppressed over live agents", session{attention: true, notifType: "idle_prompt",
+			notified: now, agents: 3}, false},
+		{"idle bell rings with nothing parked", session{attention: true, notifType: "idle_prompt",
+			notified: now}, true},
+		{"permission bell ignores parked bg tasks", session{attention: true, notifType: "permission_prompt",
+			notified: now, bgTasks: 2}, true},
 	} {
 		if got := tt.s.attentionLive(now); got != tt.want {
 			t.Errorf("%s: attentionLive = %v, want %v", tt.name, got, tt.want)
@@ -488,8 +510,11 @@ func TestDetailFleetTreeFolded(t *testing.T) {
 	}
 }
 
-// Trees outnumbering the budget truncate roots-first into "+N trees";
-// children share what the roots leave, greedily in tree order.
+// The zone is a greedy accordion: the leading tree expands VERTICALLY
+// (children as rows), later trees squeeze to roots then into "+N trees" --
+// never the other way around (a roots-first split starved every tree of
+// child rows once trees outnumbered the budget: the glass-reported
+// fold-toggles-only-mutate-one-line bug).
 func TestFleetRowsBudget(t *testing.T) {
 	now := time.Now()
 	var nodes []fleetNode
@@ -501,17 +526,45 @@ func TestFleetRowsBudget(t *testing.T) {
 	if len(rows) != 6 {
 		t.Fatalf("fleet rows = %d, want the budget (6)", len(rows))
 	}
-	for i := range 5 {
-		if actOf(rows[i]) != foldOf("sid", fmt.Sprintf("wf:wf_%d", i)) {
-			t.Errorf("row %d act = %q, want root %d (roots first-class)", i, actOf(rows[i]), i)
+	// tree 0 expands vertically: root + its 3 children
+	for i := range 4 {
+		if actOf(rows[i]) != foldOf("sid", "wf:wf_0") {
+			t.Errorf("row %d act = %q, want tree 0 (expansion outranks later roots)", i, actOf(rows[i]))
 		}
 	}
+	for i := 1; i <= 3; i++ {
+		if text := lineText(rows[i]); !strings.Contains(text, glyphAgents) {
+			t.Errorf("row %d = %q, want a child agent row", i, text)
+		}
+	}
+	// tree 1 squeezes to a summary root; the rest fold into "+6 trees"
+	if actOf(rows[4]) != foldOf("sid", "wf:wf_1") {
+		t.Errorf("row 4 act = %q, want tree 1's root", actOf(rows[4]))
+	}
 	last := rows[5]
-	if last.Text != "+3 trees" || last.Style != module.StyleDim || len(last.Act) != 0 {
-		t.Errorf("overflow row = %+v, want dim actless +3 trees", last)
+	if last.Text != "+6 trees" || last.Style != module.StyleDim || len(last.Act) != 0 {
+		t.Errorf("overflow row = %+v, want dim actless +6 trees", last)
 	}
 
-	// two trees, first expanded: children fill the spare rows only
+	// folding the leading tree hands its rows to the next one (the
+	// accordion interaction)
+	rows = fleetRows("sid", nodes, map[string]bool{"sid/wf:wf_0": true}, 6, now)
+	if len(rows) != 6 {
+		t.Fatalf("folded fleet rows = %d, want 6", len(rows))
+	}
+	if text := lineText(rows[0]); !strings.Contains(text, glyphFoldShut) {
+		t.Errorf("row 0 = %q, want the folded tree-0 root", text)
+	}
+	for i := 2; i <= 4; i++ {
+		if actOf(rows[i]) != foldOf("sid", "wf:wf_1") {
+			t.Errorf("row %d act = %q, want tree 1's children after tree 0 folded", i, actOf(rows[i]))
+		}
+	}
+	if rows[5].Text != "+6 trees" {
+		t.Errorf("overflow row = %+v, want +6 trees", rows[5])
+	}
+
+	// two trees, first expanded: children fill what the last root leaves
 	nodes = []fleetNode{
 		newFleetNode("agents", "agents", glyphAgents, testAgents(now, 9, 9)),
 		newFleetNode("wf:wf_1", "wf_1", glyphWorkflows, testAgents(now, 2, 0)),
@@ -576,7 +629,7 @@ func TestFleetNodes(t *testing.T) {
 	touch(t, filepath.Join(sub, "workflows", "wf_empty", "journal.jsonl"), "", now)
 
 	s := session{id: "sid-a", dirs: []string{filepath.Join(dir, "sess")}}
-	nodes := fleetNodes(s, "", now)
+	nodes := NewPanel(New()).fleetNodes(s, "", now)
 	if len(nodes) != 3 {
 		t.Fatalf("fleetNodes = %+v, want agents + 2 wf trees", nodes)
 	}
@@ -648,7 +701,7 @@ func TestAgentRowsFromMetaAndSidecars(t *testing.T) {
 	touch(t, filepath.Join(sub, "agent-a4.meta.json"), "{nope", now)
 
 	s := session{id: sid, dirs: []string{filepath.Join(dir, "sess")}}
-	rows := agentRows(s, spool, now)
+	rows := NewPanel(New()).agentRows(s, spool, now)
 	if len(rows) != 3 {
 		t.Fatalf("agentRows = %+v, want 3", rows)
 	}
@@ -671,13 +724,16 @@ func TestAgentRowsFromMetaAndSidecars(t *testing.T) {
 	}
 }
 
-// End-to-end Poll: fs + spool -> zones, occupant agents, acts.
+// End-to-end Poll: fs + spool + registry -> zones, occupant agents, acts.
 func TestPanelPoll(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	live := "aaaaaaaa-1111-2222-3333-444444444444"
 	idle := "bbbbbbbb-1111-2222-3333-444444444444"
+	regLive(t, sessionsDir, live)
+	regLive(t, sessionsDir, idle)
 
 	// starts pin group order: the live session's cwd group (spool dir)
 	// starts after the dir-less idle one, so it leads the list
@@ -696,7 +752,7 @@ func TestPanelPoll(t *testing.T) {
 	data, err := NewPanel(New()).Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -739,9 +795,14 @@ func TestPanelPoll(t *testing.T) {
 func TestPanelPollSteeringAnswersNotification(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	stale := "aaaaaaaa-1111-2222-3333-444444444444"
 	other := "bbbbbbbb-1111-2222-3333-444444444444"
+	// the stale session's record carries no status, so the spool heuristic
+	// (the freshness pass under test) stays the needs-user source
+	touch(t, filepath.Join(sessionsDir, stale+".json"), regStatusRecord(stale, "", "", 0), now)
+	regLive(t, sessionsDir, other)
 	pdir := filepath.Join(projects, "p")
 	body := tsEntry("2026-07-03T10:00:00Z") + "\n" +
 		fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"content":"answered it"}}`+"\n",
@@ -755,7 +816,7 @@ func TestPanelPollSteeringAnswersNotification(t *testing.T) {
 	data, err := NewPanel(New()).Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -793,6 +854,11 @@ func TestPanelPollAttentionHorizon(t *testing.T) {
 		t.Helper()
 		projects := t.TempDir()
 		spool := t.TempDir()
+		sessionsDir := t.TempDir()
+		// the bell session's record carries no status: the horizon heuristic
+		// under test stays the needs-user source
+		touch(t, filepath.Join(sessionsDir, bell+".json"), regStatusRecord(bell, "", "", 0), now)
+		regLive(t, sessionsDir, other)
 		pdir := filepath.Join(projects, "p")
 		touch(t, filepath.Join(pdir, bell+".jsonl"), tsEntry("2026-07-03T10:00:00Z")+"\n", now.Add(-5*time.Minute))
 		sp := fmt.Sprintf(`{"session_id":%q,"prompt":"stuck","ts":%d,"attention":true,"notification":"needs input","notification_ts":%d}`,
@@ -802,7 +868,7 @@ func TestPanelPollAttentionHorizon(t *testing.T) {
 		data, err := NewPanel(New()).Poll(context.Background(), map[string]any{
 			"projectsDir": projects,
 			"dir":         spool,
-			"sessionsDir": t.TempDir(),
+			"sessionsDir": sessionsDir,
 		})
 		if err != nil {
 			t.Fatalf("Poll: %v", err)

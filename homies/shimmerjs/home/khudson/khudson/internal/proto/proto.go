@@ -6,6 +6,7 @@ package proto
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 )
@@ -34,7 +35,16 @@ const (
 	// TypeNotice carries a transient bus-side warning (refused row act, an
 	// exec'd argv exiting nonzero) to docks in Msg.Error.
 	TypeNotice = "notice"
+	// TypePing is the dock's idle keepalive (no payload, no response): all
+	// other dock->bus traffic is event-driven, and the bus reaps a dock
+	// silent past its read grace.
+	TypePing = "ping"
 )
+
+// HeartbeatEvery is the dock's TypePing cadence while connected; the bus
+// sizes its read deadline as a small multiple of this, so late beats
+// survive and a mute dock is reaped.
+const HeartbeatEvery = 5 * time.Second
 
 // Roles for TypeHello.
 const (

@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -75,8 +76,8 @@ func usage() {
   hud-launcher        supervise the HUD kitty; launches only while the display is connected
   claude focus <sid>  focus the main-kitty window hosting a claude session
   claude resume <sid> [cwd]
-                      relaunch a spool-backed session (staged: needs launch
-                      in the M9 rc-password allowlist)
+                      relaunch a spool-backed session in a new main-kitty tab
+                      (focuses instead when it is still running)
   ax unminimize <title> [--app <name>]
                       unminimize one window: press its Dock item (direct AX;
                       --app enables the in-app window fallback)
@@ -86,6 +87,20 @@ func usage() {
                       claude-code hook handler (payload on stdin); events:
                       prompt | start | stop | stopfail | notify | end
 `)
+}
+
+// logStart re-arms stdlib log timestamps and stamps one line at service
+// start. cuelang.org/go/internal/core/adt zeroes the log flags process-wide
+// in an init() (for its own bare debug output), which left the service logs
+// undatable -- every long-running entrypoint calls this after that init has
+// run, before its service loop.
+func logStart(service string) {
+	log.SetFlags(log.LstdFlags)
+	version := "unknown"
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
+		version = bi.Main.Version
+	}
+	log.Printf("khudson %s: start pid=%d version=%s", service, os.Getpid(), version)
 }
 
 // histFlushEvery is the history-snapshot cadence. The periodic flush is the
@@ -103,6 +118,7 @@ func cmdBus(args []string) error {
 	if err != nil {
 		return err
 	}
+	logStart("bus")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -186,6 +202,7 @@ func cmdDock(args []string) error {
 		}
 		*socket = p.BusSocket()
 	}
+	logStart("dock")
 	return dock.Run(dock.Options{ConfigPath: *configPath, BusSocket: *socket})
 }
 
@@ -287,6 +304,7 @@ func cmdHudLauncher(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve khudson binary: %w", err)
 	}
+	logStart("hud-launcher")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return hudlaunch.Run(ctx, hudlaunch.Options{
@@ -308,7 +326,6 @@ func cmdHudLauncher(args []string) error {
 func cmdClaude(args []string) error {
 	fs := flag.NewFlagSet("claude", flag.ExitOnError)
 	socket := fs.String("socket", "", "main kitty RC socket (default: state dir main-kitty.sock)")
-	pwFile := fs.String("password-file", "", "kitty rc-password.conf (default: ~/.config/kitty/rc-password.conf)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -323,9 +340,6 @@ func cmdClaude(args []string) error {
 	}
 	if *socket != "" {
 		v.Socket = *socket
-	}
-	if *pwFile != "" {
-		v.PasswordFile = *pwFile
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

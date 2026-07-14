@@ -3,9 +3,11 @@
 // kitty window carrying the full RC address (os window / tab / window ids)
 // so the control-panel milestone can act on rows later; focus/resume verbs
 // are NOT this module's. The socket defaults to the fixed main-kitty.sock
-// under the khudson state root; auth is the M9 remote_control_password,
-// read from the same 0600 conf include the main kitty loads and passed via
-// the KITTY_RC_PASSWORD env var -- never argv (ps-visible), never logged.
+// under the khudson state root; the daily kitty runs
+// allow_remote_control=socket-only, so the user-write-only socket file is
+// the auth -- no password (kitty never consults remote_control_password
+// for socket peers; the retired M9 password arc built on that false
+// premise and never once worked from the launchd bus).
 package kittysessions
 
 import (
@@ -13,11 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
@@ -38,24 +37,12 @@ func (Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error)
 		}
 		socket = p.MainKittySocket()
 	}
-	pwFile, _ := params["passwordFile"].(string)
-	if pwFile == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return module.Data{}, fmt.Errorf("resolve home: %w", err)
-		}
-		pwFile = filepath.Join(home, ".config", "kitty", "rc-password.conf")
-	}
 	if _, err := exec.LookPath("kitten"); err != nil {
 		return module.Data{Title: "kitty", Rows: []module.Row{
 			{Kind: module.RowText, Text: "kitten not on PATH", Style: module.StyleDim},
 		}}, nil
 	}
-	password, err := readPassword(pwFile)
-	if err != nil {
-		return module.Data{}, err
-	}
-	out, err := runLS(ctx, socket, password)
+	out, err := runLS(ctx, socket)
 	if err != nil {
 		return module.Data{}, err
 	}
@@ -66,100 +53,12 @@ func (Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error)
 	return renderWins(wins), nil
 }
 
-// readPassword reads the kitty rc-password conf include. A missing file
-// means "" -- the main kitty includes the same file, so mirroring its
-// absence keeps client and server auth posture in sync (sending a password
-// to a passwordless kitty hangs on a confirmation prompt).
-func readPassword(file string) (string, error) {
-	a, err := ReadRCAuth(file)
-	return a.Password, err
-}
-
-// RCAuth is the parsed rc-password.conf posture: the M9 password plus the
-// verb allowlist that follows it on the remote_control_password line.
-// kitty semantics: an empty action list allows EVERY action, so nil Verbs
-// (including a missing file, which also means a passwordless socket) is
-// unrestricted.
-type RCAuth struct {
-	Password string
-	Verbs    []string
-}
-
-// Allows reports whether the allowlist permits verb (kitty matches actions
-// with fnmatch; "*" is the only pattern the hand-written file plausibly
-// uses, so exact match + "*" covers it).
-func (a RCAuth) Allows(verb string) bool {
-	if len(a.Verbs) == 0 {
-		return true
-	}
-	for _, v := range a.Verbs {
-		if v == verb || v == "*" {
-			return true
-		}
-	}
-	return false
-}
-
-// ReadRCAuth reads and parses the rc-password conf include; missing file
-// semantics match readPassword.
-func ReadRCAuth(file string) (RCAuth, error) {
-	b, err := os.ReadFile(file)
-	if errors.Is(err, fs.ErrNotExist) {
-		return RCAuth{}, nil
-	}
-	if err != nil {
-		return RCAuth{}, fmt.Errorf("read rc password: %w", err)
-	}
-	return parseRCAuth(b), nil
-}
-
-// parseRCAuth parses the first remote_control_password line: the password
-// -- single- or double-quoted (may contain spaces) or a bare token -- then
-// the whitespace-separated action allowlist. Comments and unrelated lines
-// are skipped; no backslash-escape handling (the hand-created file quotes
-// plainly).
-func parseRCAuth(conf []byte) RCAuth {
-	const opt = "remote_control_password"
-	for line := range strings.SplitSeq(string(conf), "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), opt)
-		if !ok || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
-			continue
-		}
-		rest = strings.TrimLeft(rest, " \t")
-		if rest == "" {
-			continue
-		}
-		var password, tail string
-		switch q := rest[0]; q {
-		case '\'', '"':
-			if i := strings.IndexByte(rest[1:], q); i >= 0 {
-				password, tail = rest[1:1+i], rest[2+i:]
-			} else {
-				password = rest[1:]
-			}
-		default:
-			if i := strings.IndexAny(rest, " \t"); i >= 0 {
-				password, tail = rest[:i], rest[i:]
-			} else {
-				password = rest
-			}
-		}
-		verbs := strings.Fields(tail)
-		if len(verbs) == 0 {
-			verbs = nil // nil = unrestricted, the documented semantics
-		}
-		return RCAuth{Password: password, Verbs: verbs}
-	}
-	return RCAuth{}
-}
-
-// runLS execs `kitten @ ls` against the socket. The password rides the
-// KITTY_RC_PASSWORD env var only; it never appears in argv or in errors.
-func runLS(ctx context.Context, socket, password string) ([]byte, error) {
+// runLS execs `kitten @ ls` against the socket. No password: the
+// socket-only daily kitty trusts socket peers, and setting
+// KITTY_RC_PASSWORD would make kitten demand a KITTY_PUBLIC_KEY that only
+// exists inside kitty's own children -- never in the bus.
+func runLS(ctx context.Context, socket string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "kitten", "@", "--to", "unix:"+socket, "ls")
-	if password != "" {
-		cmd.Env = append(os.Environ(), "KITTY_RC_PASSWORD="+password)
-	}
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

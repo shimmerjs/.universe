@@ -143,6 +143,9 @@ type model struct {
 	// an older connectBus cmd (stale gen) are dropped, never acted on
 	busGen  int
 	lastGst string
+	// lastPing is the previous keepalive's clock reading; sendHeartbeat
+	// paces itself against it off the 1 s tick
+	lastPing time.Time
 
 	theme string // theme name as broadcast ("day"/"night"); labels only
 	sty   styles
@@ -337,6 +340,21 @@ func (m *model) sendGrid() {
 	})
 }
 
+// sendHeartbeat pings the bus at proto.HeartbeatEvery, piggybacked on the
+// 1 s clock tick: every other dock->bus message is event-driven, and the
+// bus reaps a dock silent past its read grace. Write errors are the reader
+// goroutine's to surface (the sendGrid convention).
+func (m *model) sendHeartbeat() {
+	if m.bus != busConnected || m.busConn == nil {
+		return
+	}
+	if !m.lastPing.IsZero() && m.now.Sub(m.lastPing) < proto.HeartbeatEvery {
+		return
+	}
+	m.lastPing = m.now
+	_ = json.NewEncoder(m.busConn).Encode(proto.Msg{Type: proto.TypePing})
+}
+
 func (m *model) Init() tea.Cmd { return tick() }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -431,6 +449,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.now = time.Time(msg)
+		m.sendHeartbeat()
 		return m, tick()
 
 	case flashTickMsg:
@@ -583,11 +602,20 @@ func (m *model) homeTap(int, int) {
 	}
 }
 
-// homeLayout is the home tap target: the first layout whose KIND is home,
-// in stable order -- the config default first, then sorted names.
+// homeLayout is the home tap target: the layout NAMED "home" when it is
+// home-kind, else the config default, else the first home-kind name in
+// sorted order. Kind alone cannot resolve it: kind selects the render
+// ENGINE, and other home-kind layouts exist (the fullscreen clod panel) --
+// layout.state persists the runtime selection into cfg.Layout across bus
+// restarts, so with clod active a kind-of-the-default pick resolved home
+// to clod itself and the icon no-opped (glass-reported; the sorted scan
+// is alphabetical and "claude" < "home", so it strands the same way).
 func (m *model) homeLayout() (string, bool) {
 	if m.cfg == nil {
 		return "", false
+	}
+	if m.cfg.Layouts["home"].Kind == "home" {
+		return "home", true
 	}
 	if m.cfg.Layouts[m.cfg.Layout].Kind == "home" {
 		return m.cfg.Layout, true

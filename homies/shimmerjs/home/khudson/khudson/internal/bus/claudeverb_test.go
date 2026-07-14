@@ -39,14 +39,12 @@ func lsFixture(userVarSID string) string {
 // fakeKitten records calls and serves canned responses per leading arg.
 type fakeKitten struct {
 	calls [][]string
-	pw    []string
 	ls    string
 	errOn string // leading arg to fail on
 }
 
-func (f *fakeKitten) run(_ context.Context, _, password string, args ...string) ([]byte, error) {
+func (f *fakeKitten) run(_ context.Context, _ string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
-	f.pw = append(f.pw, password)
 	if f.errOn != "" && args[0] == f.errOn {
 		return nil, errors.New("boom")
 	}
@@ -59,22 +57,15 @@ func (f *fakeKitten) run(_ context.Context, _, password string, args ...string) 
 func (f *fakeKitten) argv(i int) string { return strings.Join(f.calls[i], " ") }
 
 // verbs builds a wired ClaudeVerbs over temp dirs.
-func verbs(t *testing.T, f *fakeKitten, rcConf string) *ClaudeVerbs {
+func verbs(t *testing.T, f *fakeKitten) *ClaudeVerbs {
 	t.Helper()
 	dir := t.TempDir()
-	pwFile := filepath.Join(dir, "rc-password.conf")
-	if rcConf != "" {
-		if err := os.WriteFile(pwFile, []byte(rcConf), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	return &ClaudeVerbs{
-		Socket:       filepath.Join(dir, "main-kitty.sock"),
-		PasswordFile: pwFile,
-		SpoolDir:     filepath.Join(dir, "spool"),
-		SessionsDir:  filepath.Join(dir, "sessions"),
-		LogPath:      filepath.Join(dir, "log", "claude-verbs.log"),
-		Run:          f.run,
+		Socket:      filepath.Join(dir, "main-kitty.sock"),
+		SpoolDir:    filepath.Join(dir, "spool"),
+		SessionsDir: filepath.Join(dir, "sessions"),
+		LogPath:     filepath.Join(dir, "log", "claude-verbs.log"),
+		Run:         f.run,
 	}
 }
 
@@ -101,26 +92,17 @@ func logBody(t *testing.T, v *ClaudeVerbs) string {
 	return string(b)
 }
 
-const rcM9 = "remote_control_password \"sekrit\" ls focus-window focus-tab send-text\n"
-
 func TestFocusViaUserVar(t *testing.T) {
 	f := &fakeKitten{ls: lsFixture(testSID)}
-	v := verbs(t, f, rcM9)
+	v := verbs(t, f)
 	if err := v.Focus(context.Background(), testSID); err != nil {
 		t.Fatalf("Focus: %v", err)
 	}
 	if len(f.calls) != 2 || f.argv(0) != "ls" || f.argv(1) != "focus-window --match id:12" {
 		t.Fatalf("calls = %v, want fresh ls then focus-window", f.calls)
 	}
-	// the password rides env-only via the runner param, never argv
-	if f.pw[0] != "sekrit" || f.pw[1] != "sekrit" {
-		t.Errorf("passwords = %v", f.pw)
-	}
 	if log := logBody(t, v); !strings.Contains(log, "ok -> window 12 via user-var") {
 		t.Errorf("log = %q", log)
-	}
-	if strings.Contains(logBody(t, v), "sekrit") {
-		t.Error("password leaked into the log")
 	}
 }
 
@@ -129,7 +111,7 @@ func TestFocusViaUserVar(t *testing.T) {
 // through to the registry-pid scan over ALL fg pids.
 func TestFocusViaSpoolWindowRevalidated(t *testing.T) {
 	f := &fakeKitten{ls: lsFixture("")}
-	v := verbs(t, f, rcM9)
+	v := verbs(t, f)
 	writeFile(t, filepath.Join(v.SpoolDir, testSID+".json"),
 		fmt.Sprintf(`{"session_id":%q,"kitty_window_id":"12"}`, testSID))
 	writeFile(t, filepath.Join(v.SessionsDir, "4242.json"), regEntry(4242, testSID, 2))
@@ -146,7 +128,7 @@ func TestFocusViaSpoolWindowRevalidated(t *testing.T) {
 
 func TestFocusSpoolWindowStaleFallsToRegistryScan(t *testing.T) {
 	f := &fakeKitten{ls: lsFixture("")}
-	v := verbs(t, f, rcM9)
+	v := verbs(t, f)
 	// spool points at window 11, whose fg pids do NOT include the claude pid
 	writeFile(t, filepath.Join(v.SpoolDir, testSID+".json"),
 		fmt.Sprintf(`{"session_id":%q,"kitty_window_id":11}`, testSID))
@@ -167,7 +149,7 @@ func TestFocusSpoolWindowStaleFallsToRegistryScan(t *testing.T) {
 
 func TestFocusMissLogs(t *testing.T) {
 	f := &fakeKitten{ls: lsFixture("")}
-	v := verbs(t, f, rcM9)
+	v := verbs(t, f)
 	err := v.Focus(context.Background(), testSID)
 	if err == nil {
 		t.Fatal("Focus(miss): want error, got nil")
@@ -182,7 +164,7 @@ func TestFocusMissLogs(t *testing.T) {
 
 func TestFocusLSFailureLogs(t *testing.T) {
 	f := &fakeKitten{ls: lsFixture(""), errOn: "ls"}
-	v := verbs(t, f, rcM9)
+	v := verbs(t, f)
 	if err := v.Focus(context.Background(), testSID); err == nil {
 		t.Fatal("Focus(ls error): want error, got nil")
 	}
@@ -191,32 +173,11 @@ func TestFocusLSFailureLogs(t *testing.T) {
 	}
 }
 
-// Resume is staged: without `launch` in the M9 allowlist it must not touch
-// the socket, and the staged state lands in the log.
-func TestResumeStagedWithoutLaunchVerb(t *testing.T) {
+// Resume with a spool cwd and no running window launches for real: fresh ls,
+// then the tab launch with the planted user var.
+func TestResumeLaunches(t *testing.T) {
 	f := &fakeKitten{ls: lsFixture("")}
-	v := verbs(t, f, rcM9)
-	writeFile(t, filepath.Join(v.SpoolDir, testSID+".json"),
-		fmt.Sprintf(`{"session_id":%q,"workspace":{"current_dir":"/x/foo"}}`, testSID))
-	err := v.Resume(context.Background(), testSID, "")
-	if err == nil || !strings.Contains(err.Error(), "staged") {
-		t.Fatalf("Resume = %v, want the staged error", err)
-	}
-	if len(f.calls) != 0 {
-		t.Fatalf("calls = %v, want none while staged", f.calls)
-	}
-	log := logBody(t, v)
-	for _, want := range []string{"staged", "launch", "relaunch"} {
-		if !strings.Contains(log, want) {
-			t.Errorf("log = %q, want %q in the staged record", log, want)
-		}
-	}
-}
-
-func TestResumeLaunchesWhenAllowed(t *testing.T) {
-	conf := "remote_control_password \"sekrit\" ls focus-window focus-tab send-text launch\n"
-	f := &fakeKitten{ls: lsFixture("")}
-	v := verbs(t, f, conf)
+	v := verbs(t, f)
 	writeFile(t, filepath.Join(v.SpoolDir, testSID+".json"),
 		fmt.Sprintf(`{"session_id":%q,"workspace":{"current_dir":"/x/foo"}}`, testSID))
 	if err := v.Resume(context.Background(), testSID, ""); err != nil {
@@ -231,9 +192,8 @@ func TestResumeLaunchesWhenAllowed(t *testing.T) {
 
 // A still-running session is focused, never duplicated (revalidate-at-exec).
 func TestResumeFocusesRunningSession(t *testing.T) {
-	conf := "remote_control_password \"sekrit\" launch\n"
 	f := &fakeKitten{ls: lsFixture(testSID)}
-	v := verbs(t, f, conf)
+	v := verbs(t, f)
 	writeFile(t, filepath.Join(v.SpoolDir, testSID+".json"),
 		fmt.Sprintf(`{"session_id":%q,"cwd":"/x/foo"}`, testSID))
 	if err := v.Resume(context.Background(), testSID, ""); err != nil {
@@ -245,9 +205,8 @@ func TestResumeFocusesRunningSession(t *testing.T) {
 }
 
 func TestResumeNeedsSpoolCwd(t *testing.T) {
-	conf := "remote_control_password \"sekrit\"\n" // no verb list = all allowed
 	f := &fakeKitten{ls: lsFixture("")}
-	v := verbs(t, f, conf)
+	v := verbs(t, f)
 	err := v.Resume(context.Background(), testSID, "")
 	if err == nil || !strings.Contains(err.Error(), "spool-backed") {
 		t.Fatalf("Resume(no cwd) = %v, want the spool-backed refusal", err)
@@ -286,7 +245,7 @@ func TestRegistryPID(t *testing.T) {
 
 func TestSpoolWindowIDShapes(t *testing.T) {
 	f := &fakeKitten{}
-	v := verbs(t, f, "")
+	v := verbs(t, f)
 	if got := v.spoolWindowID(testSID); got != 0 {
 		t.Errorf("spoolWindowID(no spool) = %d", got)
 	}

@@ -6,8 +6,10 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -176,5 +178,167 @@ func TestFind(t *testing.T) {
 	s, ok := find(liveScreens, "XENEON EDGE")
 	if !ok || s.W != 2560 {
 		t.Fatalf("find returned %+v, %v", s, ok)
+	}
+}
+
+func TestClampBackoff(t *testing.T) {
+	cases := map[time.Duration]time.Duration{
+		0:                backoffFloor,
+		-time.Second:     backoffFloor,
+		backoffFloor:     backoffFloor,
+		10 * time.Second: 10 * time.Second,
+		backoffCap:       backoffCap,
+		time.Hour:        backoffFloor, // corrupt persisted value
+	}
+	for in, want := range cases {
+		if got := clampBackoff(in); got != want {
+			t.Errorf("clampBackoff(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestResumeWait(t *testing.T) {
+	now := time.Unix(1000, 0)
+	if w := resumeWait(backoffState{}, now); w != 0 {
+		t.Fatalf("zero state must not wait, got %s", w)
+	}
+	mid := backoffState{LastLaunch: now.Add(-2 * time.Second), Backoff: 10 * time.Second}
+	if w := resumeWait(mid, now); w != 8*time.Second {
+		t.Fatalf("mid-window resume = %s, want 8s", w)
+	}
+	past := backoffState{LastLaunch: now.Add(-time.Minute), Backoff: 10 * time.Second}
+	if w := resumeWait(past, now); w != 0 {
+		t.Fatalf("elapsed window must not wait, got %s", w)
+	}
+}
+
+func TestBackoffStateRoundtrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hud-backoff.state")
+	if got := loadBackoff(p); !got.LastLaunch.IsZero() {
+		t.Fatal("missing file must load as zero state")
+	}
+	st := backoffState{LastLaunch: time.Unix(1234, 0).UTC(), Backoff: 8 * time.Second}
+	saveBackoff(p, st)
+	got := loadBackoff(p)
+	if !got.LastLaunch.Equal(st.LastLaunch) || got.Backoff != st.Backoff {
+		t.Fatalf("roundtrip: got %+v, want %+v", got, st)
+	}
+	if err := os.WriteFile(p, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadBackoff(p); !got.LastLaunch.IsZero() {
+		t.Fatal("corrupt file must load as zero state")
+	}
+}
+
+func TestOrphanMatch(t *testing.T) {
+	kitty, sock := "/nix/store/x/.kitty-wrapped", "/state/kitty-panel.sock"
+	argv := kitty + " -o allow_remote_control=socket-only --listen-on unix:" + sock
+	if !orphanMatch(argv, kitty, sock) {
+		t.Fatal("live matching argv must be a kill")
+	}
+	if orphanMatch("", kitty, sock) {
+		t.Fatal("dead pid (empty argv) must never be a kill")
+	}
+	if orphanMatch("/usr/bin/vim notes.txt", kitty, sock) {
+		t.Fatal("reused pid running something else must never be a kill")
+	}
+	if orphanMatch(argv, kitty, "/other/socket") {
+		t.Fatal("a kitty on a different socket is not ours")
+	}
+	if orphanMatch(argv, "", "") {
+		t.Fatal("empty binary/socket must never match")
+	}
+}
+
+func TestExitedBySignal(t *testing.T) {
+	if exitedBySignal(nil) {
+		t.Fatal("nil error is not a signal death")
+	}
+	if exitedBySignal(exec.Command("/bin/sh", "-c", "exit 3").Run()) {
+		t.Fatal("a plain non-zero exit is not a signal death")
+	}
+	if !exitedBySignal(exec.Command("/bin/sh", "-c", "kill -9 $$").Run()) {
+		t.Fatal("SIGKILL death must classify as signaled")
+	}
+}
+
+func TestAcquireLockSingleton(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hud-launcher.lock")
+	unlock, err := acquireLock(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireLock(p); err == nil {
+		t.Fatal("second acquire must fail while the lock is held")
+	}
+	unlock()
+	unlock2, err := acquireLock(p)
+	if err != nil {
+		t.Fatalf("reacquire after release: %v", err)
+	}
+	unlock2()
+}
+
+// terminate must kill the whole process group, not just the leader --
+// surviving grandchildren were the 2026-07-14 stack.
+func TestTerminateKillsGroup(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & wait")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	terminate(cmd, done, t.Logf)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(-pid, 0) != nil {
+			return // whole group gone
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("process group still alive after terminate")
+}
+
+// sweepOrphan kills a live argv-matched group and removes the pidfile; a
+// stale pidfile is cleaned without killing anything. Skips where ps cannot
+// read process argv (the nix builder) -- house skip-on-missing convention;
+// the kill decision itself is covered hermetically by TestOrphanMatch.
+func TestSweepOrphan(t *testing.T) {
+	if psCommand(os.Getpid()) == "" {
+		t.Skip("ps -o command= unusable in this environment")
+	}
+	sock := hudSockPath(t)
+	// the loop keeps sh from exec-optimizing itself away (a bare `sleep 30`
+	// would replace sh and drop the -c argv the sweep matches against)
+	cmd := exec.Command("/bin/sh", "-c", "while :; do sleep 30; done # --listen-on unix:"+sock)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = cmd.Wait() }() // reap so the killed pid does not linger as a zombie
+	pidPath := filepath.Join(filepath.Dir(sock), "hud-kitty.pid")
+	writePidfile(pidPath, cmd.Process.Pid)
+
+	opts := Options{KittyBin: "/bin/sh", Socket: sock, Logf: t.Logf}
+	sweepOrphan(opts, pidPath)
+	if _, err := os.Stat(pidPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("pidfile not removed after sweep")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && syscall.Kill(cmd.Process.Pid, 0) == nil {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if syscall.Kill(cmd.Process.Pid, 0) == nil {
+		t.Fatal("orphan survived the sweep")
+	}
+
+	// stale pidfile: a pid that cannot exist is cleaned, nothing killed
+	writePidfile(pidPath, 99999999)
+	sweepOrphan(opts, pidPath)
+	if _, err := os.Stat(pidPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("stale pidfile not removed")
 	}
 }

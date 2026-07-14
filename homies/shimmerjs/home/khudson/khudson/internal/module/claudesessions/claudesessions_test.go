@@ -59,8 +59,44 @@ const fixtureTranscript = `{"type":"user","message":{"content":"older prompt"}}
 not json at all
 `
 
+// regFixtureStart is the pinned process start time fixture records carry
+// as startedAt; TestMain pins the procStartTime seam to the same instant,
+// so the regAlive identity check passes deterministically (no real sysctl
+// in unit tests -- the nix sandbox must not decide liveness).
+var regFixtureStart = time.UnixMilli(1_700_000_000_000)
+
+func TestMain(m *testing.M) {
+	realProcStart := procStartTime
+	procStartTime = func(int) (time.Time, bool) { return regFixtureStart, true }
+	// the env-gated live test needs the real seam back (liveSeams)
+	sysctlProcStartReal = realProcStart
+	os.Exit(m.Run())
+}
+
+// sysctlProcStartReal restores the real identity probe for live-gated
+// tests that render against the actual host registry.
+var sysctlProcStartReal func(int) (time.Time, bool)
+
 func regRecord(id, name, cwd string, updatedAt int64) string {
-	return fmt.Sprintf(`{"sessionId":%q,"name":%q,"cwd":%q,"updatedAt":%d,"status":"busy"}`, id, name, cwd, updatedAt)
+	return fmt.Sprintf(`{"sessionId":%q,"pid":%d,"name":%q,"cwd":%q,"startedAt":%d,"updatedAt":%d,"status":"busy"}`,
+		id, os.Getpid(), name, cwd, regFixtureStart.UnixMilli(), updatedAt)
+}
+
+// regStatusRecord is a registry record with an explicit status/waitingFor;
+// the pid is the test process and startedAt matches the pinned identity
+// seam, so the discover live gate passes.
+func regStatusRecord(id, status, waitingFor string, statusUpdatedAt int64) string {
+	return fmt.Sprintf(`{"sessionId":%q,"pid":%d,"status":%q,"waitingFor":%q,"startedAt":%d,"updatedAt":1,"statusUpdatedAt":%d}`,
+		id, os.Getpid(), status, waitingFor, regFixtureStart.UnixMilli(), statusUpdatedAt)
+}
+
+// regLive registers id as a live session with a NEUTRAL status ("idle"):
+// it passes the live-registry gate without touching any other signal --
+// tone stays honest to file mtimes (busy would force active), needs-user
+// stays false, and nothing escapes to the spool heuristic.
+func regLive(t *testing.T, sessionsDir, id string) {
+	t.Helper()
+	touch(t, filepath.Join(sessionsDir, id+".json"), regStatusRecord(id, "idle", "", 0), time.Now())
 }
 
 // tsEntry is one transcript head line carrying a start timestamp.
@@ -770,16 +806,37 @@ func TestReadNames(t *testing.T) {
 	touch(t, filepath.Join(dir, "200.json"), regRecord(id, "fresh-name", "/x/new", 2), time.Now())
 	touch(t, filepath.Join(dir, "300.json"), `{"pid":300`, time.Now())
 	touch(t, filepath.Join(dir, "400.json"), `{"pid":400,"name":"no-session-id"}`, time.Now())
+	// pid-less record: the filename stem stands in
+	other := "bbbbbbbb-1111-2222-3333-444444444444"
+	touch(t, filepath.Join(dir, "500.json"),
+		fmt.Sprintf(`{"sessionId":%q,"status":"waiting","waitingFor":"permission prompt","nameSource":"derived","updatedAt":5,"statusUpdatedAt":123}`, other),
+		time.Now())
 
-	m := readNames(dir)
-	if len(m) != 1 || m[id].Name != "fresh-name" || m[id].Cwd != "/x/new" {
+	m, err := readNames(dir)
+	if err != nil {
+		t.Fatalf("readNames: %v", err)
+	}
+	if len(m) != 2 || m[id].Name != "fresh-name" || m[id].Cwd != "/x/new" {
 		t.Errorf("readNames = %+v, want newest updatedAt to win", m)
 	}
-	if m := readNames(filepath.Join(dir, "nope")); len(m) != 0 {
-		t.Errorf("readNames(missing) = %+v, want empty", m)
+	if m[id].PID != os.Getpid() || m[id].Status != "busy" {
+		t.Errorf("readNames[%s] = %+v, want the record's pid and status", id, m[id])
 	}
-	if m := readNames(""); len(m) != 0 {
-		t.Errorf("readNames(\"\") = %+v, want empty", m)
+	if r := m[other]; r.PID != 500 || r.Status != "waiting" || r.WaitingFor != "permission prompt" ||
+		r.NameSource != "derived" || r.StatusUpdatedAt != 123 {
+		t.Errorf("readNames[%s] = %+v, want pid from the filename stem and the status fields", other, r)
+	}
+	// a missing dir is the legit no-registry state, not an error
+	if m, err := readNames(filepath.Join(dir, "nope")); err != nil || len(m) != 0 {
+		t.Errorf("readNames(missing) = %+v, %v, want empty and no error", m, err)
+	}
+	if m, err := readNames(""); err != nil || len(m) != 0 {
+		t.Errorf("readNames(\"\") = %+v, %v, want empty and no error", m, err)
+	}
+	// any other ReadDir failure must ERROR: the registry gates visibility,
+	// so a faulted read must not render as "no active sessions"
+	if _, err := readNames(filepath.Join(dir, "100.json")); err == nil {
+		t.Error("readNames(non-dir) = nil error, want the fault surfaced")
 	}
 }
 
@@ -805,13 +862,17 @@ func TestPollDiscoveryFleetAndOverlay(t *testing.T) {
 
 	pb := filepath.Join(projects, "-Users-x-dev-bar")
 	touch(t, filepath.Join(pb, recentID+".jsonl"), tsEntry("2026-07-03T10:00:00Z")+"\n", now.Add(-5*time.Minute))
-	touch(t, filepath.Join(pb, "expired.jsonl"), "{}", now.Add(-7*time.Hour))
+	// no registry record: a dead session's transcript never renders
+	touch(t, filepath.Join(pb, "dead.jsonl"), "{}", now)
 	touch(t, filepath.Join(pb, "notes.txt"), "ignored", now)
 
+	sessionsDir := t.TempDir()
+	regLive(t, sessionsDir, liveID)
+	regLive(t, sessionsDir, recentID)
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -885,15 +946,21 @@ func TestPollPromptAndNames(t *testing.T) {
 func TestPollSpoolPromptPrimary(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "aaaaaaaa-1111-2222-3333-444444444444"
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), fixtureTranscript, now)
 	touch(t, filepath.Join(spool, id+".json"), fixtureHooked, now)
+	// live but status-less record: the alive gate passes and the spool
+	// heuristic keeps driving the state column
+	touch(t, filepath.Join(sessionsDir, id+".json"),
+		fmt.Sprintf(`{"sessionId":%q,"pid":%d,"startedAt":%d,"updatedAt":1}`,
+			id, os.Getpid(), regFixtureStart.UnixMilli()), now)
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -920,6 +987,7 @@ func TestPollSpoolPromptPrimary(t *testing.T) {
 func TestPollSteeringOverridesStaleSpoolPrompt(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "aaaaaaaa-1111-2222-3333-444444444444"
 	body := fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"content":"do the thing"}}`+"\n"+
@@ -929,11 +997,12 @@ func TestPollSteeringOverridesStaleSpoolPrompt(t *testing.T) {
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), body, now)
 	sp := fmt.Sprintf(`{"session_id":%q,"prompt":"spool prompt","ts":%d}`, id, now.Add(-5*time.Minute).Unix())
 	touch(t, filepath.Join(spool, id+".json"), sp, now.Add(-5*time.Minute))
+	regLive(t, sessionsDir, id)
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -953,6 +1022,7 @@ func TestPollSteeringOverridesStaleSpoolPrompt(t *testing.T) {
 func TestPollSteeringSurvivesStopSpoolBump(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "aaaaaaaa-1111-2222-3333-444444444444"
 	body := fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"content":"steer toward the tail"}}`+"\n",
@@ -960,12 +1030,13 @@ func TestPollSteeringSurvivesStopSpoolBump(t *testing.T) {
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), body, now.Add(-time.Minute))
 	sp := fmt.Sprintf(`{"session_id":%q,"prompt":"spool prompt","ts":%d}`, id, now.Add(-5*time.Minute).Unix())
 	touch(t, filepath.Join(spool, id+".json"), sp, now.Add(-5*time.Minute))
+	regLive(t, sessionsDir, id)
 
 	mod := New()
 	params := map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	}
 	if _, err := mod.Poll(context.Background(), params); err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -993,6 +1064,7 @@ func TestPollSteeringSurvivesStopSpoolBump(t *testing.T) {
 func TestPollSpoolNewerThanTailWins(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "aaaaaaaa-1111-2222-3333-444444444444"
 	body := fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"content":"older tail prompt"}}`+"\n",
@@ -1000,11 +1072,12 @@ func TestPollSpoolNewerThanTailWins(t *testing.T) {
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), body, now)
 	sp := fmt.Sprintf(`{"session_id":%q,"prompt":"spool prompt","ts":%d}`, id, now.Add(-time.Minute).Unix())
 	touch(t, filepath.Join(spool, id+".json"), sp, now.Add(-2*time.Minute))
+	regLive(t, sessionsDir, id)
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1025,8 +1098,10 @@ func TestPollTailReadCachedByMtime(t *testing.T) {
 	id := "aaaaaaaa-1111-2222-3333-444444444444"
 	p := filepath.Join(projects, "p", id+".jsonl")
 	touch(t, p, `{"type":"user","message":{"content":"do the thing"}}`+"\n", now.Add(-time.Minute))
+	sessionsDir := t.TempDir()
+	regLive(t, sessionsDir, id)
 	mod := New()
-	params := map[string]any{"projectsDir": projects, "sessionsDir": t.TempDir()}
+	params := map[string]any{"projectsDir": projects, "sessionsDir": sessionsDir}
 	for i := range 2 {
 		if _, err := mod.Poll(context.Background(), params); err != nil {
 			t.Fatalf("Poll %d: %v", i, err)
@@ -1094,16 +1169,18 @@ func BenchmarkFreshenPromptsWarm(b *testing.B) {
 func TestPollTurnCompletionDrivesTime(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "bbbbbbbb-1111-2222-3333-444444444444"
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), "{}", now.Add(-5*time.Minute))
 	sp := fmt.Sprintf(`{"session_id":%q,"attention":false,"stopped_ts":%d}`, id, now.Unix())
 	touch(t, filepath.Join(spool, id+".json"), sp, now)
+	regLive(t, sessionsDir, id)
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1121,18 +1198,22 @@ func TestPollTurnCompletionDrivesTime(t *testing.T) {
 	}
 }
 
-func TestPollSpoolNameWithoutRegistry(t *testing.T) {
+// A live registry record with no name leaves the spool session_name as
+// the display key.
+func TestPollSpoolNameWithoutRegistryName(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "bbbbbbbb-1111-2222-3333-444444444444"
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), "{}", now)
 	touch(t, filepath.Join(spool, id+".json"), fixtureNamed, now)
+	regLive(t, sessionsDir, id)
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1162,34 +1243,35 @@ func TestPollRegistryCwdFallback(t *testing.T) {
 	}
 }
 
-func TestPollWindowParam(t *testing.T) {
+// The window param is vestigial: the live-registry gate replaced age
+// pruning, so a bad value still errors but an in-window mtime is no
+// longer required to render.
+func TestPollWindowVestigial(t *testing.T) {
 	projects := t.TempDir()
-	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	touch(t, filepath.Join(projects, "p", "aaaaaaaa-in.jsonl"), "{}", now.Add(-30*time.Minute))
 	touch(t, filepath.Join(projects, "p", "bbbbbbbb-out.jsonl"), "{}", now.Add(-2*time.Hour))
-	// window pruning is by transcript mtime: a fresh hook-written spool
-	// (stop or notification) cannot resurrect an out-of-window session
-	sp := fmt.Sprintf(`{"session_id":"bbbbbbbb-out","attention":true,"notification_ts":%d,"stopped_ts":%d}`,
-		now.Unix(), now.Unix())
-	touch(t, filepath.Join(spool, "bbbbbbbb-out.json"), sp, now)
+	regLive(t, sessionsDir, "aaaaaaaa-in")
+	regLive(t, sessionsDir, "bbbbbbbb-out")
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
-		"dir":         spool,
 		"window":      "1h",
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
-	if data.Title != "claude 0/1" || len(data.Rows) != 1 ||
-		!strings.HasPrefix(rowIdent(data.Rows[0]), "aaaaaaaa") {
-		t.Errorf("Title = %q Rows = %+v, want only the 30m session", data.Title, data.Rows)
+	if data.Title != "claude 0/2" || len(data.Rows) != 2 {
+		t.Fatalf("Title = %q Rows = %+v, want the out-of-window live session kept", data.Title, data.Rows)
 	}
-	// the in-window session carries a relative age, not a wall clock
+	// zero starts order by id: the 30m session leads
 	if age := strings.TrimSpace(data.Rows[0].Spans[spanAge].Text); age != "30m" {
 		t.Errorf("age = %q, want 30m", age)
+	}
+	if age := strings.TrimSpace(data.Rows[1].Spans[spanAge].Text); age != "2h" {
+		t.Errorf("age = %q, want 2h", age)
 	}
 
 	if _, err := New().Poll(context.Background(), map[string]any{
@@ -1202,15 +1284,17 @@ func TestPollWindowParam(t *testing.T) {
 
 func TestPollMaxParam(t *testing.T) {
 	projects := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	for i := range 4 {
 		touch(t, filepath.Join(projects, "p", fmt.Sprintf("%08d-max.jsonl", i)), "{}",
 			now.Add(-time.Duration(i+2)*time.Minute))
+		regLive(t, sessionsDir, fmt.Sprintf("%08d-max", i))
 	}
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"max":         int64(2),
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1222,13 +1306,15 @@ func TestPollMaxParam(t *testing.T) {
 
 func TestPollNegativeMax(t *testing.T) {
 	projects := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	touch(t, filepath.Join(projects, "p", "aaaaaaaa-neg.jsonl"), "{}", now.Add(-2*time.Minute))
+	regLive(t, sessionsDir, "aaaaaaaa-neg")
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"max":         int64(-1),
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1253,8 +1339,11 @@ func TestPollFixedOrderAcrossActivity(t *testing.T) {
 	pdir := filepath.Join(projects, "p")
 	touch(t, filepath.Join(pdir, older+".jsonl"), tsEntry("2026-07-03T10:00:00Z")+"\n", now.Add(-2*time.Minute))
 	touch(t, filepath.Join(pdir, newer+".jsonl"), tsEntry("2026-07-03T11:00:00Z")+"\n", now.Add(-3*time.Minute))
+	sessionsDir := t.TempDir()
+	regLive(t, sessionsDir, older)
+	regLive(t, sessionsDir, newer)
 
-	params := map[string]any{"projectsDir": projects, "sessionsDir": t.TempDir()}
+	params := map[string]any{"projectsDir": projects, "sessionsDir": sessionsDir}
 	mod := New()
 	order := func(data module.Data) []string {
 		var got []string
@@ -1301,12 +1390,14 @@ func TestPollFixedOrderAcrossActivity(t *testing.T) {
 func TestPollGroupedByCwdOrder(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	pdir := filepath.Join(projects, "p")
 	mk := func(id, name, dir, start string) {
 		touch(t, filepath.Join(pdir, id+".jsonl"), tsEntry(start)+"\n", now)
 		sp := fmt.Sprintf(`{"session_id":%q,"session_name":%q,"workspace":{"current_dir":%q}}`, id, name, dir)
 		touch(t, filepath.Join(spool, id+".json"), sp, now)
+		regLive(t, sessionsDir, id)
 	}
 	// starts interleave across three cwds: a flat newest-first sort would
 	// yield s5 s4 s3 s2 s1
@@ -1316,7 +1407,7 @@ func TestPollGroupedByCwdOrder(t *testing.T) {
 	mk("dddddddd-1111-2222-3333-444444444444", "s4", "/x/one", "2026-07-03T13:00:00Z")
 	mk("eeeeeeee-1111-2222-3333-444444444444", "s5", "/x/two", "2026-07-03T14:00:00Z")
 
-	params := map[string]any{"projectsDir": projects, "dir": spool, "sessionsDir": t.TempDir()}
+	params := map[string]any{"projectsDir": projects, "dir": spool, "sessionsDir": sessionsDir}
 	mod := New()
 	// group NEWEST member: /x/two 14:00 > /x/one 13:00 > /x/three 12:00;
 	// within a group newest start first (a session birth floats its whole
@@ -1344,6 +1435,7 @@ func TestPollGroupedByCwdOrder(t *testing.T) {
 func TestPollGroupZeroStartDoesNotSinkGroup(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	pdir := filepath.Join(projects, "p")
 	mk := func(id, name, dir, start string) {
@@ -1354,12 +1446,13 @@ func TestPollGroupZeroStartDoesNotSinkGroup(t *testing.T) {
 		touch(t, filepath.Join(pdir, id+".jsonl"), body, now)
 		sp := fmt.Sprintf(`{"session_id":%q,"session_name":%q,"workspace":{"current_dir":%q}}`, id, name, dir)
 		touch(t, filepath.Join(spool, id+".json"), sp, now)
+		regLive(t, sessionsDir, id)
 	}
 	mk("aaaaaaaa-1111-2222-3333-444444444444", "s1", "/x/one", "2026-07-03T10:00:00Z")
 	mk("cccccccc-1111-2222-3333-444444444444", "s3", "/x/three", "2026-07-03T12:00:00Z")
 	mk("ffffffff-1111-2222-3333-444444444444", "sN", "/x/three", "")
 
-	params := map[string]any{"projectsDir": projects, "dir": spool, "sessionsDir": t.TempDir()}
+	params := map[string]any{"projectsDir": projects, "dir": spool, "sessionsDir": sessionsDir}
 	data, err := New().Poll(context.Background(), params)
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1378,14 +1471,18 @@ func TestPollGroupZeroStartDoesNotSinkGroup(t *testing.T) {
 // Transcripts with no head timestamp order by id, still ignoring mtime.
 func TestPollOrderFallsBackToID(t *testing.T) {
 	projects := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	pdir := filepath.Join(projects, "p")
 	touch(t, filepath.Join(pdir, "cccccccc-x.jsonl"), "{}", now.Add(-time.Minute))
 	touch(t, filepath.Join(pdir, "aaaaaaaa-x.jsonl"), "{}", now.Add(-3*time.Minute))
 	touch(t, filepath.Join(pdir, "bbbbbbbb-x.jsonl"), "{}", now.Add(-2*time.Minute))
+	for _, id := range []string{"aaaaaaaa-x", "bbbbbbbb-x", "cccccccc-x"} {
+		regLive(t, sessionsDir, id)
+	}
 
 	data, err := New().Poll(context.Background(), map[string]any{
-		"projectsDir": projects, "sessionsDir": t.TempDir(),
+		"projectsDir": projects, "sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1403,13 +1500,15 @@ func TestPollOrderFallsBackToID(t *testing.T) {
 
 func TestPollFleetDrivesLiveness(t *testing.T) {
 	projects := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "aaaaaaaa-1111-2222-3333-444444444444"
 	pdir := filepath.Join(projects, "p")
 	touch(t, filepath.Join(pdir, id+".jsonl"), "{}", now.Add(-5*time.Minute))
 	touch(t, filepath.Join(pdir, id, "subagents", "agent-a.jsonl"), "{}", now)
+	regLive(t, sessionsDir, id)
 
-	data, err := New().Poll(context.Background(), map[string]any{"projectsDir": projects, "sessionsDir": t.TempDir()})
+	data, err := New().Poll(context.Background(), map[string]any{"projectsDir": projects, "sessionsDir": sessionsDir})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
@@ -1427,6 +1526,7 @@ func TestPollFleetDrivesLiveness(t *testing.T) {
 
 func TestPollWorkflowFileMtimeDrivesLiveness(t *testing.T) {
 	projects := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "bbbbbbbb-1111-2222-3333-444444444444"
 	pdir := filepath.Join(projects, "p")
@@ -1436,8 +1536,9 @@ func TestPollWorkflowFileMtimeDrivesLiveness(t *testing.T) {
 	// appends touch files, not the dir: an old dir mtime must not hide a
 	// running stage
 	touchDir(t, wf, now.Add(-10*time.Minute))
+	regLive(t, sessionsDir, id)
 
-	data, err := New().Poll(context.Background(), map[string]any{"projectsDir": projects, "sessionsDir": t.TempDir()})
+	data, err := New().Poll(context.Background(), map[string]any{"projectsDir": projects, "sessionsDir": sessionsDir})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
@@ -1459,10 +1560,14 @@ func TestPollCrossProjectSatellites(t *testing.T) {
 	sat := filepath.Join(projects, "projectB", sid)
 	touch(t, filepath.Join(sat, "subagents", "agent-1.jsonl"), "{}", now)
 	touch(t, filepath.Join(sat, "subagents", "workflows", "wf_1", "log.jsonl"), "{}", now)
-	// a satellite with no transcript anywhere is not a session
+	// a satellite with no transcript anywhere is not a session, live
+	// registry record or not
 	touch(t, filepath.Join(projects, "projectC", orphan, "subagents", "agent-2.jsonl"), "{}", now)
+	sessionsDir := t.TempDir()
+	regLive(t, sessionsDir, sid)
+	regLive(t, sessionsDir, orphan)
 
-	data, err := New().Poll(context.Background(), map[string]any{"projectsDir": projects, "sessionsDir": t.TempDir()})
+	data, err := New().Poll(context.Background(), map[string]any{"projectsDir": projects, "sessionsDir": sessionsDir})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
@@ -1477,15 +1582,17 @@ func TestPollCrossProjectSatellites(t *testing.T) {
 func TestPollMalformedSpoolFallsBack(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "cccccccc-1111"
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), "{}", now.Add(-time.Minute))
 	touch(t, filepath.Join(spool, id+".json"), fixtureMalformed, now)
+	regLive(t, sessionsDir, id)
 
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1498,9 +1605,11 @@ func TestPollMalformedSpoolFallsBack(t *testing.T) {
 func TestPollSkipsNonRegularSpool(t *testing.T) {
 	projects := t.TempDir()
 	spool := t.TempDir()
+	sessionsDir := t.TempDir()
 	now := time.Now()
 	id := "dddddddd-1111"
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), "{}", now.Add(-time.Minute))
+	regLive(t, sessionsDir, id)
 	// a FIFO with no writer blocks open-for-read forever; overlay must skip
 	// it.
 	if err := syscall.Mkfifo(filepath.Join(spool, id+".json"), 0o644); err != nil {
@@ -1510,7 +1619,7 @@ func TestPollSkipsNonRegularSpool(t *testing.T) {
 	data, err := New().Poll(context.Background(), map[string]any{
 		"projectsDir": projects,
 		"dir":         spool,
-		"sessionsDir": t.TempDir(),
+		"sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -1602,9 +1711,11 @@ func TestDisplayDirsRepoRelative(t *testing.T) {
 	touch(t, filepath.Join(projects, "p", id+".jsonl"), tsEntry("2026-07-03T10:00:00Z")+"\n", now)
 	sp := fmt.Sprintf(`{"session_id":%q,"session_name":"s1","workspace":{"current_dir":%q}}`, id, work)
 	touch(t, filepath.Join(spool, id+".json"), sp, now)
+	sessionsDir := t.TempDir()
+	regLive(t, sessionsDir, id)
 
 	data, err := New().Poll(context.Background(), map[string]any{
-		"projectsDir": projects, "dir": spool, "sessionsDir": t.TempDir(),
+		"projectsDir": projects, "dir": spool, "sessionsDir": sessionsDir,
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)

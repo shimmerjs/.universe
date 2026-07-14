@@ -29,6 +29,17 @@ import (
 // "minimizedEvery" (a duration string) overrides it.
 const minimizedEvery = 30 * time.Second
 
+// appsEvery is the default floor between app-list refreshes (the
+// `defaults export` + `lsappinfo list` exec pair); params "appsEvery"
+// (a duration string) overrides it. Every lsappinfo exec triggers a
+// launchservicesd entitlement-denial log flood, so the pair runs at
+// this cadence and NEVER at the widget poll -- ticks between refreshes
+// re-render from the cache with zero subprocesses. There is no cheap
+// in-process signal for "the LS-visible app set changed" without cgo
+// (NSWorkspace notifications) -- kern.proc churn is dominated by
+// non-app processes -- so the floor is a plain cadence.
+const appsEvery = 30 * time.Second
+
 // selfBundleID / selfName identify khudson's own HUD bundle (the rebranded
 // kitty: CFBundleIdentifier org.khudson.hud, display name "khudson"); the
 // mirror must never list itself. The bundle id is the match; the name is
@@ -40,7 +51,8 @@ const (
 )
 
 // Mod implements module.Module. The singleton caches the minimized-window
-// sweep between its cadence ticks; now and sample are test seams.
+// sweep AND the exec-pair app listing between their cadence ticks; now,
+// sample, and list are test seams.
 type Mod struct {
 	mu         sync.Mutex
 	now        func() time.Time
@@ -48,6 +60,11 @@ type Mod struct {
 	last       time.Time
 	mins       []minWin
 	minErr     error
+	list       func(context.Context) ([]string, map[string]bool, error)
+	appsLast   time.Time
+	pinned     []string
+	running    map[string]bool
+	appsErr    error
 	promptOnce sync.Once
 	exe        string
 }
@@ -69,21 +86,63 @@ func New() *Mod {
 func (*Mod) Name() string { return "dock-mirror" }
 
 func (m *Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error) {
-	plist, err := run(ctx, "defaults", "export", "com.apple.dock", "-")
-	if err != nil {
-		return module.Data{}, err
-	}
-	apps, err := run(ctx, "lsappinfo", "list")
+	pinned, running, err := m.appsCached(ctx, params)
 	if err != nil {
 		return module.Data{}, err
 	}
 	mins, minErr := m.minimizedCached(ctx, params)
-	return render(m.exe, parsePinnedApps(plist), parseRunning(apps), mins, minErr), nil
+	return render(m.exe, pinned, running, mins, minErr), nil
+}
+
+// appsCached reruns the exec pair at most once per cadence tick and reuses
+// the cached result (lists OR error) between ticks -- a cached error is
+// returned without an exec, so a failing lsappinfo cannot re-open the
+// per-tick flood either.
+func (m *Mod) appsCached(ctx context.Context, params map[string]any) ([]string, map[string]bool, error) {
+	every := appsEvery
+	if s, ok := params["appsEvery"].(string); ok {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			every = d
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now, list := time.Now, listApps
+	if m.now != nil {
+		now = m.now
+	}
+	if m.list != nil {
+		list = m.list
+	}
+	if !m.appsLast.IsZero() && now().Sub(m.appsLast) < every {
+		return m.pinned, m.running, m.appsErr
+	}
+	pinned, running, err := list(ctx)
+	if err != nil && ctx.Err() != nil {
+		return pinned, running, err // timeout: leave appsLast unset so the next poll retries
+	}
+	m.pinned, m.running, m.appsErr = pinned, running, err
+	m.appsLast = now()
+	return m.pinned, m.running, m.appsErr
+}
+
+// listApps is the exec pair behind appsCached: pinned ordering from the
+// dock plist, running state from lsappinfo.
+func listApps(ctx context.Context) ([]string, map[string]bool, error) {
+	plist, err := run(ctx, "defaults", "export", "com.apple.dock", "-")
+	if err != nil {
+		return nil, nil, err
+	}
+	apps, err := run(ctx, "lsappinfo", "list")
+	if err != nil {
+		return nil, nil, err
+	}
+	return parsePinnedApps(plist), parseRunning(apps), nil
 }
 
 // minimizedCached reruns the AX sweep at most once per cadence tick and
-// reuses the cached result (windows OR error) between ticks -- running-app
-// sampling stays at the widget poll, the sweep does not.
+// reuses the cached result (windows OR error) between ticks -- like the
+// app listing, the sweep never runs at the widget poll.
 func (m *Mod) minimizedCached(ctx context.Context, params map[string]any) ([]minWin, error) {
 	every := minimizedEvery
 	if s, ok := params["minimizedEvery"].(string); ok {

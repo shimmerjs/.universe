@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -169,103 +168,6 @@ func TestParseLSBadJSON(t *testing.T) {
 	}
 }
 
-func TestParsePassword(t *testing.T) {
-	for _, tt := range []struct {
-		name, conf, want string
-	}{
-		{"single quoted", "remote_control_password 'hunter two' ls focus-window\n", "hunter two"},
-		{"double quoted", `remote_control_password "pa ss" ls focus-window focus-tab send-text` + "\n", "pa ss"},
-		{"bare token", "remote_control_password hunter2 ls\n", "hunter2"},
-		{"bare token no verbs", "remote_control_password hunter2", "hunter2"},
-		{"comments and blanks", "# main kitty RC password\n\nremote_control_password 'pw' ls\n", "pw"},
-		{"commented option skipped", "# remote_control_password 'nope' ls\nremote_control_password 'yep' ls\n", "yep"},
-		{"first line wins", "remote_control_password 'one' ls\nremote_control_password 'two' ls\n", "one"},
-		{"leading whitespace", "  \tremote_control_password 'pw' ls\n", "pw"},
-		{"prefix without boundary", "remote_control_passwords 'nope' ls\n", ""},
-		{"option without value", "remote_control_password\nremote_control_password   \n", ""},
-		{"unterminated quote", "remote_control_password 'pw ls\n", "pw ls"},
-		{"unrelated lines only", "allow_remote_control socket-only\n", ""},
-		{"empty", "", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := parseRCAuth([]byte(tt.conf)).Password; got != tt.want {
-				t.Errorf("parseRCAuth(%q).Password = %q, want %q", tt.conf, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestReadPassword(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "rc-password.conf")
-	if err := os.WriteFile(file, []byte("remote_control_password 'pw' ls\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := readPassword(file)
-	if err != nil || got != "pw" {
-		t.Errorf("readPassword = %q, %v, want %q, nil", got, err, "pw")
-	}
-	got, err = readPassword(filepath.Join(dir, "missing.conf"))
-	if err != nil || got != "" {
-		t.Errorf("readPassword(missing) = %q, %v, want empty, nil (mirror the absent include)", got, err)
-	}
-}
-
-// The verb allowlist follows the password on the remote_control_password
-// line; kitty semantics make an empty list unrestricted.
-func TestParseRCAuthVerbs(t *testing.T) {
-	for _, tt := range []struct {
-		name, conf string
-		verbs      []string
-	}{
-		{"M9 set", `remote_control_password "pw" ls focus-window focus-tab send-text` + "\n",
-			[]string{"ls", "focus-window", "focus-tab", "send-text"}},
-		{"no verbs", `remote_control_password "pw"` + "\n", nil},
-		{"tab separated", "remote_control_password 'pw'\tls\tlaunch\n", []string{"ls", "launch"}},
-		{"empty conf", "", nil},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseRCAuth([]byte(tt.conf))
-			if !reflect.DeepEqual(got.Verbs, tt.verbs) {
-				t.Errorf("verbs = %v, want %v", got.Verbs, tt.verbs)
-			}
-		})
-	}
-}
-
-func TestRCAuthAllows(t *testing.T) {
-	m9 := RCAuth{Password: "pw", Verbs: []string{"ls", "focus-window", "focus-tab", "send-text"}}
-	if m9.Allows("launch") {
-		t.Error("M9 allowlist must NOT allow launch (the resume user gate)")
-	}
-	if !m9.Allows("focus-window") {
-		t.Error("M9 allowlist must allow focus-window")
-	}
-	if !(RCAuth{}).Allows("launch") {
-		t.Error("empty allowlist (or missing file) is unrestricted per kitty semantics")
-	}
-	if !(RCAuth{Verbs: []string{"*"}}).Allows("launch") {
-		t.Error("* wildcard must allow everything")
-	}
-}
-
-func TestReadRCAuth(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "rc-password.conf")
-	conf := `remote_control_password "pw" ls focus-window` + "\n"
-	if err := os.WriteFile(file, []byte(conf), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	a, err := ReadRCAuth(file)
-	if err != nil || a.Password != "pw" || len(a.Verbs) != 2 {
-		t.Errorf("ReadRCAuth = %+v, %v", a, err)
-	}
-	a, err = ReadRCAuth(filepath.Join(dir, "missing.conf"))
-	if err != nil || a.Password != "" || a.Verbs != nil {
-		t.Errorf("ReadRCAuth(missing) = %+v, %v, want zero (mirror the absent include)", a, err)
-	}
-}
-
 func winRow(ids, title, titleStyle string, rest ...string) module.Row {
 	spans := []module.Span{
 		{Text: ids, Style: module.StyleDim},
@@ -336,21 +238,12 @@ func TestPollSocketUnreachable(t *testing.T) {
 	if _, err := exec.LookPath("kitten"); err != nil {
 		t.Skip("kitten not installed")
 	}
-	dir := t.TempDir()
-	pwFile := filepath.Join(dir, "rc-password.conf")
-	if err := os.WriteFile(pwFile, []byte("remote_control_password 'pw' ls\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_, err := Mod{}.Poll(ctx, map[string]any{
-		"socket":       filepath.Join(dir, "absent.sock"),
-		"passwordFile": pwFile,
+		"socket": filepath.Join(t.TempDir(), "absent.sock"),
 	})
 	if err == nil {
 		t.Fatal("Poll against absent socket: want error, got nil")
-	}
-	if strings.Contains(err.Error(), "pw") {
-		t.Errorf("error leaks password: %v", err)
 	}
 }

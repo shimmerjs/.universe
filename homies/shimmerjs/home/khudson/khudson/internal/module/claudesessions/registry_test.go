@@ -39,7 +39,7 @@ func TestDiscoverLiveRegistryGate(t *testing.T) {
 	touch(t, filepath.Join(sessionsDir, "dead.json"),
 		fmt.Sprintf(`{"sessionId":%q,"pid":-1,"status":"busy","updatedAt":1}`, deadID), now)
 
-	sessions, err := discover(context.Background(), projects, "", sessionsDir, now)
+	sessions, err := New().discover(context.Background(), projects, "", sessionsDir, now)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -48,10 +48,115 @@ func TestDiscoverLiveRegistryGate(t *testing.T) {
 	}
 }
 
-// needsUser: the registry status is ground truth when present -- waiting
-// is true with no spool attention at all, busy is false over a live
-// unanswered notification -- and status-less sessions fall back to the
-// spool heuristic.
+// A previously-alive session gets ONE poll of grace when its registry
+// record misses (torn concurrent rewrite): still rendered on the first
+// miss, gone on the second, and a fresh read re-arms the grace.
+func TestDiscoverAliveGrace(t *testing.T) {
+	projects := t.TempDir()
+	sessionsDir := t.TempDir()
+	now := time.Now()
+	id := "aaaaaaaa-1111-2222-3333-444444444444"
+	touch(t, filepath.Join(projects, "p", id+".jsonl"), tsEntry("2026-07-03T11:00:00Z")+"\n", now)
+	regLive(t, sessionsDir, id)
+
+	m := New()
+	poll := func() int {
+		sessions, err := m.discover(context.Background(), projects, "", sessionsDir, now)
+		if err != nil {
+			t.Fatalf("discover: %v", err)
+		}
+		return len(sessions)
+	}
+	if n := poll(); n != 1 {
+		t.Fatalf("alive poll = %d sessions, want 1", n)
+	}
+	if err := os.Remove(filepath.Join(sessionsDir, id+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if n := poll(); n != 1 {
+		t.Errorf("first miss = %d sessions, want 1 (grace)", n)
+	}
+	if n := poll(); n != 0 {
+		t.Errorf("second miss = %d sessions, want 0 (grace spent)", n)
+	}
+	regLive(t, sessionsDir, id)
+	if n := poll(); n != 1 {
+		t.Errorf("fresh read = %d sessions, want 1", n)
+	}
+	if err := os.Remove(filepath.Join(sessionsDir, id+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if n := poll(); n != 1 {
+		t.Errorf("re-armed miss = %d sessions, want 1 (grace re-armed)", n)
+	}
+}
+
+// regAlive: pid probe, then process identity (kernel start vs startedAt;
+// the seam is pinned to regFixtureStart), then the age backstop for
+// identity-unverifiable records.
+func TestRegAliveIdentity(t *testing.T) {
+	now := time.Now()
+	pid := os.Getpid()
+	if !(regAlive(reg{PID: pid, StartedAt: regFixtureStart.UnixMilli()}, now)) {
+		t.Error("matching identity not alive")
+	}
+	if regAlive(reg{PID: pid, StartedAt: regFixtureStart.Add(-time.Hour).UnixMilli()}, now) {
+		t.Error("recycled pid (start mismatch) counted alive")
+	}
+	if regAlive(reg{PID: -1, StartedAt: regFixtureStart.UnixMilli()}, now) {
+		t.Error("impossible pid counted alive")
+	}
+	// identity unverifiable (no startedAt): the updatedAt age backstop
+	if !(regAlive(reg{PID: pid, UpdatedAt: now.Add(-time.Hour).UnixMilli()}, now)) {
+		t.Error("fresh unverifiable record not alive")
+	}
+	if regAlive(reg{PID: pid, UpdatedAt: now.Add(-8 * 24 * time.Hour).UnixMilli()}, now) {
+		t.Error("ancient unverifiable record counted alive")
+	}
+	if !(regAlive(reg{PID: pid}, now)) {
+		t.Error("unverifiable record without updatedAt not alive")
+	}
+}
+
+// A registry-busy session tones ACTIVE even when nothing on disk moved
+// (a turn parked inside one long tool call appends no files) and counts
+// into the live tally; idle stays dim on the same stale mtime.
+func TestActiveFollowsRegistryBusy(t *testing.T) {
+	now := time.Now()
+	stale := now.Add(-10 * time.Minute)
+	busy := session{id: "a", mtime: stale, regStatus: "busy"}
+	if r := busy.lineW(now, 60); r.Style != module.StyleAccent {
+		t.Errorf("busy stale-mtime row style = %q, want accent", r.Style)
+	}
+	idle := session{id: "b", mtime: stale, regStatus: "idle"}
+	if r := idle.lineW(now, 60); r.Style != module.StyleDim {
+		t.Errorf("idle stale-mtime row style = %q, want dim", r.Style)
+	}
+	if title, _ := render([]session{busy, idle}, 5, now); title != "claude 1/2" {
+		t.Errorf("title = %q, want the busy session counted live", title)
+	}
+}
+
+// A faulted registry read surfaces as a Poll error on BOTH modules --
+// never the legit "no active sessions" empty state.
+func TestPollRegistryReadError(t *testing.T) {
+	projects := t.TempDir()
+	notADir := filepath.Join(t.TempDir(), "reg.json")
+	touch(t, notADir, "{}", time.Now())
+	params := map[string]any{"projectsDir": projects, "sessionsDir": notADir}
+	if _, err := New().Poll(context.Background(), params); err == nil {
+		t.Error("claude-sessions Poll: registry fault rendered as success")
+	}
+	if _, err := NewPanel(New()).Poll(context.Background(), params); err == nil {
+		t.Error("claude-panel Poll: registry fault rendered as success")
+	}
+}
+
+// needsUser: the registry status is ground truth when it speaks our
+// vocabulary -- waiting is true with no spool attention at all, busy
+// suppresses a bell it postdates -- with two escapes to the spool
+// heuristic: a bell strictly newer than the busy flip, and an unknown
+// status value (a future enum must not silently read as not-needing).
 func TestNeedsUserRegistryStatus(t *testing.T) {
 	now := time.Now()
 	waiting := session{regStatus: "waiting"}
@@ -60,11 +165,37 @@ func TestNeedsUserRegistryStatus(t *testing.T) {
 	}
 	busy := session{
 		regStatus: "busy",
+		regSince:  now,
 		attention: true,
 		notified:  now.Add(-time.Minute),
 	}
 	if busy.needsUser(now) {
-		t.Error("registry busy must override a live spool notification")
+		t.Error("registry busy must override the bell it postdates")
+	}
+	newerBell := session{
+		regStatus: "busy",
+		regSince:  now.Add(-time.Minute),
+		attention: true,
+		notified:  now,
+	}
+	if !newerBell.needsUser(now) {
+		t.Error("a bell strictly newer than the busy flip must escape to the heuristic")
+	}
+	idle := session{
+		regStatus: "idle",
+		attention: true,
+		notified:  now,
+	}
+	if idle.needsUser(now) {
+		t.Error("idle must be hard-false: an idle_prompt bell over a finished session is the resting state")
+	}
+	unknown := session{
+		regStatus: "blocked-on-mainframe",
+		attention: true,
+		notified:  now.Add(-time.Minute),
+	}
+	if !unknown.needsUser(now) {
+		t.Error("unknown status must fall back to attentionLive, not read as busy")
 	}
 	fallback := session{
 		attention: true,
@@ -72,6 +203,34 @@ func TestNeedsUserRegistryStatus(t *testing.T) {
 	}
 	if !fallback.needsUser(now) {
 		t.Error("status-less session must fall back to attentionLive")
+	}
+}
+
+// An idle_prompt bell over parked background work must not need the user
+// even when it escapes the busy override (bell newer than a stale busy
+// flip): the session waits on its fleet, and the wakeup answers the bell.
+func TestNeedsUserIdleBellOverParkedWork(t *testing.T) {
+	now := time.Now()
+	s := session{
+		regStatus: "busy",
+		regSince:  now.Add(-8 * time.Minute),
+		attention: true,
+		notifType: "idle_prompt",
+		notified:  now.Add(-time.Minute),
+		stopped:   now.Add(-2 * time.Minute),
+		bgTasks:   2,
+	}
+	if s.needsUser(now) {
+		t.Error("idle_prompt over parked bg tasks must not need the user")
+	}
+	s.bgTasks = 0
+	s.workflows = 1
+	if s.needsUser(now) {
+		t.Error("idle_prompt over a live workflow must not need the user")
+	}
+	s.workflows = 0
+	if !s.needsUser(now) {
+		t.Error("with nothing parked the idle bell must ring")
 	}
 }
 
@@ -158,8 +317,8 @@ func TestDerivedNameDropped(t *testing.T) {
 	touch(t, filepath.Join(p, titled+".jsonl"), tsEntry("2026-07-03T11:00:00Z")+"\n", now)
 	touch(t, filepath.Join(p, bare+".jsonl"), tsEntry("2026-07-03T10:00:00Z")+"\n", now)
 	derived := func(id, name string) string {
-		return fmt.Sprintf(`{"sessionId":%q,"pid":%d,"name":%q,"nameSource":"derived","cwd":"/x/can","status":"busy","updatedAt":1}`,
-			id, os.Getpid(), name)
+		return fmt.Sprintf(`{"sessionId":%q,"pid":%d,"name":%q,"nameSource":"derived","cwd":"/x/can","status":"busy","startedAt":%d,"updatedAt":1}`,
+			id, os.Getpid(), name, regFixtureStart.UnixMilli())
 	}
 	touch(t, filepath.Join(sessionsDir, "1.json"), derived(titled, "can-9b"), now)
 	touch(t, filepath.Join(sessionsDir, "2.json"), derived(bare, "can-2c"), now)
@@ -218,11 +377,14 @@ func TestPanelWashFollowsRegistryWaiting(t *testing.T) {
 	if !data.Attention {
 		t.Error("Data.Attention = false with a registry-waiting session")
 	}
-	// identOf is rowIdent for rows that may carry no name span (outcome,
-	// text, blank-pad rows)
+	// identOf is rowIdent for rows whose span layout varies (railed detail
+	// rows, outcome, text rows): the first identity-bearing span wins --
+	// the detail rail and the list name span both carry the session id
 	identOf := func(r module.Row) string {
-		if len(r.Spans) > spanName {
-			return r.Spans[spanName].Ident
+		for _, s := range r.Spans {
+			if s.Ident != "" {
+				return s.Ident
+			}
 		}
 		return ""
 	}
