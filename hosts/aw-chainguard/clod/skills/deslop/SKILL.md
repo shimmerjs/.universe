@@ -1,6 +1,6 @@
 ---
 name: deslop
-description: Strip AI-generated slop from a target before it ships -- narrating comments, model-state leakage (preamble/process-narration/sign-offs), attribution footers, prose filler and booster diction, the decorative-Unicode/emoji/em-dash-cadence residue the ASCII hook misses (chat replies; emoji and cadence in commit/PR bodies), and behavioral over-reach (scope creep, unrequested files, fabricated APIs). A guardrailed scrub pass, not a rewrite. Use when finishing a diff/doc/commit/PR/reply, or when the user runs /deslop. Default target: the current diff plus the reply being written.
+description: Strip AI-generated slop -- narrating comments, model-state leakage, attribution footers, decorative-typography residue, scope creep -- from a target before it ships. A guardrailed scrub pass, not a rewrite. Use when finishing a diff/doc/commit/PR/reply, or when the user runs /deslop. Default target: the current diff plus the reply being written.
 ---
 
 # Deslop

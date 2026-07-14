@@ -12,6 +12,12 @@
       ...
     }:
     {
+      imports = [
+        # darwin-side clod companion: fresh claude-code/codex overlay (the hm
+        # module can't set overlays under useGlobalPkgs)
+        ./clod/overlays.nix
+      ];
+
       homebrew = {
         taps = [
           "chainguard-dev/tap"
@@ -49,9 +55,9 @@
 
       universe.home.khudson = {
         enable = true;
-        # Daily-kitty RC socket + socket-only hardening. First switch owes the
-        # one-time hand-created rc-password.conf and ONE manual daily-kitty
-        # quit+relaunch (listen_on/allow_remote_control bind at startup only).
+        # Daily-kitty RC socket + passwordless socket-only hardening. First
+        # switch owes ONE manual daily-kitty quit+relaunch
+        # (listen_on/allow_remote_control bind at startup only).
         mainKittyIntegration.enable = true;
       };
 

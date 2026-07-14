@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-research',
-  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes and adversarial verification; informal word=value flags (long or short, anywhere in the prompt)',
+  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs codex=on intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes, a cross-model codex search leg, and adversarial verification; informal word=value flags (long or short, anywhere in the prompt)',
   whenToUse: 'Deep multi-source research; tune fanout, passes, verify, breadth',
   phases: [{ title: 'Search' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -14,6 +14,7 @@ const FLAGS = {
   passes:    { short: 'p', type: 'int',  default: 2, min: 1, max: 6,  help: 'loop-until-dry rounds' },
   verify:    { short: 'v', type: 'int',  default: 3, min: 0, max: 5,  help: 'skeptics per claim (0 disables verification)' },
   breadth:   { short: 'b', type: 'list', default: ['web', 'code', 'docs'], help: 'search angles' },
+  codex:     { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex search leg in round 1 (live web search proven on 0.144.1)' },
   intensity: { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset fanout/verify/passes' },
   subagents: { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
@@ -86,6 +87,15 @@ const VERIFY_CAP = fromIntensity(set.has('intensity') ? flags.intensity : DEFAUL
 function capClaims(list, cap) {
   return { take: list.slice(0, cap), over: list.slice(cap) }
 }
+// phase-0 budget guard: worst-case lifetime agent() spawns from the resolved
+// flags, computed BEFORE the first spawn. The runtime kills a run at 1000
+// lifetime agents; hitting that mid-run loses synthesis and the whole result
+// (the 2026-07-07 aw-research incident), so an over-budget invocation aborts
+// up front instead of dying at the finish line. Copied verbatim across the
+// aw-*.js that can legally exceed the cap.
+function worstCaseAgents(passes, fanout, votes, cap, overhead) {
+  return passes * (fanout + cap * votes) + overhead
+}
 // sub-quorum -> UNVERIFIED (not kept, not dropped); ties -> REFUTED (refuted >= confirmed),
 // per the workflows/CLAUDE.md reducer rule; judged over actual votes returned.
 function tallyVotes(vv, total) {
@@ -103,20 +113,72 @@ log(`research: fanout=${flags.fanout} passes=${flags.passes} verify=${flags.veri
 const RESEARCHER = stock ? undefined : 'researcher'
 const SKEPTIC    = stock ? undefined : 'skeptic'
 
+// name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
+// ONLY channel that reaches external observers -- khudson's clod panel reads
+// transcript heads for leg names and the run name; label: feeds only the
+// in-app progress UI. Keep legs short ASCII (<=60 chars, no ] or "), so
+// pathy legs use basenames. Copied verbatim across every aw-*.js (only WF
+// differs).
+const WF = 'aw-research'
+const named = (leg, prompt, opts) => agent('[' + WF + ':' + leg + '] ' + prompt, { label: leg, ...opts })
+
 const CLAIM   = { type: 'object', required: ['claims'], properties: { claims: { type: 'array', items: {
                   type: 'object', required: ['text'], properties: { text: { type: 'string' }, source: { type: 'string' } } } } } }
 const VERDICT = { type: 'object', required: ['refuted'], properties: { refuted: { type: 'boolean' }, why: { type: 'string' } } }
+
+// codex search leg (round 1 only): a different vendor's model AND retrieval
+// stack searching the same question -- recall the same-model searchers miss.
+// Live web search proven on codex 0.144.1 (the 0.142.x probe failed; revisit
+// condition met). Claims PREPEND to round 1's pool and ride the same dedup +
+// skeptic quorum; the verify cap gets +4 headroom so the extra leg cannot
+// crowd Claude claims out. Dead leg (auth/exec error) stays distinguishable
+// from "found nothing" via available=false.
+const CODEX_CLAIMS = { type: 'object', required: ['available', 'claims', 'dropped'], properties: {
+  available: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'integer' },
+  claims: { type: 'array', items: { type: 'object', required: ['text'], properties: {
+    text: { type: 'string' }, source: { type: 'string' } } } } } }
+let codexDown = false, codexDropped = 0
+const codexLeg = flags.codex !== 'on' ? null : () => named('search:codex:1',
+  'Cross-model search leg: relay codex, do NOT add claims of your own.\n' +
+  '1. Write the research question below to a temp file (mktemp; a quoted bash heredoc is quoting-safe -- the question may contain $, backticks, or quotes), then run:\n' +
+  '   codex exec -s read-only -c \'tools.web_search=true\' -o <mktemp-out> "Read <input-file>. Research that question with live web search. Return concrete factual claims, each on its own line with a source URL."\n' +
+  '2. Read the output file. Drop claims with no source URL and count them in dropped; keep codex\'s wording in text.\n' +
+  '3. Return available=true with the surviving claims. If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate claims.\n' +
+  'Research question:\n' + prompt,
+  { phase: 'Search', agentType: RESEARCHER, schema: CODEX_CLAIMS })
+const CAP = VERIFY_CAP + (flags.codex === 'on' ? 4 : 0)
+
+// overhead: the codex leg + the synthesize agent.
+const AGENT_BUDGET = 900
+const worst = worstCaseAgents(flags.passes, flags.fanout, flags.verify, CAP, (codexLeg ? 1 : 0) + 1)
+if (worst > AGENT_BUDGET) {
+  log('rejected: worst-case ' + worst + ' agents > ' + AGENT_BUDGET + ' (runtime lifetime cap is 1000) -- lower passes/fanout/verify/intensity')
+  return { error: 'agent budget: worst case ' + worst + ' exceeds ' + AGENT_BUDGET,
+           rejected: { passes: flags.passes, fanout: flags.fanout, verify: flags.verify, cap: CAP } }
+}
 
 const seen = new Set(), confirmed = [], unverified = []
 let refuted = 0, failed = 0, overCap = 0
 for (let round = 0; round < flags.passes; round++) {
   phase('Search')
-  const found = (await parallel(Array.from({ length: flags.fanout }, (_, i) => {
+  const thunks = Array.from({ length: flags.fanout }, (_, i) => {
     const mode = flags.breadth[i % flags.breadth.length]
-    return () => agent(
+    return () => named(`search:${mode}:${i + 1}`,
       `Round ${round + 1}, searcher ${i + 1} (${mode}). Research from an angle no other searcher would take: ${prompt}. Return concrete, sourced claims.`,
-      { label: `search:${mode}:${i + 1}`, phase: 'Search', schema: CLAIM, agentType: RESEARCHER })
-  }))).filter(Boolean).flatMap(r => r.claims || [])
+      { phase: 'Search', schema: CLAIM, agentType: RESEARCHER })
+  })
+  if (round === 0 && codexLeg) thunks.unshift(codexLeg)
+  const results = (await parallel(thunks)).filter(Boolean)
+  let found = []
+  for (const r of results) {
+    if (r.available === undefined) { found = found.concat(r.claims || []); continue }
+    if (!r.available) { codexDown = true; log('codex search leg DOWN: ' + (r.error || 'no error text')) }
+    else { codexDropped = r.dropped || 0; found = (r.claims || []).concat(found) }
+  }
+  if (round === 0 && codexLeg && !results.some(r => r.available !== undefined)) {
+    codexDown = true
+    log('codex search leg DOWN: agent died')
+  }
   const fresh = found.filter(c => { const k = (c.text || '').slice(0, 80).toLowerCase()
                                     if (seen.has(k)) return false; seen.add(k); return true })
   log(`round ${round + 1}: ${found.length} claims, ${fresh.length} fresh`)
@@ -124,7 +186,7 @@ for (let round = 0; round < flags.passes; round++) {
 
   if (flags.verify === 0) { unverified.push(...fresh); continue }  // verify disabled: unverified, not laundered into confirmed
   phase('Verify')
-  const { take, over } = capClaims(fresh, VERIFY_CAP)
+  const { take, over } = capClaims(fresh, CAP)
   if (over.length) {
     log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
     unverified.push(...over)
@@ -132,8 +194,8 @@ for (let round = 0; round < flags.passes; round++) {
   }
   const judged = await parallel(take.map(c => () =>
     parallel(Array.from({ length: flags.verify }, (_, k) => () =>
-      agent(`Skeptic ${k + 1}: try to REFUTE this claim. Default refuted=true if you can't independently confirm it.\nClaim: ${c.text}\nSource: ${c.source || 'none'}`,
-        { label: `verify:${(c.text || '').slice(0, 24)}`, phase: 'Verify', schema: VERDICT, agentType: SKEPTIC })))
+      named(`verify:${(c.text || '').replace(/[\]"\\]/g, '').slice(0, 24)}`, `Skeptic ${k + 1}: try to REFUTE this claim. Default refuted=true if you can't independently confirm it.\nClaim: ${c.text}\nSource: ${c.source || 'none'}`,
+        { phase: 'Verify', schema: VERDICT, agentType: SKEPTIC })))
       .then(votes => {
         const vv = votes.filter(Boolean)
         return { c, verdict: tallyVotes(vv, flags.verify), failed: flags.verify - vv.length }
@@ -155,8 +217,8 @@ const basisNote = confirmed.length
   : flags.verify === 0
     ? 'UNVERIFIED claims -- verification was disabled (verify=0); flag the whole answer as unverified'
     : `UNVERIFIED claims -- none confirmed${overCap ? ` (${overCap} never verified, over the per-round cap)` : ''}; flag the whole answer as unverified`
-const report = await agent(
+const report = await named('synthesize',
   `Synthesize a cited answer to: ${prompt}\nUse ONLY these ${basisNote}:\n` +
   basis.map((c, i) => `[${i + 1}] ${c.text} (${c.source || 'unsourced'})`).join('\n'),
-  { label: 'synthesize', phase: 'Synthesize', agentType: RESEARCHER })
-return { question: prompt, flags, verified: confirmed.length, refuted, unverified: unverified.length, failed, overCap, report }
+  { phase: 'Synthesize', agentType: RESEARCHER })
+return { question: prompt, flags, verified: confirmed.length, refuted, unverified: unverified.length, failed, overCap, codexDown, codexDropped, report }

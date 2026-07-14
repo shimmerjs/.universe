@@ -300,11 +300,11 @@
     },
     "nixpkgs-claude": {
       "locked": {
-        "lastModified": 1783636816,
-        "narHash": "sha256-mIupDHQ9Hzp0NZUGWUtSgJq9TO8O88c7WWVBWJ0JQ3Y=",
+        "lastModified": 1783692429,
+        "narHash": "sha256-xrGX+zGFQ8Vktg35VObY0xXF2BPqOeGa11eafImTr9U=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "d2727a2b804ee45db0ffe1c0226e181e99fe340b",
+        "rev": "c79337102fb509cfa5feaa685042d827da19bdc4",
         "type": "github"
       },
       "original": {
@@ -343,6 +343,23 @@
         "owner": "NixOS",
         "ref": "nixos-24.11",
         "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "plannotator": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1783892269,
+        "narHash": "sha256-QSS5whWK1LNfyVUuKTGbew+daoGm2Fbj08j6R+EVa/U=",
+        "owner": "backnotprop",
+        "repo": "plannotator",
+        "rev": "29513e1984805a582e644b192b82a8d9cec31943",
+        "type": "github"
+      },
+      "original": {
+        "owner": "backnotprop",
+        "ref": "v0.23.1",
+        "repo": "plannotator",
         "type": "github"
       }
     },
@@ -450,6 +467,7 @@
         "nixpkgs": "nixpkgs",
         "nixpkgs-claude": "nixpkgs-claude",
         "nixpkgs-qemu": "nixpkgs-qemu",
+        "plannotator": "plannotator",
         "plugins-adjacent-nvim": "plugins-adjacent-nvim",
         "plugins-telescope-recent-files": "plugins-telescope-recent-files",
         "plugins-telescope-switch": "plugins-telescope-switch",

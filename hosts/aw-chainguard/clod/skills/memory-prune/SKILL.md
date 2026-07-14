@@ -1,6 +1,6 @@
 ---
 name: memory-prune
-description: Audit the persistent memory (MEMORY.md index + the per-fact files beside it) and prune what no longer earns its place -- intermediate/one-off notes, superseded or wrong facts, and anything the repo/git/CLAUDE.md already records. Use when asked to prune/clean/trim memory, or proactively when the index has accreted cruft (e.g. before a handoff). A guardrailed scrub, not a wipe.
+description: Audit the persistent memory (MEMORY.md index + per-fact files) and prune what no longer earns its place. Use when asked to prune/clean/trim memory, or proactively when the index has accreted cruft (e.g. before a handoff).
 ---
 
 # Memory prune

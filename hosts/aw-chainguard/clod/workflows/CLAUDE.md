@@ -9,6 +9,7 @@ Saved dynamic workflows (`~/.claude/workflows/*.js`) are deployed from this dire
 - Keep to ~4-8 flags, each with a default and a clamp. Canonical parser: `aw-research.js` -- copy its `parseFlags`/`coerce` verbatim (they are byte-identical across every aw-*.js).
 - Example: `aw-research fanout=8 passes=3 breadth=web,code <question>` (equivalently `f=8 p=3 b=web,code`).
 - Two cross-cutting flags every workflow carries: `intensity=0..10` (one knob that scales the explicit fan-out/vote/pass knobs you did not set; tuned defaults stand when omitted) and `subagents=custom|stock` (`stock` drops the custom agent types so every agent() falls back to the default workflow subagent).
+- **Name-plate every agent prompt.** Spawn through the `named(leg, prompt, opts)` helper (copied verbatim from `aw-review.js`; only `const WF` differs), which prefixes `[<wf>:<leg>]` to the prompt and sets `label:` for you. The plate is the ONLY channel external observers get: `label:` feeds the in-app progress UI and nothing on disk, while khudson's clod panel reads agent-transcript heads for leg names and the run name (the wf dir is an opaque run id otherwise). Legs: short ASCII, <= 60 chars, never `]` or `"` -- basename any path, slice any claim text. A bare `agent()` call renders as a nameless gear on the glass.
 
 ## BUILD VERIFICATION IN -- THE ANTI-PATTERNS THAT KEEP BITING
 

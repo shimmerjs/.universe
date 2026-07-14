@@ -1,0 +1,7 @@
+{
+  "script": "aw-review.js",
+  "kind": "helper",
+  "helper": "worstCaseAgents",
+  "input": [2, 5, 3, 24, 4],
+  "expect": 158
+}

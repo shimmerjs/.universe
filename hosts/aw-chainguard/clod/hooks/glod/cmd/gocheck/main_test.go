@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"glod/internal/txtar"
 )
@@ -125,6 +126,71 @@ func TestGroupByRoot(t *testing.T) {
 	want := map[string][]string{rmod: {".", "./sub"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("groupByRoot\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestEventName(t *testing.T) {
+	if got := eventName(stopInput{}); got != "Stop" {
+		t.Errorf("empty hook_event_name: got %q want Stop", got)
+	}
+	if got := eventName(stopInput{HookEventName: "SubagentStop"}); got != "SubagentStop" {
+		t.Errorf("SubagentStop: got %q", got)
+	}
+}
+
+// TestRunFailClosed: a toolchain that fails to exec must surface a diagnostic,
+// not empty output -- empty output reads as a clean pass upstream and would
+// silently drain the gate.
+func TestRunFailClosed(t *testing.T) {
+	orig := goBin
+	goBin = filepath.Join(t.TempDir(), "no-such-go")
+	defer func() { goBin = orig }()
+	stdout, stderr, code := run(t.TempDir(), time.Second, "build", "./...")
+	if code == 0 {
+		t.Fatal("code=0 for a missing toolchain")
+	}
+	if strings.TrimSpace(stdout+stderr) == "" {
+		t.Fatal("no diagnostic output for a missing toolchain (fail-open)")
+	}
+	if !strings.Contains(stderr, "no-such-go") {
+		t.Errorf("stderr %q does not name the toolchain path", stderr)
+	}
+}
+
+// TestRunTimeoutDiagnostic: a deadline kill must surface a diagnostic even when
+// the process produced partial output first -- partial clean output would
+// otherwise read as a clean pass over an incompletely-checked queue.
+func TestRunTimeoutDiagnostic(t *testing.T) {
+	orig := goBin
+	slow := filepath.Join(t.TempDir(), "slow-go")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\necho '{}'\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	goBin = slow
+	defer func() { goBin = orig }()
+	_, stderr, code := run(t.TempDir(), 200*time.Millisecond, "vet", "-json", "./...")
+	if code == 0 {
+		t.Fatal("code=0 for a timed-out run")
+	}
+	if !strings.Contains(stderr, "timed out") {
+		t.Fatalf("stderr %q lacks the timeout diagnostic despite partial stdout", stderr)
+	}
+}
+
+// TestCheckFailClosedNoToolchain: end to end through check() with a dead goBin,
+// the pass must come back non-empty (block), never drain clean. This is the
+// regression test for the dead ldflags pin: a gocheck built with a bad -X pin
+// and no go on PATH used to return "" here.
+func TestCheckFailClosedNoToolchain(t *testing.T) {
+	orig := goBin
+	goBin = filepath.Join(t.TempDir(), "no-such-go")
+	defer func() { goBin = orig }()
+	mod := t.TempDir()
+	write(t, filepath.Join(mod, "go.mod"), "module example.com/x\n\ngo 1.22\n")
+	write(t, filepath.Join(mod, "x.go"), "package x\n")
+	out := check(groupByRoot([]string{filepath.Join(mod, "x.go")}))
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("check() returned clean with a missing toolchain (fail-open)")
 	}
 }
 

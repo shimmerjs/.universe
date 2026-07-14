@@ -1,6 +1,7 @@
-// Command gocheck is the Stop hook that gates a turn end on `go build` + `go vet`
-// of the .go packages edited this session. It drains the per-session queue the
-// gofmt hook writes (/tmp/go-pending-<session>), batches files by module root
+// Command gocheck is the Stop and SubagentStop hook that gates a turn (or
+// subagent) end on `go build` + `go vet` of the .go packages edited this
+// session. It drains the per-session queue the gofmt hook writes
+// (/tmp/go-pending-<session>), batches files by module root
 // (an enclosing go.work wins over the nearest go.mod), and runs the toolchain.
 //
 // `go list -e -json` metadata selects the packages `go build` can run on
@@ -32,7 +33,17 @@ var goBin = "go"
 
 type stopInput struct {
 	SessionID      string `json:"session_id"`
+	HookEventName  string `json:"hook_event_name"`
 	StopHookActive bool   `json:"stop_hook_active"`
+}
+
+// eventName echoes the incoming hook event (gocheck serves Stop and
+// SubagentStop); an empty field means Stop.
+func eventName(in stopInput) string {
+	if in.HookEventName != "" {
+		return in.HookEventName
+	}
+	return "Stop"
 }
 
 func main() {
@@ -46,22 +57,39 @@ func main() {
 	}
 	// The go-fmt PostToolUse hook writes the queue to /tmp explicitly; read the
 	// same path (not os.TempDir(), which is /var/folders/... on macOS).
-	pending := "/tmp/go-pending-" + in.SessionID
+	// CLOD_GO_PENDING_DIR overrides the directory on both sides so the hermetic
+	// flake check (no writable /tmp in a nix sandbox) can exercise the gate.
+	dir := os.Getenv("CLOD_GO_PENDING_DIR")
+	if dir == "" {
+		dir = "/tmp"
+	}
+	pending := filepath.Join(dir, "go-pending-"+in.SessionID)
 	body, err := os.ReadFile(pending)
 	if err != nil {
 		os.Exit(0) // no queue -> nothing edited this session
 	}
 	// Re-fire guard: if this Stop already blocked once this cycle, drain and let
-	// the turn end (the error was surfaced; do not block forever).
+	// the turn end (the error was surfaced; do not block forever). A SubagentStop
+	// re-fire must NOT drain: the queue is session-wide, so a subagent draining
+	// it would disarm the main-loop Stop gate still waiting on the same files.
 	if in.StopHookActive {
-		os.Remove(pending)
+		if eventName(in) == "Stop" {
+			os.Remove(pending)
+		}
 		os.Exit(0)
 	}
 
 	out := check(groupByRoot(uniqueLines(body)))
 
 	if strings.TrimSpace(out) == "" {
-		os.Remove(pending) // clean: drain the queue and pass
+		// Clean: only the main-loop Stop drains. check() runs for minutes while
+		// sibling agents keep appending to the session-wide queue; a SubagentStop
+		// drain would delete those in-flight lines unchecked (the same fail-open
+		// class the re-fire guard closes). The main Stop re-verifies everything,
+		// so a kept queue costs a redundant warm-cache pass, never a missed gate.
+		if eventName(in) == "Stop" {
+			os.Remove(pending)
+		}
 		os.Exit(0)
 	}
 
@@ -70,12 +98,18 @@ func main() {
 	if i := strings.IndexByte(first, '\n'); i >= 0 {
 		first = first[:i]
 	}
+	// The queue is session-wide, so a SubagentStop block can land on a subagent
+	// that never touched Go (a read-only verifier in a fan-out); tell it to end
+	// again rather than "fix" code outside its task.
+	reason := "go build/vet failed on packages edited this turn -- fix before ending the turn. First error: "
+	if eventName(in) != "Stop" {
+		reason = "go build/vet failed on packages edited this session -- if you edited Go in this task, fix before ending; if these are not your edits, end again and the main-loop gate will handle them. First error: "
+	}
 	block := map[string]any{
 		"decision": "block",
-		"reason": "go build/vet failed on packages edited this turn -- fix before ending the turn. First error: " +
-			first + " (full output in additionalContext).",
+		"reason":   reason + first + " (full output in additionalContext).",
 		"hookSpecificOutput": map[string]any{
-			"hookEventName":     "Stop",
+			"hookEventName":     eventName(in),
 			"additionalContext": out,
 		},
 	}
@@ -352,6 +386,16 @@ func run(dir string, timeout time.Duration, args ...string) (string, string, int
 		code = 1
 		if ee, ok := err.(*exec.ExitError); ok {
 			code = ee.ExitCode()
+		}
+		// Fail closed. A timeout kill always gets a diagnostic: partial output
+		// from the packages checked before the deadline can parse clean, and
+		// empty output reads as a clean pass -- either way the gate would drain
+		// on a run that checked less than the queue. An exec failure (missing/
+		// broken toolchain) produces no output at all; same hazard.
+		if ctx.Err() != nil {
+			stderr.WriteString("gocheck: " + goBin + " " + args[0] + ": timed out after " + timeout.String() + " (results incomplete)\n")
+		} else if stdout.Len() == 0 && stderr.Len() == 0 {
+			stderr.WriteString("gocheck: " + goBin + " " + args[0] + ": " + err.Error() + "\n")
 		}
 	}
 	return stdout.String(), stderr.String(), code

@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-prior-art',
-  description: '[areas=5 verify-scope=load-bearing intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web), refute-verify the load-bearing claims, synthesize a cited report with a corrections section. word=value flags (long or short, anywhere in the prompt); the prompt is the question.',
+  description: '[areas=5 verify-scope=load-bearing votes=3 codex=on intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web) plus a cross-model codex search leg, refute-verify in-scope claims with a skeptic quorum, synthesize a cited report that labels verified vs unverified claims plus a corrections section. word=value flags (long or short, anywhere in the prompt); the prompt is the question.',
   whenToUse: 'Researching how others solve X; tune areas, verify-scope',
   phases: [{ title: 'Plan' }, { title: 'Dig' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -12,6 +12,8 @@ export const meta = {
 const FLAGS = {
   areas:          { short: 'a', type: 'axes', default: { count: 5 }, help: 'investigation areas, or N to auto-derive' },
   'verify-scope': { short: 'c', type: 'str',  default: 'load-bearing', choices: ['all', 'load-bearing', 'none'], help: 'which claims get refuted' },
+  votes:          { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per in-scope claim' },
+  codex:          { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex search leg in the dig fan-out (live web search)' },
   intensity:      { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling the unset area count' },
   subagents:      { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
@@ -73,7 +75,8 @@ function fromIntensity(i) {
 function applyIntensity(flags, set) {
   if (!set.has('intensity')) return flags
   const k = fromIntensity(flags.intensity)
-  // intensity scales only the investigation-area count; no vote/pass knob here.
+  // intensity scales the skeptic quorum and the investigation-area count.
+  if (!set.has('votes')) flags.votes = k.votes
   if (!set.has('areas') && flags.areas && flags.areas.count != null) flags.areas = { count: k.fanout }
   return flags
 }
@@ -84,11 +87,49 @@ const VERIFY_CAP = fromIntensity(set.has('intensity') ? flags.intensity : DEFAUL
 function capClaims(list, cap) {
   return { take: list.slice(0, cap), over: list.slice(cap) }
 }
+// sub-quorum -> UNVERIFIED (not kept, not dropped); ties -> REFUTED (refuted >= confirmed),
+// per the workflows/CLAUDE.md reducer rule; judged over actual votes returned.
+function tallyVotes(vv, total) {
+  if (vv.length < Math.ceil(total / 2)) return 'UNVERIFIED'
+  return vv.filter(x => x.refuted).length >= vv.length / 2 ? 'REFUTED' : 'CONFIRMED'
+}
+// phase-0 budget guard: worst-case lifetime agent() spawns from the resolved
+// flags, computed BEFORE the first spawn. The runtime kills a run at 1000
+// lifetime agents; hitting that mid-run loses synthesis and the whole result
+// (the 2026-07-07 aw-research incident), so an over-budget invocation aborts
+// up front instead of dying at the finish line. Copied verbatim across the
+// aw-*.js that can legally exceed the cap.
+function worstCaseAgents(passes, fanout, votes, cap, overhead) {
+  return passes * (fanout + cap * votes) + overhead
+}
 const stock = flags.subagents === 'stock'
 
 const RESEARCHER = stock ? undefined : 'researcher'
 const SKEPTIC = stock ? undefined : 'skeptic'
+
+// name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
+// ONLY channel that reaches external observers -- khudson's clod panel reads
+// transcript heads for leg names and the run name; label: feeds only the
+// in-app progress UI. Keep legs short ASCII (<=60 chars, no ] or "), so
+// pathy legs use basenames. Copied verbatim across every aw-*.js (only WF
+// differs).
+const WF = 'aw-prior-art'
+const named = (leg, prompt, opts) => agent('[' + WF + ':' + leg + '] ' + prompt, { label: leg, ...opts })
+
 if (!prompt) { log('no research question given after the flags'); return { error: 'no question given', rejected: '' } }
+
+// area count is pre-spawn knowable either way (axes count is unclamped, so an
+// areas=999 invocation is legal without this). verify-scope=none spawns zero
+// verifiers, so the votes term drops. overhead: plan + codex leg + synthesize.
+const CAP = VERIFY_CAP + (flags.codex === 'on' ? 4 : 0)
+const areaCount = flags.areas.list ? flags.areas.list.length : flags.areas.count
+const AGENT_BUDGET = 900
+const worst = worstCaseAgents(1, areaCount, flags['verify-scope'] === 'none' ? 0 : flags.votes, CAP, (flags.codex === 'on' ? 1 : 0) + 2)
+if (worst > AGENT_BUDGET) {
+  log('rejected: worst-case ' + worst + ' agents > ' + AGENT_BUDGET + ' (runtime lifetime cap is 1000) -- lower areas/votes/intensity')
+  return { error: 'agent budget: worst case ' + worst + ' exceeds ' + AGENT_BUDGET,
+           rejected: { areas: areaCount, votes: flags.votes, cap: CAP } }
+}
 
 phase('Plan')
 let areas = flags.areas.list
@@ -96,9 +137,12 @@ if (!areas) {
   const A = { type: 'object', required: ['areas'], properties: { areas: { type: 'array', items: {
     type: 'object', required: ['area', 'source'], properties: {
       area: { type: 'string' }, source: { type: 'string', enum: ['local', 'dep', 'web'] } } } } } }
-  const planned = (await agent('Plan ' + flags.areas.count + ' distinct investigation areas for: ' + prompt + '. Tag each source local|dep|web.',
-    { label: 'plan', phase: 'Plan', agentType: RESEARCHER, schema: A })).areas
-  areas = planned.map(a => a.area + ' [' + a.source + ']')
+  const planned = (await named('plan', 'Plan ' + flags.areas.count + ' distinct investigation areas for: ' + prompt + '. Tag each source local|dep|web.',
+    { phase: 'Plan', agentType: RESEARCHER, schema: A })).areas
+  // The budget guard bounded the REQUESTED count; hold the plan agent to it,
+  // or an over-generous plan re-admits the cap-death past the guard.
+  if (planned.length > flags.areas.count) log('plan returned ' + planned.length + ' areas, clamping to the requested ' + flags.areas.count)
+  areas = planned.slice(0, flags.areas.count).map(a => a.area + ' [' + a.source + ']')
 }
 log('prior-art: areas=' + areas.length + ' verify=' + flags['verify-scope'])
 
@@ -107,11 +151,45 @@ const CLAIM = { type: 'object', required: ['claims'], properties: { claims: { ty
     text: { type: 'string' }, source: { type: 'string' }, loadBearing: { type: 'boolean' } } } } } }
 const VERDICT = { type: 'object', required: ['refuted'], properties: { refuted: { type: 'boolean' }, correction: { type: 'string' } } }
 
+// codex search leg: a different vendor's model AND retrieval stack digging the
+// same prior-art question -- recall the same-model deep-dives miss. Live web
+// search proven on codex 0.144.1. Claims PREPEND to the dig pool and ride the
+// same dedup + verify scoping; the verify cap gets +4 headroom so the extra
+// leg cannot crowd deep-dive claims out. Dead leg (auth/exec error) stays
+// distinguishable from "found nothing" via available=false.
+const CODEX_CLAIMS = { type: 'object', required: ['available', 'claims', 'dropped'], properties: {
+  available: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'integer' },
+  claims: { type: 'array', items: { type: 'object', required: ['text'], properties: {
+    text: { type: 'string' }, source: { type: 'string' }, loadBearing: { type: 'boolean' } } } } } }
+let codexDown = false, codexDropped = 0
+const codexLeg = flags.codex !== 'on' ? null : () => named('dig:codex',
+  'Cross-model search leg: relay codex, do NOT add claims of your own.\n' +
+  '1. Write the research question below to a temp file (mktemp; a quoted bash heredoc is quoting-safe -- the question may contain $, backticks, or quotes), then run:\n' +
+  '   codex exec -s read-only -c \'tools.web_search=true\' -o <mktemp-out> "Read <input-file>. Research prior art for that question with live web search. Return concrete claims about how existing systems solve it, each on its own line with a source URL; end load-bearing claims with [load-bearing]."\n' +
+  '2. Read the output file. Drop claims with no source URL and count them in dropped; keep codex\'s wording in text and map [load-bearing] to loadBearing=true.\n' +
+  '3. Return available=true with the surviving claims. If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate claims.\n' +
+  'Research question:\n' + prompt,
+  { phase: 'Dig', agentType: RESEARCHER, schema: CODEX_CLAIMS })
+
 phase('Dig')
-const found = (await parallel(areas.map(a => () => agent(
+// plate grammar bans ] " \ in legs (see the named() comment); claim/area text is untrusted.
+const plateLeg = (s) => String(s || '').replace(/[\]"\\]/g, '').slice(0, 24)
+const thunks = areas.map(a => () => named('dig:' + plateLeg(a.split(' [')[0]),
   'Deep-dive prior art for "' + prompt + '", area: ' + a + '. Prefer primary sources; cite each claim with a source. Mark load-bearing claims.',
-  { label: 'dig:' + a.slice(0, 24), phase: 'Dig', agentType: RESEARCHER, schema: CLAIM }))))
-  .filter(Boolean).flatMap(r => r.claims || [])
+  { phase: 'Dig', agentType: RESEARCHER, schema: CLAIM }))
+if (codexLeg) thunks.unshift(codexLeg)
+const results = (await parallel(thunks)).filter(Boolean)
+let found = []
+for (const r of results) {
+  if (r.available === undefined) { found = found.concat(r.claims || []); continue }
+  // the codex leg's shape carries availability alongside claims
+  if (!r.available) { codexDown = true; log('codex search leg DOWN: ' + (r.error || 'no error text')) }
+  else { codexDropped = r.dropped || 0; found = (r.claims || []).concat(found) }
+}
+if (codexLeg && !results.some(r => r.available !== undefined)) {
+  codexDown = true
+  log('codex search leg DOWN: agent died')
+}
 const seen = new Set()
 const fresh = found.filter(c => {
   const k = (c.text || '').slice(0, 80).toLowerCase()
@@ -120,38 +198,58 @@ const fresh = found.filter(c => {
 log('prior-art: ' + found.length + ' claims, ' + fresh.length + ' fresh')
 
 phase('Verify')
+// verified holds ONLY claims that survived the skeptic quorum. Everything not
+// refuted but never actually checked -- out of verify scope, over cap, crashed
+// verifiers, or verify-scope=none -- lands in the unverified pool and reaches
+// synthesis labeled as such, never laundered into "verified".
 const corrections = []
-let verified = fresh
-let unverifiedCount = 0, overCap = 0
-if (flags['verify-scope'] !== 'none') {
+const verified = [], unverifiedPool = []
+let refutedCount = 0, failedVerifiers = 0, overCap = 0, checkedCount = 0
+if (flags['verify-scope'] === 'none') {
+  unverifiedPool.push(...fresh)
+} else {
   const targets = flags['verify-scope'] === 'all' ? fresh : fresh.filter(c => c.loadBearing)
-  const { take, over } = capClaims(targets, VERIFY_CAP)
+  unverifiedPool.push(...fresh.filter(c => !targets.includes(c)))   // out of scope: never checked
+  const { take, over } = capClaims(targets, CAP)
   if (over.length) log('verify cap: verified ' + take.length + '/' + targets.length + ', ' + over.length + ' over cap -> UNVERIFIED')
   overCap = over.length
+  checkedCount = take.length
+  unverifiedPool.push(...over)
   const judged = await parallel(take.map(c => () =>
-    agent('Skeptic: try to REFUTE this prior-art claim. Default refuted=true if you cannot confirm from a primary source. If it is partly wrong, give a correction.\nClaim: ' + c.text + '\nSource: ' + (c.source || 'none'),
-      { label: 'verify:' + (c.text || '').slice(0, 24), phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })
-      .then(v => ({ claim: c, v }))
-      .catch(() => ({ claim: c, v: null }))))
-  const refutedKeys = new Set(), unverifiedKeys = new Set()
-  for (const c of over) unverifiedKeys.add((c.text || '').slice(0, 80).toLowerCase())   // over-cap -> UNVERIFIED, never confirmed
-  for (const j of judged) {
-    if (!j) continue
-    const key = (j.claim.text || '').slice(0, 80).toLowerCase()
-    if (!j.v) { unverifiedKeys.add(key); continue }   // verifier crashed -> UNVERIFIED, not kept-as-verified
-    if (j.v.refuted) refutedKeys.add(key)
-    if (j.v.correction) corrections.push({ claim: j.claim.text, correction: j.v.correction })
+    parallel(Array.from({ length: flags.votes }, (_, k) => () =>
+      named('verify:' + plateLeg(c.text), 'Skeptic ' + (k + 1) + ': try to REFUTE this prior-art claim. Default refuted=true if you cannot confirm from a primary source. If it is partly wrong, give a correction.\nClaim: ' + c.text + '\nSource: ' + (c.source || 'none'),
+        { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
+      .then(votes => {
+        const vv = votes.filter(Boolean)   // filter raw votes BEFORE wrapping: a wrapped null verdict is a truthy object
+        for (const v of vv) if (v.correction) corrections.push({ claim: c.text, correction: v.correction })
+        return { claim: c, verdict: tallyVotes(vv, flags.votes), failed: flags.votes - vv.length }
+      })))
+  for (const j of judged.filter(Boolean)) {
+    if (j.verdict === 'CONFIRMED') verified.push(j.claim)
+    else if (j.verdict === 'UNVERIFIED') unverifiedPool.push(j.claim)
+    else refutedCount++
+    failedVerifiers += j.failed
   }
-  verified = fresh.filter(c => { const k = (c.text || '').slice(0, 80).toLowerCase(); return !refutedKeys.has(k) && !unverifiedKeys.has(k) })
-  unverifiedCount = unverifiedKeys.size
-  log('prior-art: verified ' + take.length + ', refuted ' + refutedKeys.size + ', unverified ' + unverifiedKeys.size + ', ' + corrections.length + ' corrections')
+  log('prior-art: confirmed ' + verified.length + ', refuted ' + refutedCount + ', unverified ' + unverifiedPool.length + ', ' + corrections.length + ' corrections')
 }
 
 phase('Synthesize')
-const report = await agent(
-  'Write a cited report answering: ' + prompt + '\nUse these verified claims:\n' +
-  verified.map((c, i) => '[' + (i + 1) + '] ' + c.text + ' (' + (c.source || 'unsourced') + ')').join('\n') +
+// The report keeps its breadth, but the two pools reach synthesis separately
+// with an honest basis note -- mirror of aw-research's basisNote pattern.
+const basisNote = flags['verify-scope'] === 'none'
+  ? 'verification was DISABLED (verify-scope=none): every claim below is UNVERIFIED; label the whole report unverified'
+  : verified.length
+    ? 'VERIFIED claims each survived a ' + flags.votes + '-skeptic refutation quorum; UNVERIFIED claims were never checked (out of verify scope, over cap, or verifier crash) -- usable for breadth, but label any load-bearing use of them as unverified'
+    : checkedCount === 0
+      ? 'NOTHING was in verify scope (no claim was marked load-bearing), so no claim was ever checked: every claim below is UNVERIFIED; label the whole report unverified'
+      : 'NO claim survived verification: every claim below is UNVERIFIED; label the whole report unverified'
+const report = await named('synthesize',
+  'Write a cited report answering: ' + prompt + '\nBasis: ' + basisNote + '\n' +
+  'VERIFIED claims:\n' +
+  (verified.map((c, i) => '[' + (i + 1) + '] ' + c.text + ' (' + (c.source || 'unsourced') + ')').join('\n') || '(none)') +
+  '\nUNVERIFIED claims:\n' +
+  (unverifiedPool.map((c, i) => '[U' + (i + 1) + '] ' + c.text + ' (' + (c.source || 'unsourced') + ')').join('\n') || '(none)') +
   '\nEnd with a "Corrections from verification" section listing:\n' + JSON.stringify(corrections, null, 2),
-  { label: 'synthesize', phase: 'Synthesize' })
+  { phase: 'Synthesize' })
 
-return { question: prompt, areas, verified: verified.length, unverified: unverifiedCount, corrections: corrections.length, overCap, report }
+return { question: prompt, areas, verified: verified.length, refuted: refutedCount, unverified: unverifiedPool.length, failedVerifiers, corrections: corrections.length, overCap, codexDown, codexDropped, report }

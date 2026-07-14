@@ -108,18 +108,19 @@ let
            value = import ./statusline-check.nix { inherit pkgs statuslineScript; }; }
     else null;
 
-  # Behavioral test for the go-build-sweep hook (narrow to this-build's binary,
-  # leave unrelated/tracked binaries alone). Returns null if the host has no
-  # clod/hooks/go-build-sweep.sh.
+  # Behavioral tests for the clod hook estate: go-build-sweep narrowing,
+  # gocheck's pinned-toolchain gate (fail-closed + drain semantics), the
+  # go-fmt syntax gate + queue, and the aw-scriptpath gate. Returns null if
+  # the host has no clod/hooks directory.
   mkHooksCheck = hostname: config: let
     host = importHost hostname;
     system = host.system;
     pkgs = nixpkgs.legacyPackages.${system};
-    sweepScript = ../hosts/${hostname}/clod/hooks/go-build-sweep.sh;
-    hooks = import ../hosts/${hostname}/clod/hooks { inherit pkgs; };
-  in if builtins.pathExists sweepScript
+    hooksDir = ../hosts/${hostname}/clod/hooks;
+    hooks = import hooksDir { inherit pkgs; };
+  in if builtins.pathExists hooksDir
     then { inherit system; name = "clod-hooks-${hostname}";
-           value = import ./hooks-check.nix { inherit pkgs; goBuildSweep = hooks.goBuildSweep; }; }
+           value = import ./hooks-check.nix { inherit pkgs hooks; }; }
     else null;
 
   # khudson checks live beside the module (homies/shimmerjs/home/khudson/nix/)

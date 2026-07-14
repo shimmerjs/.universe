@@ -1,0 +1,7 @@
+{
+  "script": "aw-research.js",
+  "kind": "helper",
+  "helper": "worstCaseAgents",
+  "input": [6, 16, 5, 48, 2],
+  "expect": 1538
+}

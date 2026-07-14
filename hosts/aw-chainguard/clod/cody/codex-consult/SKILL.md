@@ -42,7 +42,7 @@ codex exec -s read-only -o /tmp/codex-result.txt "<one-line intent + question>"
 codex exec resume <SESSION_ID> -o /tmp/codex-result.txt "<follow-up>"
 ```
 
-Default: `-s read-only` (sandbox). exec is non-interactive and has no approval flag -- the sandbox is the only guardrail, so keep it read-only. Do NOT hand codex a workspace-write path on the strength of a prompt instruction -- if it needs to write, that's a real permission decision; surface it to me first. Effort rides on config (`-c model_reasoning_effort=high|xhigh`), there's no dedicated flag; model / effort / sandbox lock at session start, so if a conversation might get harder, start at the higher effort. Don't hardcode a model string in your invocation if a profile/default is configured -- let the configured default pick it.
+Default: `-s read-only` (sandbox). exec is non-interactive and has no approval flag -- the sandbox is the only guardrail, so keep it read-only. Do NOT hand codex a workspace-write path on the strength of a prompt instruction -- if it needs to write, that's a real permission decision; surface it to me first. Never hardcode a model string -- the configured default is deliberately the strongest model, so any override can only downgrade. Per-call effort override rides `-c model_reasoning_effort=...`; model / effort / sandbox lock at session start, so if a conversation might get harder, start at the higher effort.
 
 Resume by explicit UUID only: `--last` picks the newest session across ALL concurrent claude sessions in this cwd (cross-resume race), and `--ephemeral` makes a session unresumable -- don't use either when you might continue.
 

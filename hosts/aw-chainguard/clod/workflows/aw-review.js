@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-review',
-  description: '[scope=diff lang=auto lenses=correctness,error-handling,concurrency,security votes=3 passes=2 severity-floor=med intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags (long or short, anywhere in the prompt).',
+  description: '[scope=diff lang=auto lenses=correctness,error-handling,concurrency,security votes=3 passes=2 severity-floor=med codex=on intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses plus a cross-model codex finder leg, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Reviewing a diff or path; tune scope, lang, lenses, votes, passes, severity-floor',
   phases: [{ title: 'Scope' }, { title: 'Review' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -16,6 +16,7 @@ const FLAGS = {
   votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
   passes: { short: 'p', type: 'int',  default: 2, min: 1, max: 6, help: 'loop-until-dry re-review rounds' },
   'severity-floor': { short: 'y', type: 'str', default: 'med', choices: ['low', 'med', 'high'], help: 'lowest severity that gets verified' },
+  codex:  { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex finder leg in round 1' },
   intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/passes/lens-count' },
   subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
@@ -90,28 +91,59 @@ const VERIFY_CAP = fromIntensity(set.has('intensity') ? flags.intensity : DEFAUL
 function capClaims(list, cap) {
   return { take: list.slice(0, cap), over: list.slice(cap) }
 }
+// phase-0 budget guard: worst-case lifetime agent() spawns from the resolved
+// flags, computed BEFORE the first spawn. The runtime kills a run at 1000
+// lifetime agents; hitting that mid-run loses synthesis and the whole result
+// (the 2026-07-07 aw-research incident), so an over-budget invocation aborts
+// up front instead of dying at the finish line. Copied verbatim across the
+// aw-*.js that can legally exceed the cap.
+function worstCaseAgents(passes, fanout, votes, cap, overhead) {
+  return passes * (fanout + cap * votes) + overhead
+}
 // sub-quorum (verifiers crashed) -> UNVERIFIED, never laundered into a verdict;
 // majority is over the requested total, so missing votes count against confirmation.
 function tallyVotes(vv, total) {
   if (vv.length < Math.ceil(total / 2)) return 'UNVERIFIED'
   return vv.filter(x => x.real).length > total / 2 ? 'CONFIRMED' : 'REFUTED'
 }
+// lens count is pre-spawn knowable either way: an explicit list's length (+1
+// for the idioms lens, auto-appended only when the default list stands) or
+// the axes count. overhead: scope + derive-lenses + codex leg + synthesize.
+const lensCount = flags.lenses.list
+  ? flags.lenses.list.length + (set.has('lenses') ? 0 : 1)
+  : flags.lenses.count
+const AGENT_BUDGET = 900
+const worst = worstCaseAgents(flags.passes, lensCount, flags.votes, VERIFY_CAP, (flags.codex === 'on' ? 1 : 0) + 3)
+if (worst > AGENT_BUDGET) {
+  log('rejected: worst-case ' + worst + ' agents > ' + AGENT_BUDGET + ' (runtime lifetime cap is 1000) -- lower passes/lenses/votes/intensity')
+  return { error: 'agent budget: worst case ' + worst + ' exceeds ' + AGENT_BUDGET,
+           rejected: { passes: flags.passes, lenses: lensCount, votes: flags.votes, cap: VERIFY_CAP } }
+}
 const stock = flags.subagents === 'stock'
 
 const REVIEWER = stock ? undefined : 'reviewer'
 const SKEPTIC = stock ? undefined : 'skeptic'
+
+// name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
+// ONLY channel that reaches external observers -- khudson's clod panel reads
+// transcript heads for leg names and the run name; label: feeds only the
+// in-app progress UI. Keep legs short ASCII (<=60 chars, no ] or "), so
+// pathy legs use basenames. Copied verbatim across every aw-*.js (only WF
+// differs).
+const WF = 'aw-review'
+const named = (leg, prompt, opts) => agent('[' + WF + ':' + leg + '] ' + prompt, { label: leg, ...opts })
 
 // Phase 0: derive the concrete change-set from scope (never hardcode a file list).
 phase('Scope')
 const SCOPE = { type: 'object', required: ['found', 'target', 'files'], properties: {
   found: { type: 'boolean' }, target: { type: 'string' }, files: { type: 'array', items: { type: 'string' } },
   lang: { type: 'string' } } }
-const scoped = await agent(
+const scoped = await named('scope',
   'Resolve the review scope "' + flags.scope + '" into a concrete change-set. ' +
   'If it is a PR number or git range, run git to get the changed files; if a path, list the relevant source files (git ls-files). ' +
   'Return the human label (target), the file list, and lang = the dominant source language of the change (e.g. go, rust, nix, cue, python, ts). ' +
   'Return found=false if the scope cannot be resolved to a concrete change-set.',
-  { label: 'scope', phase: 'Scope', agentType: REVIEWER, schema: SCOPE })
+  { phase: 'Scope', agentType: REVIEWER, schema: SCOPE })
 if (!scoped.found || !scoped.files.length) {
   log('scope unresolvable: ' + flags.scope)
   return { error: 'scope did not resolve to a concrete change-set', rejected: flags.scope }
@@ -124,9 +156,9 @@ const lang = flags.lang !== 'auto' ? flags.lang : (scoped.lang || '')
 let lenses = flags.lenses.list
 if (!lenses) {
   const L = { type: 'object', required: ['lenses'], properties: { lenses: { type: 'array', items: { type: 'string' } } } }
-  const d = await agent(
+  const d = await named('derive-lenses',
     'Propose ' + flags.lenses.count + ' orthogonal review dimensions for this change (target: ' + scoped.target + '). Distinct angles, no overlap.',
-    { label: 'derive-lenses', phase: 'Scope', agentType: REVIEWER, schema: L })
+    { phase: 'Scope', agentType: REVIEWER, schema: L })
   lenses = d.lenses
 } else if (!set.has('lenses') && lang) {
   lenses = lenses.concat(lang + ' idioms & footguns')
@@ -146,6 +178,26 @@ const seen = new Set()                       // dedup across ALL rounds: never v
 const confirmed = [], unverified = [], belowFloor = [], allJudged = []
 let foundTotal = 0, freshTotal = 0, overCap = 0
 
+// codex finder leg (round 1 only): cross-model recall -- the same-model lens
+// reviewers share one set of blind spots; codex supplies findings they miss,
+// the skeptic quorum supplies precision (every codex finding rides the SAME
+// dedup -> floor -> verify pipeline). The leg is a Claude relay (REVIEWER has
+// Bash; codex exec is allowlisted) that must ground every citation before
+// relaying. A dead leg (auth, exec error) returns available=false -- kept
+// distinguishable from "codex found nothing".
+const CODEX_FIND = { type: 'object', required: ['available', 'findings', 'dropped'], properties: {
+  available: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'integer' },
+  findings: { type: 'array', items: { type: 'object', required: ['file', 'desc', 'severity'], properties: {
+    file: { type: 'string' }, line: { type: 'integer' },
+    severity: { type: 'string', enum: ['critical', 'high', 'med', 'low'] }, desc: { type: 'string' } } } } } }
+let codexDown = false, codexDropped = 0
+const codexLeg = flags.codex !== 'on' ? null : () => named('review:codex:r1',
+  'Cross-model finder leg: relay codex, do NOT add findings of your own.\n' +
+  '1. Run: codex exec -s read-only -o <mktemp-out> "Review the change ' + scoped.target + ' (focus: ' + focus + '). Files:\\n' + scoped.files.join('\\n') + '\\nFind real, specific defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; no style nits, no praise."\n' +
+  '2. Read the output file. For EACH codex finding, verify the cited file/symbol exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
+  '3. Return available=true with the surviving findings (keep codex\'s wording in desc). If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate findings.',
+  { phase: 'Review', agentType: REVIEWER, schema: CODEX_FIND })
+
 // Loop-until-dry: each round, reviewers hunt for issues NOT already surfaced.
 // Stop when a round finds nothing fresh, or passes is exhausted.
 for (let round = 0; round < flags.passes; round++) {
@@ -154,12 +206,27 @@ for (let round = 0; round < flags.passes; round++) {
   const knownNote = known.length
     ? '\nAlready found (do NOT re-report these; look for issues NOT in this list):\n' + known.join('\n')
     : ''
-  const found = (await parallel(lenses.map(lens => () => agent(
+  const thunks = lenses.map(lens => () => named('review:' + lens + ':r' + (round + 1),
     'Round ' + (round + 1) + '. Review ' + scoped.target + ' through the ' + lens + ' lens. Focus: ' + focus + '. Files:\n' + scoped.files.join('\n') +
     knownNote + '\n' +
     'Find real, specific issues (file:line). Be concrete; no style nits, no speculation.',
-    { label: 'review:' + lens + ':r' + (round + 1), phase: 'Review', agentType: REVIEWER, schema: FIND }))))
-    .filter(Boolean).flatMap(r => r.findings || [])
+    { phase: 'Review', agentType: REVIEWER, schema: FIND }))
+  if (round === 0 && codexLeg) thunks.unshift(codexLeg)
+  const results = (await parallel(thunks)).filter(Boolean)
+  let found = []
+  for (const r of results) {
+    if (r.available === undefined) { found = found.concat(r.findings || []); continue }
+    // the codex leg's shape carries availability alongside findings
+    if (!r.available) { codexDown = true; log('codex finder leg DOWN: ' + (r.error || 'no error text')) }
+    else {
+      codexDropped = r.dropped || 0
+      found = found.concat((r.findings || []).map(f => ({ ...f, lens: 'codex' })))
+    }
+  }
+  if (round === 0 && codexLeg && !results.some(r => r.available !== undefined)) {
+    codexDown = true
+    log('codex finder leg DOWN: agent died')
+  }
   foundTotal += found.length
 
   const fresh = found.filter(f => {
@@ -182,8 +249,8 @@ for (let round = 0; round < flags.passes; round++) {
   }
   const judged = (await parallel(take.map(f => () =>
     parallel(Array.from({ length: flags.votes }, (_, v) => () =>
-      agent('Skeptic ' + (v + 1) + ': is this a REAL ' + (f.lens || '') + ' issue, or a false positive? Default real=false unless you confirm by reading the code.\n' + f.file + ':' + f.line + ' - ' + f.desc,
-        { label: 'verify:' + f.file, phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
+      named('verify:' + String(f.file || '').split('/').pop(), 'Skeptic ' + (v + 1) + ': is this a REAL ' + (f.lens || '') + ' issue, or a false positive? Default real=false unless you confirm by reading the code.\n' + f.file + ':' + f.line + ' - ' + f.desc,
+        { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
       .then(votes => {
         const vv = votes.filter(Boolean)
         return { ...f, verdict: tallyVotes(vv, flags.votes), failed: flags.votes - vv.length }
@@ -194,13 +261,13 @@ for (let round = 0; round < flags.passes; round++) {
 }
 
 phase('Synthesize')
-const report = await agent(
+const report = await named('synthesize',
   'Apply the synthesis discipline in ~/.claude/workflows/partials/SYNTHESIS.md (read it first).\n' +
   'Summarize this review of ' + scoped.target + '. CONFIRMED findings (survived a ' + flags.votes + '-vote refutation):\n' +
   JSON.stringify(confirmed, null, 2) + '\n' +
   belowFloor.length + ' below-floor findings exist and are UNVERIFIED - do not present them as confirmed. ' +
   'Group confirmed by severity with a one-line fix each.',
-  { label: 'synthesize', phase: 'Synthesize' })
+  { phase: 'Synthesize' })
 
 const tally = {
   found: foundTotal, fresh: freshTotal, confirmed: confirmed.length,
@@ -209,4 +276,4 @@ const tally = {
   failedVerifiers: allJudged.reduce((a, f) => a + (f.failed || 0), 0),
   overCap,
 }
-return { scope: scoped.target, lenses, tally, confirmed, report }
+return { scope: scoped.target, lenses, tally, confirmed, report, codexDown, codexDropped }

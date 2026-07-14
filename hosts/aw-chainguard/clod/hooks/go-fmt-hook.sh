@@ -12,7 +12,8 @@ if [[ -z "$file" || "$file" != *.go || ! -f "$file" || -z "$session" ]]; then
 fi
 
 # Defer the expensive build/vet to the Stop hook; just record the path.
-printf '%s\n' "$file" >> "/tmp/go-pending-${session}"
+# CLOD_GO_PENDING_DIR: hermetic-check override, matches gocheck's reader.
+printf '%s\n' "$file" >> "${CLOD_GO_PENDING_DIR:-/tmp}/go-pending-${session}"
 
 # Syntax gate: gofmt -e prints parse errors to stderr. Block the edit on any.
 err=$(gofmt -e "$file" 2>&1 >/dev/null) || true

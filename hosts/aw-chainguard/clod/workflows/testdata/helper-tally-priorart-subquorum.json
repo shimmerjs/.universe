@@ -1,0 +1,7 @@
+{
+  "script": "aw-prior-art.js",
+  "kind": "helper",
+  "helper": "tallyVotes",
+  "input": [[{ "refuted": false }], 3],
+  "expect": "UNVERIFIED"
+}

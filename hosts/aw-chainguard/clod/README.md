@@ -17,7 +17,8 @@ clod/
   default.nix            the hub -- wires everything below into programs.claude-code
   SYSTEM_PROMPT.md       always-on operating rules (voice, honesty, environment)
   agents/                5 custom subagents (researcher, skeptic, reviewer, designer, mapper)
-  skills/                auto-loading capabilities (handoff, go, deslop, codex-consult)
+  skills/                auto-loading capabilities (handoff, go, deslop, memory-prune)
+  cody/                  codex as clod's cross-model consultant (see its README)
   workflows/             saved multi-agent workflows + the doctrine that governs them
     aw-*.js              the workflow scripts (research, review, audit, design-review, ...)
     partials/*.md        shared verdict spines, cited by path from a workflow stage

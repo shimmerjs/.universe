@@ -99,6 +99,14 @@
       url = "github:plannotator/effective-html";
       flake = false;
     };
+    # plannotator claude plugin (plan-review browser UI on plan-mode hooks).
+    # TAG-pinned, not branch: the plugin dir (apps/hook) must match the
+    # prebuilt release binary fetched in clod/plannotator.nix -- bump the
+    # tag here AND the version/hash there together.
+    plannotator = {
+      url = "github:backnotprop/plannotator/v0.23.1";
+      flake = false;
+    };
   };
 
   outputs =

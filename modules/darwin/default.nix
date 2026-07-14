@@ -13,21 +13,11 @@
   # pre-regression release and is HVF-working here. Lives in the shared darwin
   # module so every macOS host that virtualizes (qemu in its package set) gets
   # the working build. Remove with the flake input once nixpkgs has a fix.
+  # (claude-code/codex freshness overlays are clod-scoped, not shared:
+  # hosts/aw-chainguard/clod/overlays.nix, imported by that host only.)
   nixpkgs.overlays = [
     (final: prev: {
       qemu = inputs.nixpkgs-qemu.legacyPackages.${prev.stdenv.hostPlatform.system}.qemu;
-    })
-    # claude-code from a fresh nixpkgs (flake input nixpkgs-claude, tracks master):
-    # the main nixpkgs is the cache-warm-but-lagging nixos-unstable, which trails
-    # claude-code releases. Override just this one package so clod stays current;
-    # bump it with `nix flake update nixpkgs-claude`. We `import` (not
-    # legacyPackages) to set allowUnfree -- claude-code is unfree and the input's
-    # default package set is free-only, unlike our main nixpkgs (modules/nix.nix).
-    (final: prev: {
-      claude-code = (import inputs.nixpkgs-claude {
-        inherit (prev.stdenv.hostPlatform) system;
-        config.allowUnfree = true;
-      }).claude-code;
     })
   ];
 

@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-design-review',
-  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 priorart=off codex=on intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses (plus a cross-model codex dissent leg) with a refute-default verifier; design= is a path to the doc under review, unset means the prompt is the design problem and a candidate is proposed; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
+  description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 codex=on intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses (plus a cross-model codex dissent leg) with a refute-default verifier; design= is a path to the doc under review, unset means the prompt is the design problem and a candidate is proposed; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked',
   phases: [{ title: 'Frame' }, { title: 'Critique' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -15,7 +15,6 @@ const FLAGS = {
   lenses:      { short: 'l', type: 'axes', default: { list: ['feasibility', 'semantics', 'scale', 'hermeticity', 'ordering'] }, help: 'stress-test lenses; a single N auto-derives N' },
   locked:      { short: 'k', type: 'path', default: '', help: 'path to a CONSTRAINTS / LOCKED block' },
   votes:       { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per flaw' },
-  priorart:    { short: 'o', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'priorart=on folds a prior-art pass into the critique' },
   codex:       { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex dissent leg in the critique fan-out' },
   intensity:   { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
   subagents:   { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
@@ -96,6 +95,15 @@ function tallyVotes(vv, total) {
   if (vv.length < Math.ceil(total / 2)) return 'UNVERIFIED'
   return vv.filter(x => x.real).length > total / 2 ? 'CONFIRMED' : 'REFUTED'
 }
+// phase-0 budget guard: worst-case lifetime agent() spawns from the resolved
+// flags, computed BEFORE the first spawn. The runtime kills a run at 1000
+// lifetime agents; hitting that mid-run loses synthesis and the whole result
+// (the 2026-07-07 aw-research incident), so an over-budget invocation aborts
+// up front instead of dying at the finish line. Copied verbatim across the
+// aw-*.js that can legally exceed the cap.
+function worstCaseAgents(passes, fanout, votes, cap, overhead) {
+  return passes * (fanout + cap * votes) + overhead
+}
 // design= is path-or-unset: set -> the file IS the design (kind=doc); unset -> the
 // prompt is the design problem (kind=proposed) and must be a real problem statement.
 function designKind(design, prompt) {
@@ -103,10 +111,30 @@ function designKind(design, prompt) {
   if ((prompt || '').trim().length >= 20) return { kind: 'proposed' }
   return { error: 'kind=proposed requires a non-trivial problem statement (>= 20 chars)' }
 }
+// lens count is pre-spawn knowable either way (axes count is unclamped, so a
+// lenses=999 invocation is legal without this). overhead: locked + frame +
+// derive-lenses + codex leg + synthesize.
+const lensCount = flags.lenses.list ? flags.lenses.list.length : flags.lenses.count
+const AGENT_BUDGET = 900
+const worst = worstCaseAgents(1, lensCount, flags.votes, VERIFY_CAP, (flags.codex === 'on' ? 1 : 0) + 4)
+if (worst > AGENT_BUDGET) {
+  log('rejected: worst-case ' + worst + ' agents > ' + AGENT_BUDGET + ' (runtime lifetime cap is 1000) -- lower lenses/votes/intensity')
+  return { error: 'agent budget: worst case ' + worst + ' exceeds ' + AGENT_BUDGET,
+           rejected: { lenses: lensCount, votes: flags.votes, cap: VERIFY_CAP } }
+}
 const stock = flags.subagents === 'stock'
 
 const DESIGNER = stock ? undefined : 'designer'
 const SKEPTIC = stock ? undefined : 'skeptic'
+
+// name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
+// ONLY channel that reaches external observers -- khudson's clod panel reads
+// transcript heads for leg names and the run name; label: feeds only the
+// in-app progress UI. Keep legs short ASCII (<=60 chars, no ] or "), so
+// pathy legs use basenames. Copied verbatim across every aw-*.js (only WF
+// differs).
+const WF = 'aw-design-review'
+const named = (leg, prompt, opts) => agent('[' + WF + ':' + leg + '] ' + prompt, { label: leg, ...opts })
 
 const kind = designKind(flags.design, prompt)
 if (kind.error) { log('rejected: "' + prompt + '" -- ' + kind.error); return { error: kind.error, rejected: prompt } }
@@ -116,8 +144,8 @@ phase('Frame')
 let locked = ''
 if (flags.locked) {
   const LK = { type: 'object', required: ['found', 'text'], properties: { found: { type: 'boolean' }, text: { type: 'string' } } }
-  const lk = await agent('Read the constraints file ' + flags.locked + ' and return its text verbatim as the LOCKED block. If the file does not exist or cannot be read, return found=false and empty text.',
-    { label: 'locked', phase: 'Frame', agentType: DESIGNER, schema: LK })
+  const lk = await named('locked', 'Read the constraints file ' + flags.locked + ' and return its text verbatim as the LOCKED block. If the file does not exist or cannot be read, return found=false and empty text.',
+    { phase: 'Frame', agentType: DESIGNER, schema: LK })
   if (!lk.found || !(lk.text || '').trim()) {
     log('locked constraints unreadable: ' + flags.locked)
     return { error: 'locked= file missing or unreadable', rejected: flags.locked }
@@ -128,12 +156,12 @@ const FRAME_DOC = { type: 'object', required: ['found', 'kind', 'design'], prope
   found: { type: 'boolean' }, kind: { type: 'string', enum: ['doc', 'proposed'] }, design: { type: 'string' } } }
 const FRAME_PROPOSED = { type: 'object', required: ['kind', 'design'], properties: {
   kind: { type: 'string', enum: ['doc', 'proposed'] }, design: { type: 'string' } } }
-const framed = await agent(
+const framed = await named('frame',
   (kind.kind === 'doc'
     ? 'Read the design at ' + flags.design + ' and summarize the approach to be reviewed (kind=doc). If the file does not exist or cannot be read, return found=false and empty design.'
     : 'This is a design PROBLEM, not a doc: "' + prompt + '". Propose ONE concrete candidate approach to review (kind=proposed), grounded in ' + flags['code-root'] + '.') +
   (locked ? '\nLOCKED constraints (do not violate or relitigate):\n' + locked : ''),
-  { label: 'frame', phase: 'Frame', agentType: DESIGNER, schema: kind.kind === 'doc' ? FRAME_DOC : FRAME_PROPOSED })
+  { phase: 'Frame', agentType: DESIGNER, schema: kind.kind === 'doc' ? FRAME_DOC : FRAME_PROPOSED })
 if (kind.kind === 'doc' && (!framed.found || !(framed.design || '').trim())) {
   log('design doc unreadable: ' + flags.design)
   return { error: 'design= file missing or unreadable', rejected: flags.design }
@@ -142,21 +170,10 @@ if (kind.kind === 'doc' && (!framed.found || !(framed.design || '').trim())) {
 let lenses = flags.lenses.list
 if (!lenses) {
   const L = { type: 'object', required: ['lenses'], properties: { lenses: { type: 'array', items: { type: 'string' } } } }
-  lenses = (await agent('Propose ' + flags.lenses.count + ' orthogonal stress-test lenses for this design:\n' + framed.design,
-    { label: 'derive-lenses', phase: 'Frame', agentType: DESIGNER, schema: L })).lenses
+  lenses = (await named('derive-lenses', 'Propose ' + flags.lenses.count + ' orthogonal stress-test lenses for this design:\n' + framed.design,
+    { phase: 'Frame', agentType: DESIGNER, schema: L })).lenses
 }
 log('design-review: ' + framed.kind + ' lenses=' + lenses.join('+') + (locked ? ' (locked)' : ''))
-
-// optional outward bend: fold in how the field solves this problem (composes the prior-art workflow).
-let priorArt = ''
-if (flags.priorart === 'on') {
-  try {
-    const problem = kind.kind === 'doc' ? framed.design : prompt
-    const pa = await workflow('prior-art', 'verify-scope=load-bearing how does the field solve this design problem: ' + problem)
-    priorArt = (pa && pa.report) || ''
-    log('design-review: folded in a prior-art pass')
-  } catch (e) { log('prior-art bend skipped (cannot nest workflows): ' + e) }
-}
 
 const FLAW = { type: 'object', required: ['flaws'], properties: { flaws: { type: 'array', items: {
   type: 'object', required: ['lens', 'desc', 'severity'], properties: {
@@ -180,11 +197,11 @@ const CODEX_FLAWS = { type: 'object', required: ['available', 'flaws', 'dropped'
     type: 'object', required: ['lens', 'desc', 'severity'], properties: {
       lens: { type: 'string' }, desc: { type: 'string' }, evidence: { type: 'string' },
       severity: { type: 'string', enum: ['fatal', 'major', 'minor'] } } } } } }
-const legThunks = lenses.map(lens => () => agent(
+const legThunks = lenses.map(lens => () => named('critique:' + lens,
   'Stress-test this design through the ' + lens + ' lens. Ground every flaw in real code under ' + flags['code-root'] + ' (file:line).\n' +
   'Design:\n' + framed.design + (locked ? '\nLOCKED (do not flag these as flaws):\n' + locked : ''),
-  { label: 'critique:' + lens, phase: 'Critique', agentType: DESIGNER, schema: FLAW }))
-if (flags.codex === 'on') legThunks.unshift(() => agent(
+  { phase: 'Critique', agentType: DESIGNER, schema: FLAW }))
+if (flags.codex === 'on') legThunks.unshift(() => named('critique:codex-dissent',
   'Cross-model dissent leg: relay codex, do NOT add flaws of your own.\n' +
   '1. Check auth first: run "codex login status" if permitted; if it prompts or fails, skip straight to the codex exec attempt.\n' +
   '2. Write the design brief below to a temp file (mktemp; bash heredoc is quoting-safe), then run:\n' +
@@ -192,7 +209,7 @@ if (flags.codex === 'on') legThunks.unshift(() => agent(
   '3. Read the output file. For EACH codex flaw, verify the cited file/symbol actually exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
   '4. Return available=true with the surviving flaws (keep codex\'s wording in desc, cite the grounded file:line in evidence). If codex exits nonzero, times out, or errors (e.g. a 401 after retry churn -- that means auth expired), return available=false with the first error lines in error. Never fabricate flaws.\n' +
   'Design brief:\n' + framed.design + (locked ? '\nLOCKED (not flaws, do not relay complaints about these):\n' + locked : ''),
-  { label: 'critique:codex-dissent', phase: 'Critique', agentType: DESIGNER, schema: CODEX_FLAWS }))
+  { phase: 'Critique', agentType: DESIGNER, schema: CODEX_FLAWS }))
 const legResults = await parallel(legThunks)
 let codexDown = false, codexDropped = 0, codexFlaws = []
 if (flags.codex === 'on') {
@@ -222,9 +239,9 @@ const { take, over } = capClaims(fresh, VERIFY_CAP)
 if (over.length) log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
 const judged = (await parallel(take.map(f => () =>
   parallel(Array.from({ length: flags.votes }, (_, v) => () =>
-    agent('Skeptic ' + (v + 1) + ': is this a REAL flaw in the design, or a misread? Default real=false unless you confirm against the code/design. Check it is not a LOCKED choice.\n' +
+    named('verify:' + f.lens, 'Skeptic ' + (v + 1) + ': is this a REAL flaw in the design, or a misread? Default real=false unless you confirm against the code/design. Check it is not a LOCKED choice.\n' +
       f.lens + ': ' + f.desc + '\nEvidence: ' + (f.evidence || 'none'),
-      { label: 'verify:' + f.lens, phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
+      { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
     .then(votes => {
       const vv = votes.filter(Boolean)
       return { ...f, verdict: tallyVotes(vv, flags.votes) }
@@ -234,12 +251,11 @@ const unverified = judged.filter(f => f.verdict === 'UNVERIFIED').concat(over.ma
 
 phase('Synthesize')
 const fatal = confirmed.some(f => f.severity === 'fatal')
-const report = await agent(
+const report = await named('synthesize',
   'Apply the synthesis discipline in ~/.claude/workflows/partials/SYNTHESIS.md and the design doctrine in ~/.claude/workflows/partials/DESIGN_DOCTRINE.md (read both first).\n' +
   'Synthesize a design review. CONFIRMED flaws (verified against code):\n' + JSON.stringify(confirmed, null, 2) + '\n' +
-  (priorArt ? 'PRIOR ART on this problem (weigh the design against how the field solves it):\n' + priorArt + '\n' : '') +
   'A single fatal flaw vetoes the design regardless of the rest (there ' + (fatal ? 'IS' : 'is NO') + ' confirmed fatal flaw). ' +
   'Output a prioritized change list (fatal, then major, then minor), each grounded in file:line, ending in one go/no-go.',
-  { label: 'synthesize', phase: 'Synthesize' })
+  { phase: 'Synthesize' })
 
 return { kind: framed.kind, lenses, confirmed: confirmed.length, unverified: unverified.length, fatal, overCap: over.length, codexDown, codexDropped, report }

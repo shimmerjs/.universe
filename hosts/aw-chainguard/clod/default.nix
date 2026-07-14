@@ -40,6 +40,14 @@ let
   };
 in
 {
+  # everything cody (codex CLI, config.toml, AGENTS.md, consult skill,
+  # its allowlist slice) lives in its own module; contributions merge.
+  # plannotator: plan-review plugin + release binary + annotate skill.
+  imports = [
+    ./cody
+    ./plannotator
+  ];
+
   programs.claude-code = {
     enable = true;
     context = ./SYSTEM_PROMPT.md;
@@ -75,12 +83,6 @@ in
       # prune one-off / superseded / repo-duplicated entries. Guardrailed
       # (keep-when-unsure); answers the recurring manual "prune your memory" ask.
       memory-prune = ./skills/memory-prune/SKILL.md;
-      # Cross-model second opinion via codex (different vendor, so reviewers don't
-      # share the pinned Claude model's blind spots). CLI-only via the
-      # Bash(codex ...) perms; threading via `codex exec resume <uuid>`. No MCP
-      # server: per-session stdio daemons cost ~32MB each for a rarely-used path,
-      # and the hm module's plugin-prefixed tool names broke the allowlist silently.
-      codex-consult = ./skills/codex-consult/SKILL.md;
       # effective-html: self-contained HTML deliverables with a strong visual
       # bias (plans, architecture diagrams, general pages), each skill shipping
       # its reference corpus + agents alongside SKILL.md -- whole-directory
@@ -121,14 +123,17 @@ in
       effortLevel = "xhigh";
       autoScrollEnabled = true;
       includeCoAuthoredBy = false;
+      spinnerTipsEnabled = false;
       # ctrl+g external-editor buffer: prepend the last assistant response as
       # #-commented context above the prompt (stripped on save). Key name from the
       # binary's /config panel id ("Show last response in external editor") -- not
       # yet in the schemastore schema, which lags the app.
       externalEditorContext = true;
       # WebFetch sends the requested hostname to api.anthropic.com for a safety
-      # preflight on every fetch. The permission allowlist already scopes which
-      # domains are reachable, so the preflight is largely redundant.
+      # preflight on every fetch. Skipped as a latency choice -- and honestly:
+      # on this host nothing else scopes WebFetch domains (MDM ignores the
+      # allow block below and the managed policy carries no WebFetch rules),
+      # so this drops the only remaining domain check, not a redundant one.
       skipWebFetchPreflight = true;
       statusLine = {
         type = "command";
@@ -190,18 +195,50 @@ in
             ];
           }
         ];
+        # timeout: the harness default is 60s and a killed hook cannot emit
+        # decision=block (silent fail-open on exactly the slow runs); gocheck's
+        # internal budget is up to 120s per module root, so give it real room.
         Stop = [
           {
             hooks = [
               {
                 type = "command";
                 command = "${hooks.glod}/bin/gocheck";
+                timeout = 300;
+              }
+            ];
+          }
+        ];
+        # Same gate on subagent ends: Stop and SubagentStop are split events,
+        # so without this a workflow executor's Go edits finish ungated and
+        # breakage surfaces only at the main-loop stop after synthesis. gocheck
+        # echoes the incoming event and never drains the session-wide queue on
+        # SubagentStop (clean pass or re-fire) -- only the main Stop drains, so
+        # concurrent editors cannot lose queued files to a subagent's pass.
+        SubagentStop = [
+          {
+            hooks = [
+              {
+                type = "command";
+                command = "${hooks.glod}/bin/gocheck";
+                timeout = 300;
               }
             ];
           }
         ];
       };
 
+      # HONORED ONLY WHERE NO MDM POLICY REIGNS. This host carries
+      # Chainguard managed settings (/Library/Application Support/
+      # ClaudeCode/managed-settings.json) with
+      # allowManagedPermissionRulesOnly: user/project/local allow rules --
+      # this entire block -- are IGNORED there; the managed defaultMode
+      # "auto" classifier is what keeps daily work promptless, and it
+      # re-prompts on every mutation-shaped command (git commit, push)
+      # with no memory across calls. Diagnosed 2026-07-10: recurring
+      # `git add ... && git commit` prompts are org policy, not a missing
+      # allow entry -- the fix lives in the org's server-managed rules.
+      # The block stays: it is the correct config wherever policy lifts.
       permissions = {
         defaultMode = "auto";
         allow = [
@@ -214,7 +251,6 @@ in
           "WebFetch(domain:raw.githubusercontent.com)"
 
           "Bash(bash:*)"
-          "Bash(cargo check:*)"
           "Bash(chmod +x:*)"
           "Bash(curl:*)"
           "Bash(file:*)"
@@ -228,7 +264,6 @@ in
           "Bash(open:*)"
           "Bash(pkill:*)"
           "Bash(python3:*)"
-          "Bash(sysctl security:*)"
           "Bash(wc:*)"
           "Bash(xargs sh:*)"
 
@@ -245,15 +280,8 @@ in
           "Bash(go test:*)"
           "Bash(go version:*)"
           "Bash(go vet:*)"
-          "Bash(gh api:*)"
-          "Bash(gh issue:*)"
-          "Bash(gh pr:*)"
-          "Bash(gh search:*)"
 
           "Bash(nix:*)"
-          "Bash(nix build:*)"
-          "Bash(nix eval:*)"
-          "Bash(nix flake:*)"
           "Bash(nix-shell:*)"
           "Bash(darwin-rebuild:*)"
           "Bash(home-manager:*)"
@@ -263,13 +291,6 @@ in
           "WebFetch(domain:mynixos.com)"
           "WebFetch(domain:nixos.org)"
           "WebFetch(domain:wiki.nixos.org)"
-
-          "mcp__claude_ai_Chainguard_Analytics__metrics"
-
-          # codex-consult: CLI-only, promptless (exec resume carries threads).
-          "Bash(codex exec:*)"
-          "Bash(codex review:*)"
-          "Bash(codex login status:*)"
         ];
       };
 
@@ -366,8 +387,6 @@ in
 
   home.packages = [
     clodCheat
-    # codex CLI on PATH for codex-consult (exec / review / exec resume; no MCP).
-    pkgs.codex
   ];
 
   # Statuslines, keybindings, the generated workflow cheatsheet, and every workflow
