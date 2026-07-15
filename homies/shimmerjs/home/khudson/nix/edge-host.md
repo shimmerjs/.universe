@@ -23,23 +23,19 @@ glass; runtime wins, the static setting stays unset. Anchors: edge.cue
 caffeinate comment, internal/bus/caffeinate.go, schema CaffeinateOn. Do
 not re-add the static setting.
 
-## open hazard: screensaver can still blank the HUD
+## screensaver blank hazard: CLOSED 2026-07-15
 
-Live-probed 2026-07-10 on this host:
+Landed exactly as prescribed, in hosts/aw-chainguard/default.nix:
 
-- `wvous-br-corner = 5` with modifier 0: an armed no-modifier
-  start-screensaver hot corner. An Edge-glass tap near that corner blanks
-  the HUD today; caffeinate does not block user-triggered screensavers.
-- screensaver `idleTime = 600` (ByHost), not 0.
+- `system.defaults.dock.wvous-br-corner = 1` disarms the corner that let
+  an Edge-glass tap start the screensaver (caffeinate does not block
+  user-triggered screensavers); `mru-spaces = false` durable-ized in the
+  same block. The Dock reads both on its next restart.
+- `com.apple.screensaver idleTime = 0` via a `-currentHost`
+  home.activation write (ByHost domain; CustomUserPreferences cannot set
+  it).
 
-Neither the hot-corner disable (`wvous-* = 1`) nor the idleTime zeroing
-ever landed in nix. If/when landing them: dock keys go in `systemConfig`
-`system.defaults.dock`; `com.apple.screensaver idleTime` is a ByHost
-domain nix-darwin CustomUserPreferences cannot set -- it needs a
-`defaults -currentHost write` home.activation step. Also durable-ize
-`mru-spaces = false` while there (live on the machine, hand-applied,
-declared nowhere -- auto-rearrange would shuffle the Space the Edge panel
-lives on).
+Takes effect at the next switch (+ one Dock restart for the dock keys).
 
 ## not included, on purpose
 

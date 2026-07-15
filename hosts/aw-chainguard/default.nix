@@ -18,6 +18,18 @@
         ./clod/overlays.nix
       ];
 
+      # Edge-glass screensaver hazard (khudson nix/edge-host.md, live-probed
+      # 07-10): the armed no-modifier bottom-right hot corner let a corner tap
+      # on the HUD glass start the screensaver, and caffeinate does not block
+      # user-triggered screensavers. Disable the corner; pin mru-spaces off
+      # while here (live on the machine but declared nowhere -- auto-rearrange
+      # would shuffle the Space the Edge panel lives on). The Dock reads both
+      # on its next restart.
+      system.defaults.dock = {
+        wvous-br-corner = 1;
+        mru-spaces = false;
+      };
+
       homebrew = {
         taps = [
           "chainguard-dev/tap"
@@ -71,6 +83,17 @@
         dpi = 1600;
         takeoverReset = true;
       };
+
+      # The screensaver hazard's second leg (edge-host.md): idleTime is a
+      # ByHost domain nix-darwin CustomUserPreferences cannot set, so it rides
+      # a -currentHost activation write. 0 = never; display sleep stays the
+      # bus caffeinate's call, and the 600s idle screensaver blanked the
+      # glass regardless of it.
+      home.activation.screensaverIdleOff = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        if [ "$(/usr/bin/defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo missing)" != "0" ]; then
+          run /usr/bin/defaults -currentHost write com.apple.screensaver idleTime -int 0
+        fi
+      '';
 
       # Trust the chainguard tap so interactive brew commands (bundle, upgrade,
       # info) can load its formulae under Homebrew >=6 tap trust enforcement.
