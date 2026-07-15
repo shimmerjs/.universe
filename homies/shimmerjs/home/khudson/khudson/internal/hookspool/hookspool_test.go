@@ -2,6 +2,7 @@ package hookspool
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +219,69 @@ func TestEndRetentionAndReaper(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "keep.json")); err != nil {
 		t.Error("reaper ate a fresh spool")
+	}
+}
+
+// Every write stamps the current shape version; a legacy stampless file
+// gains it on the next merge without losing its fields.
+func TestVersionStamp(t *testing.T) {
+	dir := t.TempDir()
+	run(t, dir, EventPrompt, `{"session_id":"s1","prompt":"p"}`, noEnv)
+	if m := spool(t, dir, "s1"); m["spool_version"] != float64(Version) {
+		t.Fatalf("spool_version = %v, want %d", m["spool_version"], Version)
+	}
+	legacy := filepath.Join(dir, "s2.json")
+	if err := os.WriteFile(legacy, []byte(`{"session_id":"s2","prompt":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, EventStop, `{"session_id":"s2"}`, noEnv)
+	m := spool(t, dir, "s2")
+	if m["spool_version"] != float64(Version) {
+		t.Errorf("legacy file not stamped on merge: %+v", m)
+	}
+	if m["prompt"] != "old" {
+		t.Errorf("merge clobbered legacy fields: %+v", m)
+	}
+}
+
+// Sweep prunes by age and by foreign version stamp: fresh current-version
+// and fresh legacy (unstamped) spools survive; aged spools of any version
+// and fresh foreign-stamp spools go, orphaned sidecars with them.
+func TestSweep(t *testing.T) {
+	dir := t.TempDir()
+	run(t, dir, EventPrompt, `{"session_id":"live","prompt":"p"}`, noEnv)
+	write := func(name, body string, mtime time.Time) {
+		t.Helper()
+		f := filepath.Join(dir, name)
+		if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(f, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := t0.Add(-8 * 24 * time.Hour)
+	write("legacy-fresh.json", `{"session_id":"legacy-fresh"}`, t0.Add(-time.Hour))
+	write("legacy-old.json", `{"session_id":"legacy-old"}`, old)
+	write("foreign.json", fmt.Sprintf(`{"session_id":"foreign","spool_version":%d}`, Version+1), t0.Add(-time.Minute))
+	write("current-old.json", fmt.Sprintf(`{"session_id":"current-old","spool_version":%d}`, Version), old)
+	for _, d := range []string{"live.agents", "foreign.agents"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	Sweep(dir, t0)
+
+	for _, keep := range []string{"live.json", "legacy-fresh.json", "live.agents"} {
+		if _, err := os.Stat(filepath.Join(dir, keep)); err != nil {
+			t.Errorf("Sweep removed %s", keep)
+		}
+	}
+	for _, gone := range []string{"legacy-old.json", "foreign.json", "current-old.json", "foreign.agents"} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); err == nil {
+			t.Errorf("Sweep kept %s", gone)
+		}
 	}
 }
 

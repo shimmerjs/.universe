@@ -38,6 +38,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/hookspool"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"golang.org/x/sys/unix"
 )
@@ -620,9 +621,12 @@ func overlay(s *session, spoolDir string) {
 // attention/turn state (Notification + Stop/StopFailure hooks), and the
 // rank-1/2 detail fields (typed notification, last assistant line, effort,
 // error, bg/cron counts, model, session title). Missing fields stay
-// zero-valued -- old spools parse fine.
+// zero-valued -- old spools parse fine. A foreign spool_version stamp is
+// parse-garbage under this shape: it errors like malformed, so overlay
+// leaves the fs-derived fields alone; an absent stamp is legacy and parses.
 func parseSpool(b []byte) (session, error) {
 	var raw struct {
+		SpoolVersion      int             `json:"spool_version"`
 		SessionName       string          `json:"session_name"`
 		SessionTitle      string          `json:"session_title"`
 		Prompt            string          `json:"prompt"`
@@ -645,6 +649,9 @@ func parseSpool(b []byte) (session, error) {
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return session{}, err
+	}
+	if raw.SpoolVersion != 0 && raw.SpoolVersion != hookspool.Version {
+		return session{}, fmt.Errorf("spool version %d, want %d", raw.SpoolVersion, hookspool.Version)
 	}
 	s := session{
 		dir:          raw.Workspace.CurrentDir,

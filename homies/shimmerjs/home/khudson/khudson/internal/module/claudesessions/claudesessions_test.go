@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/hookspool"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 )
 
@@ -169,6 +170,23 @@ func TestParseSpool(t *testing.T) {
 
 	if _, err = parseSpool([]byte(fixtureMalformed)); err == nil {
 		t.Error("parseSpool(malformed): want error, got nil")
+	}
+}
+
+// A foreign spool_version stamp errors like malformed (overlay leaves
+// fs-derived fields alone); the current stamp and legacy stampless spools
+// parse.
+func TestParseSpoolVersionGate(t *testing.T) {
+	if _, err := parseSpool(fmt.Appendf(nil, `{"spool_version":%d,"prompt":"p"}`, hookspool.Version+1)); err == nil {
+		t.Error("foreign spool_version parsed, want error")
+	}
+	s, err := parseSpool(fmt.Appendf(nil, `{"spool_version":%d,"prompt":"p"}`, hookspool.Version))
+	if err != nil || s.prompt != "p" {
+		t.Errorf("current spool_version: err %v, prompt %q", err, s.prompt)
+	}
+	s, err = parseSpool([]byte(`{"prompt":"p"}`))
+	if err != nil || s.prompt != "p" {
+		t.Errorf("legacy stampless spool: err %v, prompt %q", err, s.prompt)
 	}
 }
 

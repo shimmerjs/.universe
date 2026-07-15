@@ -33,9 +33,15 @@ const (
 
 // reapAfter is the spool retention horizon: every hook write refreshes the
 // file mtime, so a spool untouched this long is a dead session. The reaper
-// rides the end event only (a transcript scan per fire is forbidden by the
-// measured hook economics).
+// (Sweep) rides the end event and the bus boot -- never a per-fire or
+// per-tick scan (forbidden by the measured hook economics).
 const reapAfter = 7 * 24 * time.Hour
+
+// Version is the spool shape stamp, written into every spool file as
+// spool_version. A file stamped with a DIFFERENT version is parse-garbage
+// under this shape: readers ignore it, Sweep prunes it. An absent stamp is
+// legacy (version 0) -- still readable, swept by age only.
+const Version = 1
 
 // Run handles one hook fire: payload JSON on stdin, spool dir from the
 // wiring. A payload without session_id is a silent no-op (exit 0), matching
@@ -59,7 +65,7 @@ func Run(event, dir string, stdin io.Reader, env func(string) string, now time.T
 		return end(dir, sid, in, now)
 	}
 
-	merge := map[string]any{"session_id": sid}
+	merge := map[string]any{"session_id": sid, "spool_version": Version}
 	switch event {
 	case EventPrompt:
 		merge["prompt"] = str(in["prompt"])
@@ -139,24 +145,41 @@ func Run(event, dir string, stdin io.Reader, env func(string) string, now time.T
 
 // end is retention, not unconditional delete: clear/logout drop the spool
 // (+ agent sidecar); a normal quit (prompt_input_exit) and unknown reasons
-// keep it -- it is the likeliest resume target. Then the 7d reaper sweeps
-// dead spools and orphaned sidecars.
+// keep it -- it is the likeliest resume target. Then Sweep reaps.
 func end(dir, sid string, in map[string]any, now time.Time) error {
 	switch str(in["reason"]) {
 	case "clear", "logout":
 		os.Remove(filepath.Join(dir, sid+".json"))
 		os.RemoveAll(filepath.Join(dir, sid+".agents"))
 	}
+	Sweep(dir, now)
+	return nil
+}
+
+// Sweep prunes the spool dir; best-effort, rides the end event and bus
+// boot (end-only left dead spools past the horizon while no session
+// ended). Two criteria: mtime age past reapAfter -- spools must outlive
+// their session as resume targets, so registry liveness is NOT a delete
+// signal -- and a foreign version stamp (parse-garbage under this shape;
+// a live session's next hook fire rewrites it from {}). Unstamped legacy
+// files sweep by age only. Orphaned agent sidecars go with their owners.
+func Sweep(dir string, now time.Time) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
-		return nil // no spool dir: nothing to reap
+		return // no spool dir: nothing to reap
 	}
 	for _, e := range ents {
 		name := e.Name()
-		if e.Type().IsRegular() && strings.HasSuffix(name, ".json") {
-			if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > reapAfter {
-				os.Remove(filepath.Join(dir, name))
-			}
+		if !e.Type().IsRegular() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		f := filepath.Join(dir, name)
+		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > reapAfter {
+			os.Remove(f)
+			continue
+		}
+		if v := fileVersion(f); v != 0 && v != Version {
+			os.Remove(f)
 		}
 	}
 	for _, e := range ents {
@@ -168,7 +191,22 @@ func end(dir, sid string, in map[string]any, now time.Time) error {
 			}
 		}
 	}
-	return nil
+}
+
+// fileVersion reads a spool's shape stamp: 0 (legacy) when absent,
+// unreadable, or unparseable.
+func fileVersion(f string) int {
+	raw, err := os.ReadFile(f)
+	if err != nil {
+		return 0
+	}
+	var v struct {
+		Version int `json:"spool_version"`
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		return 0
+	}
+	return v.Version
 }
 
 // readBase parses the existing spool file; anything short of a JSON object

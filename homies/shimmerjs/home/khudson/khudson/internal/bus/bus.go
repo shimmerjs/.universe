@@ -21,6 +21,7 @@ import (
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/gesture"
+	"github.com/shimmerjs/khudson/khudson/internal/hookspool"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/module/registry"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
@@ -161,6 +162,12 @@ func Run(ctx context.Context, opts Options) error {
 	if err := os.Chmod(sock, 0o600); err != nil {
 		ln.Close()
 		return fmt.Errorf("tighten socket: %w", err)
+	}
+	// boot-time spool sweep: the hookspool reaper otherwise rides only
+	// session-end events, so dead or foreign-version spools linger until one
+	// fires. One-shot after the socket claim; never per-tick.
+	if opts.Paths.Dir != "" {
+		hookspool.Sweep(opts.Paths.ClaudeSpool(), time.Now())
 	}
 	if opts.Ready != nil {
 		opts.Ready()
