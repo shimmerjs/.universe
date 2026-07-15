@@ -55,7 +55,7 @@ type logiretchProbe struct {
 func (p *logiretchProbe) printf(format string, a ...any) { fmt.Fprintf(p.w, format, a...) }
 
 func (p *logiretchProbe) run(ctx context.Context) error {
-	p.printf("khudson-touchd logiretch-probe -- MX Master 4 HID++ feasibility (logiretch-0 spike)\n")
+	p.printf("magicbusd logiretch-probe -- MX Master 4 HID++ feasibility (logiretch-0 spike)\n")
 	p.printf("read-only: ping/getFeature/getCount/getFeatureID/getStatus/getCidInfo/getCidReporting only\n\n")
 
 	vendor, err := p.step1Enumerate()

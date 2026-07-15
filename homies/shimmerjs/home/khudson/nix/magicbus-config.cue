@@ -1,4 +1,4 @@
-// Schema for the khudson-touchd -config JSON: which daemon modules a host
+// Schema for the magicbusd -config JSON: which daemon modules a host
 // enables plus the optional logiretch (MX Master) device settings. Vetted
 // against the per-host values and exported to plain JSON at nix build time
 // (magicbus.nix); the daemon reads the JSON with stdlib encoding/json only and

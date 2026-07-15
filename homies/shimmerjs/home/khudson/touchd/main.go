@@ -1,4 +1,4 @@
-// khudson-touchd: input daemon for the khudson HUD. Owns the Corsair Xeneon Edge
+// magicbusd: input daemon for the khudson HUD. Owns the Corsair Xeneon Edge
 // digitizer HID collection (VID 0x27C0 PID 0x0859, usage page 0x0D usage 0x04),
 // asserts multi-input device mode on every open/reconnect, parses input report
 // 0x0D, and broadcasts contact frames as ndjson lines on touch.sock (see Frame
@@ -6,15 +6,15 @@
 //
 // Usage:
 //
-//	khudson-touchd -daemon             serve frames on touch.sock; reconnect on device loss
-//	khudson-touchd -daemon -config f   enable modules per JSON config (default: edge+moonlander)
-//	khudson-touchd -daemon -record f   also append raw reports to f
-//	khudson-touchd -replay f           serve frames from a recording instead of hardware
-//	khudson-touchd                     spike mode: open digitizer, switch mode, print frames
-//	khudson-touchd logiretch-probe     one-shot MX Master 4 HID++ feasibility report (read-only)
-//	khudson-touchd -list               enumerate the Edge's HID collections
-//	khudson-touchd -mouse              open the mouse collection instead (edgecontrol path)
-//	khudson-touchd -nomode             skip the device-mode feature report
+//	magicbusd -daemon             serve frames on touch.sock; reconnect on device loss
+//	magicbusd -daemon -config f   enable modules per JSON config (default: edge+moonlander)
+//	magicbusd -daemon -record f   also append raw reports to f
+//	magicbusd -replay f           serve frames from a recording instead of hardware
+//	magicbusd                     spike mode: open digitizer, switch mode, print frames
+//	magicbusd logiretch-probe     one-shot MX Master 4 HID++ feasibility report (read-only)
+//	magicbusd -list               enumerate the Edge's HID collections
+//	magicbusd -mouse              open the mouse collection instead (edgecontrol path)
+//	magicbusd -nomode             skip the device-mode feature report
 //
 // Requires the Input Monitoring permission (macOS prompts on first run for the
 // hosting binary). On SIGINT/SIGTERM any asserted device mode is put back to

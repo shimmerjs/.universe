@@ -1,4 +1,4 @@
-# magicbus: the modular HID daemon (khudson-touchd) as its own home-manager
+# magicbus: the modular HID daemon (magicbusd) as its own home-manager
 # module, so a keyboard-only host can run the Moonlander source without the
 # HUD stack (magicbus-design.md). Owns everything touchd-scoped: the
 # derivation, the out-of-store signed install, the launchd agent, the
@@ -22,7 +22,7 @@ let
   # Fixed out-of-store install path: the Input Monitoring grant
   # keys on the binary's path + signature, so the granted binary must never
   # move with the store generation.
-  touchdInstall = "${appSupport}/bin/khudson-touchd";
+  touchdInstall = "${appSupport}/bin/magicbusd";
 
   # Joins the install stamp beside the store path; bump the version whenever
   # the codesign invocation in khudsonTouchdInstall changes so existing
@@ -40,8 +40,8 @@ let
   # nixpkgs-claude precedent in flake.nix) so dep bumps on the main input
   # never touch this build. go-hid is cgo (IOKit); the apple SDK in stdenv
   # covers it.
-  khudson-touchd = cfg.touchdPkgs.buildGoModule {
-    pname = "khudson-touchd";
+  magicbusd = cfg.touchdPkgs.buildGoModule {
+    pname = "magicbusd";
     version = "0.1.0";
     src = ../touchd;
     vendorHash = "sha256-UR7Ojpb3zNJS2UKgBFFJLJt24s9yEBOa6Y56xbc6RuQ=";
@@ -50,7 +50,7 @@ let
     doCheck = true;
     # go names the binary after the import path tail ("touchd")
     postInstall = ''
-      mv $out/bin/touchd $out/bin/khudson-touchd
+      mv $out/bin/touchd $out/bin/magicbusd
     '';
   };
 
@@ -91,7 +91,7 @@ let
     ${lib.optionalString (logiretchSettings != { }) "config: logiretch: ${builtins.toJSON logiretchSettings}"}
   '';
   touchdConfig =
-    pkgs.runCommand "khudson-touchd-config.json"
+    pkgs.runCommand "magicbusd-config.json"
       {
         nativeBuildInputs = [ pkgs.cue ];
       }
@@ -106,7 +106,7 @@ let
   # install stamp.
   touchdUpdatedMarker = "${appSupport}/.touchd-updated";
   touchdConfigMarker = "${appSupport}/.touchd-config-updated";
-  touchdConfigStamp = "${appSupport}/bin/.khudson-touchd.config-path";
+  touchdConfigStamp = "${appSupport}/bin/.magicbusd.config-path";
 
   # Module-shipped plist + named launcher, same mechanics as khudson's
   # agents (see the agentsDir comment in module.nix for why this bypasses
@@ -115,14 +115,14 @@ let
   # launcher content embeds the store paths and is reinstalled
   # unconditionally, the plist only changes when the label machinery does.
   agentsDir = "${appSupport}/agents";
-  agentLabel = "org.khudson.touchd";
-  launcherPath = "${agentsDir}/khudson-touchd";
+  agentLabel = "org.magicbus.daemon";
+  launcherPath = "${agentsDir}/magicbusd";
   plistPath = "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel}.plist";
   # -daemon is LOAD-BEARING: the bare binary is spike mode, which dies
   # one-shot on the gestures-driver digitizer seize and crash-loops under
   # KeepAlive. wait4path parks a fresh boot (or fresh host) until
   # khudsonTouchdInstall has run once.
-  touchdLauncher = pkgs.writeText "khudson-touchd-launcher" ''
+  touchdLauncher = pkgs.writeText "magicbusd-launcher" ''
     #!/bin/sh
     /bin/wait4path /nix/store
     /bin/wait4path "${touchdInstall}" && exec "${touchdInstall}" -daemon -config "${touchdConfig}" -logi-socket "${appSupport}/logiretch.sock"
@@ -146,7 +146,7 @@ let
 in
 {
   options.universe.home.magicbus = {
-    enable = lib.mkEnableOption "magicbus HID daemon (khudson-touchd)";
+    enable = lib.mkEnableOption "magicbus HID daemon (magicbusd)";
 
     # touchd is signed with a persistent identity from the login
     # keychain, NOT ad-hoc (`--sign -`), because ad-hoc = per-build cdhash =
@@ -296,19 +296,43 @@ in
     # whose ad-hoc store signature fails it ("different Team IDs") --
     # the daemon died in dyld before main.
     #
-    # Keeps its khudson-era name: khudson's khudsonAgents step orders after
-    # it by name, and existing installs keep their stamp path.
+    # The activation attr keeps its khudsonTouchdInstall name (khudson's
+    # khudsonAgents step orders after it by that name); only the installed
+    # binary moved to magicbusd, so the store-path marker is fresh and the
+    # first post-rename switch reinstalls + re-signs at the new path (a new
+    # Input Monitoring subject -- the accepted one-time re-grant).
     home.activation.khudsonTouchdInstall =
       lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "magicbusRuntimeDirs" ]
         ''
           run ${binInstallScript}/bin/khudson-bin-install \
-            "${khudson-touchd}/bin/khudson-touchd" \
+            "${magicbusd}/bin/magicbusd" \
             "${touchdInstall}" \
-            "${appSupport}/bin/.khudson-touchd.store-path" \
-            "${khudson-touchd} ${touchdSignRecipe}" \
+            "${appSupport}/bin/.magicbusd.store-path" \
+            "${magicbusd} ${touchdSignRecipe}" \
             ${lib.escapeShellArg cfg.signingIdentity} \
             "${touchdUpdatedMarker}"
         '';
+
+    # One-time migration off the pre-rename agent: bootout org.khudson.touchd
+    # and remove its plist, launcher, installed binary, and markers, so the
+    # old daemon does not keep running (and seizing the HID devices) beside
+    # the renamed magicbusd. Ordered before magicbusAgents so the old agent is
+    # gone before the new one bootstraps. Idempotent: a no-op once removed.
+    home.activation.magicbusMigrateLegacy =
+      lib.hm.dag.entryBetween [ "magicbusAgents" ] [ "writeBoundary" ] ''
+        legacyLabel="org.khudson.touchd"
+        legacyPlist="${config.home.homeDirectory}/Library/LaunchAgents/$legacyLabel.plist"
+        legacyUid=$(id -u)
+        if /bin/launchctl print "gui/$legacyUid/$legacyLabel" > /dev/null 2>&1 || [ -e "$legacyPlist" ]; then
+          run /bin/launchctl bootout "gui/$legacyUid/$legacyLabel" 2>/dev/null || true
+          run rm -f \
+            "$legacyPlist" \
+            "${agentsDir}/khudson-touchd" \
+            "${appSupport}/bin/khudson-touchd" \
+            "${appSupport}/bin/.khudson-touchd.store-path" \
+            "${appSupport}/bin/.khudson-touchd.config-path"
+        fi
+      '';
 
     # Launcher reinstalls unconditionally -- content embeds store paths (the
     # binary install path is stable, but -config moves with the rendered
