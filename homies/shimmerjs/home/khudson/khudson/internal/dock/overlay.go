@@ -53,7 +53,7 @@ type overlayState struct {
 // blooms, chrome dim once settled.
 func (m *model) overlayFrameStyle(o *overlayState) lipgloss.Style {
 	if m.now.Sub(o.openedAt) < tapFlashFor {
-		if ac, ok := m.palette.color("color2"); ok {
+		if ac, ok := m.palette.color("color5"); ok {
 			return lipgloss.NewStyle().Foreground(ac)
 		}
 		return chromeAccent

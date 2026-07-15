@@ -15,7 +15,8 @@ func busPalette() map[string]string {
 	return map[string]string{
 		"foreground": "#d3c6aa", "background": "#232a2e",
 		"color1": "#e67e80", "color2": "#a7c080",
-		"color3": "#dbbc7f", "color6": "#83c092",
+		"color3": "#dbbc7f", "color5": "#d699b6",
+		"color6": "#83c092",
 	}
 }
 

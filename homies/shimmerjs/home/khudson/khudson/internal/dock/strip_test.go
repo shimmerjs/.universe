@@ -217,13 +217,13 @@ func TestStripUnknownToggleRendersDead(t *testing.T) {
 func TestStripTabAccent(t *testing.T) {
 	m := stripModel()
 	_, bot := stripLines(t, m)
-	if strings.Contains(bot, "\x1b[32mclod") {
+	if strings.Contains(bot, "\x1b[35mclod") {
 		t.Error("inactive tab accent-toned")
 	}
 	m.layout = "hub"
 	m.resetLayout()
 	_, bot = stripLines(t, m)
-	if !strings.Contains(bot, "\x1b[32mclod") {
+	if !strings.Contains(bot, "\x1b[35mclod") {
 		t.Error("active-target tab not accent-toned")
 	}
 }

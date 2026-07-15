@@ -25,7 +25,7 @@ import (
 var (
 	chromeFG        = lipgloss.NewStyle()
 	chromeDim       = lipgloss.NewStyle().Foreground(lipgloss.BrightBlack)
-	chromeAccent    = lipgloss.NewStyle().Foreground(lipgloss.Green)
+	chromeAccent    = lipgloss.NewStyle().Foreground(lipgloss.Magenta)
 	chromeWarn      = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
 	chromeHighlight = lipgloss.NewStyle().Foreground(lipgloss.Cyan).Bold(true)
 
@@ -109,7 +109,7 @@ func (m *model) flashLive(key string) bool {
 // broken: highlight, no effect). Background/foreground only -- zero
 // geometry change; bright reverse as the indexed fallback.
 func (m *model) tapStyle(base lipgloss.Style) lipgloss.Style {
-	if ac, ok := m.palette.color("color2"); ok {
+	if ac, ok := m.palette.color("color5"); ok {
 		if bg, ok := m.palette.color("background"); ok {
 			return base.Foreground(bg).Background(ac).Bold(true)
 		}

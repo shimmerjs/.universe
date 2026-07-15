@@ -124,9 +124,9 @@ func buildStyles(p palette) styles {
 	s := styles{
 		strip: chromeDim,
 		warn:  chromeWarn,
-		brand: lipgloss.NewStyle().Foreground(lipgloss.Green).Bold(true),
+		brand: lipgloss.NewStyle().Foreground(lipgloss.Magenta).Bold(true),
 	}
-	if c, ok := p.blend("color2", "foreground", brandBlend); ok {
+	if c, ok := p.blend("color5", "foreground", brandBlend); ok {
 		s.brand = lipgloss.NewStyle().Foreground(c).Bold(true)
 	}
 	return s
@@ -151,7 +151,7 @@ func newRowStyles(p palette) rowStyles {
 	if c, ok := p.blend("background", "foreground", trackBlend); ok {
 		ss.gaugeTrack = lipgloss.NewStyle().Background(c)
 	}
-	if c, ok := p.blend("color2", "foreground", emphasisBlend); ok {
+	if c, ok := p.blend("color5", "foreground", emphasisBlend); ok {
 		ss.accent = lipgloss.NewStyle().Foreground(c)
 	}
 	if c, ok := p.blend("color6", "foreground", emphasisBlend); ok {

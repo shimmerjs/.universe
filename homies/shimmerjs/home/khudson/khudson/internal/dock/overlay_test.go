@@ -305,7 +305,7 @@ func TestOverlayBloomSettles(t *testing.T) {
 	m := overlayModel(t)
 	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
 	fresh := m.overlay.box
-	if !strings.Contains(fresh, "\x1b[32m") {
+	if !strings.Contains(fresh, "\x1b[35m") {
 		t.Fatalf("fresh box has no accent frame: %q", fresh[:60])
 	}
 	m.Update(flashTickMsg(time.Now().Add(tapFlashFor)))
@@ -313,7 +313,7 @@ func TestOverlayBloomSettles(t *testing.T) {
 	if settled == fresh {
 		t.Fatal("bloom did not settle after the flash window")
 	}
-	if strings.Contains(settled, "\x1b[32m") {
+	if strings.Contains(settled, "\x1b[35m") {
 		t.Fatal("settled frame still accent-toned")
 	}
 }

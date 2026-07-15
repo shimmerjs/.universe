@@ -601,7 +601,7 @@ func TestTrayCupRendersBothStates(t *testing.T) {
 	if strings.Contains(out, cupOffGlyph) {
 		t.Error("on-state cup still outline")
 	}
-	if !strings.Contains(out, "\x1b[32m"+cupOnGlyph) {
+	if !strings.Contains(out, "\x1b[35m"+cupOnGlyph) {
 		t.Error("on-state cup not accent-toned")
 	}
 
