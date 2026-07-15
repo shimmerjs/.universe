@@ -159,7 +159,17 @@ The 07-10 batch:
 ## Dev lifecycle
 
 - nix/devshell.nix targets: khudson-{test,race,build,vet,live,
-  vendorhash}; shell.nix deliberately non-flake (user 2026-07-07).
+  vendorhash,dock-dev,glass-dev,glass-restore}; shell.nix
+  deliberately non-flake (user 2026-07-07). UX iteration loop
+  (07-15): dock-dev runs a working-tree dock in the current kitty
+  window against the live bus (real data/theme/gestures, no
+  switch); glass-dev swaps the ON-GLASS dock for a working-tree
+  build via the hud-launcher dev-override marker (loud log, 6h
+  auto-expiry, no TCC surface); glass-restore reverts.
+- House accent is color5/magenta as of 07-15 (the icon's mauve,
+  ~= everforest color5): chromeAccent, tapStyle chip, overlay
+  bloom, brand, row emphasis. Heat/gauge ramps stay semantic
+  green-yellow-red (color-is-data carve-out).
 - Module builds run doCheck=true (darwin builds sandbox-off);
   sqlite3-gated kb tests skip hermetically, run locally.
 - Full gate: build the darwin closure
