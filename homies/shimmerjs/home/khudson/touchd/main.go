@@ -79,12 +79,19 @@ func main() {
 	}
 }
 
+// runStreamFn is the spike-mode seam: tests swap it to pin bare-argv routing
+// without opening hardware.
+var runStreamFn = runStream
+
 func run(ctx context.Context, opts options) error {
 	if opts.replay != "" && (opts.daemon || opts.list || opts.mouse || opts.noMode || opts.record != "" || opts.config != "") {
 		return errors.New("-replay replaces hardware; combine only with -socket")
 	}
 	if opts.daemon && opts.mouse {
 		return errors.New("-daemon reads the digitizer collection; -mouse is a spike-mode flag")
+	}
+	if opts.daemon && opts.list {
+		return errors.New("-list is a one-shot enumerate-and-exit; it would preempt the -daemon serve loop")
 	}
 	if opts.config != "" && !opts.daemon {
 		return errors.New("-config is a daemon flag; use -daemon")
@@ -166,7 +173,7 @@ func run(ctx context.Context, opts options) error {
 		return runDaemon(ctx, opts, enabled, logiCfg, rec)
 	}
 
-	return runStream(ctx, rec, opts.mouse, opts.noMode)
+	return runStreamFn(ctx, rec, opts.mouse, opts.noMode)
 }
 
 // defaultSocket resolves name under the khudson runtime dir; runtime state

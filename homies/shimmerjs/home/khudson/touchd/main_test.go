@@ -116,6 +116,7 @@ func TestRunComboGuards(t *testing.T) {
 		{"replay+record", options{replay: "f", record: "r"}, "replaces hardware"},
 		{"replay+config", options{replay: "f", config: "c"}, "replaces hardware"},
 		{"daemon+mouse", options{daemon: true, mouse: true}, "spike-mode flag"},
+		{"daemon+list", options{daemon: true, list: true}, "one-shot enumerate-and-exit"},
 		{"probe+daemon", options{logiretch: true, daemon: true}, "one-shot read-only prober"},
 		{"probe+replay", options{logiretch: true, replay: "f"}, "one-shot read-only prober"},
 		{"probe+list", options{logiretch: true, list: true}, "one-shot read-only prober"},
@@ -401,6 +402,25 @@ func TestRunReplayRoute(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return after replay")
+	}
+}
+
+// Bare options (no mode flags) must dispatch to spike mode -- the launchd
+// launcher passes -daemon, so the bare default is hand-run only. runStream
+// opens real hardware, so the seam swap keeps the routing pin hermetic.
+func TestRunBareSpikeRoute(t *testing.T) {
+	orig := runStreamFn
+	t.Cleanup(func() { runStreamFn = orig })
+	called := false
+	runStreamFn = func(ctx context.Context, rec *recorder, mouse, noMode bool) error {
+		called = true
+		return nil
+	}
+	if err := run(context.Background(), options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("bare options did not route to spike mode")
 	}
 }
 
