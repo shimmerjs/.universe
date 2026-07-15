@@ -193,6 +193,11 @@ type model struct {
 	// render, dimming once it ages past the staleness horizon.
 	logi *proto.LogiState
 
+	// actFail is the bus's latest failed act/verb as broadcast (TypeActFail);
+	// nil until one lands. The strip warn cell reads it at render and drops
+	// off entirely once it ages past actFailFor.
+	actFail *proto.ActFail
+
 	// skew marks a bus TypeLayout naming a layout this config lacks; the
 	// next successful switch clears it. Chrome (the strip cup) renders it
 	// as a warn state.
@@ -302,6 +307,12 @@ const batteryCellW = 8
 // dims to its last-known value. Computed against m.now, which the 1 s tick
 // advances -- no new timer.
 const logiStale = 5 * time.Minute
+
+// actFailFor is how long the strip's act-fail warn cell stays on glass: long
+// enough to glance at after a tap went nowhere, short enough not to nag.
+// Past it the cell is absent entirely -- expiry is one clock compare against
+// m.now (the logiStale pattern), no timer, no scan.
+const actFailFor = 60 * time.Second
 
 // panelRegion is the home content area in cells (the whole body -- the base
 // HUD draws no outer frame); the bus receives it via hello/grid so the
@@ -609,6 +620,9 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 		// every frame (never part of homeCache), so storing the frame is
 		// enough -- the next View picks it up without dropping the body cache
 		m.logi = msg.Logi
+	case proto.TypeActFail:
+		// strip chrome like the battery readout: storing the slot is enough
+		m.actFail = msg.ActFail
 	case proto.TypeGesture:
 		if msg.Gesture == nil {
 			return
@@ -765,12 +779,13 @@ func (m *model) renderSkewStub(bodyH int) string {
 // of the status content: the drawn home icon, config tab labels (active
 // target accented, stub targets flashing "soon"), the flip chevron (only
 // while the active layout is one of the strip.flip pair), drawn toggle cups,
-// the kitty_mod chord note, the always-present battery readout, then layout,
-// bus state, and gesture tally, the clock flush right. Icons occupy both rows
-// as real cells (see the strip art block for why escapes cannot); 1x text
-// sits on the BOTTOM row with blank cells above it. Registers the strip hits
-// as it places the band: icon, tabs, chevron, cups, kitty_mod, battery, then
-// a whole-strip consume rect so strip taps never leak into the body
+// the kitty_mod chord note, the always-present battery readout, the act-fail
+// warn cell while one is fresh, then layout, bus state, and gesture tally,
+// the clock flush right. Icons occupy both rows as real cells (see the strip
+// art block for why escapes cannot); 1x text sits on the BOTTOM row with
+// blank cells above it. Registers the strip hits as it places the band:
+// icon, tabs, chevron, cups, kitty_mod, battery, act-fail, then a
+// whole-strip consume rect so strip taps never leak into the body
 // (first-match table).
 func (m *model) renderStrip() string {
 	yTop := m.height - stripH
@@ -924,6 +939,21 @@ func (m *model) renderStrip() string {
 		bot.WriteString(fitCellPad(" "+tone.Render(label)+" ", batteryCellW))
 		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, batteryCellW, stripH}, do: consumeTap})
 		x += batteryCellW
+	}
+
+	// act-fail warn cell: the bus's latest failed act/verb (TypeActFail),
+	// rendered in the warn tone while fresher than actFailFor; expired or
+	// absent = no cell at all. Budgeted like a tab (lipgloss.Width + 2, the
+	// ambiguous-width convention); a readout: consumeTap owns the hit.
+	if m.actFail != nil && m.now.Sub(time.Unix(0, m.actFail.TimeNS)) <= actFailFor {
+		label := "! " + m.actFail.Msg
+		w := lipgloss.Width(label) + 2
+		if x+w <= m.width {
+			top.WriteString(strings.Repeat(" ", w))
+			bot.WriteString(fitCellPad(" "+chromeWarn.Render(label)+" ", w))
+			m.hits = append(m.hits, hitRegion{area: rect{x, yTop, w, stripH}, do: consumeTap})
+			x += w
+		}
 	}
 
 	// status remainder, width-fitted; everything left of it is exact-width

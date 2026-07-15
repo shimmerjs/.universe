@@ -63,6 +63,11 @@ type Bus struct {
 	// greeting replays it so a reconnecting dock renders the readout at once.
 	// nil until the first frame lands (or while logiretch is absent).
 	lastLogi *proto.LogiState
+	// lastActFail is the latest failed act/verb exec (input.go actFailed):
+	// ONE slot, overwritten per failure, so failure volume never grows state.
+	// The greeting replays it so a dock connecting after the failure still
+	// renders the warn cell.
+	lastActFail *proto.ActFail
 
 	// themeMu serializes whole theme switches (set-colors + m1ddc +
 	// re-fetch) so concurrent ctl calls cannot interleave RC ops; never
@@ -307,6 +312,11 @@ func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hel
 	_ = enc.Encode(proto.Msg{Type: proto.TypeCaffeinate, Caffeinate: b.caff.wire()})
 	if b.lastLogi != nil {
 		_ = enc.Encode(proto.Msg{Type: proto.TypeLogiState, Logi: b.lastLogi})
+	}
+	if b.lastActFail != nil {
+		// replayed regardless of age (the lastLogi convention): the dock's
+		// decay window decides whether it still renders
+		_ = enc.Encode(proto.Msg{Type: proto.TypeActFail, ActFail: b.lastActFail})
 	}
 	for _, id := range b.reg.IDs() {
 		st, _ := b.reg.Get(id)

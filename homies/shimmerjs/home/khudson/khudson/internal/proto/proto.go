@@ -44,6 +44,11 @@ const (
 	// (the TypeCaffeinate pattern); a distinct type because the battery
 	// cadence is unrelated to the theme channel it would otherwise ride.
 	TypeLogiState = "logi"
+	// TypeActFail carries the bus's latest failed act/verb exec (Msg.ActFail)
+	// to docks: ONE slot, overwritten by each failure, cached and replayed in
+	// the dock greeting (the TypeLogiState pattern) so a dock connecting
+	// after the failure still renders the strip warn cell until it decays.
+	TypeActFail = "act-fail"
 )
 
 // HeartbeatEvery is the dock's TypePing cadence while connected; the bus
@@ -105,6 +110,9 @@ type Msg struct {
 
 	// logi: the latest MX-device battery state (bus -> dock)
 	Logi *LogiState `json:"logi,omitempty"`
+
+	// act-fail: the latest failed act/verb exec (bus -> dock)
+	ActFail *ActFail `json:"actFail,omitempty"`
 
 	// snapshot: one get-text --ansi capture of Widget's window; Cols/Rows
 	// carry the scraped grid size. Stale marks a frame older than 3x the
@@ -195,6 +203,15 @@ type LogiState struct {
 	SoC      int    `json:"soc"`
 	Charging bool   `json:"charging"`
 	State    int    `json:"state"`
+}
+
+// ActFail is the payload of a TypeActFail broadcast: the bus's latest failed
+// act/verb exec. Msg is the argv head plus the trimmed error; TimeNS is the
+// failure wall clock (unix nanoseconds) -- the dock renders its strip warn
+// cell against it while fresh and drops the cell once it decays.
+type ActFail struct {
+	TimeNS int64  `json:"t"`
+	Msg    string `json:"msg"`
 }
 
 // Status is the resp payload for `khudson ctl status`.

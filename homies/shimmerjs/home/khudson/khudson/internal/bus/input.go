@@ -1,9 +1,11 @@
 package bus
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -57,6 +59,7 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 		log.Printf("khudson bus: row act %s: argv %v not published by the bus; refused", m.Widget, m.Argv)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("row act %s: argv refused (not published by the bus)", m.Widget)})
+		b.actFailed(m.Argv, errors.New("refused (not published by the bus)"))
 		return
 	}
 	if handler != nil && handler.HandleAct(m.Argv) {
@@ -77,6 +80,7 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 		log.Printf("khudson bus: row act %v: %v", m.Argv, err)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("row act %s failed to start: %v", m.Widget, err)})
+		b.actFailed(m.Argv, err)
 		return
 	}
 	log.Printf("khudson bus: row act %s: %v", m.Widget, m.Argv)
@@ -178,13 +182,41 @@ func (b *Bus) startArgv(argv []string) (wait func() error, err error) {
 }
 
 // reapCmd waits an exec'd argv out and surfaces a failed exit loudly (log +
-// TypeNotice broadcast) instead of discarding it.
+// TypeNotice broadcast + the latest-failure slot) instead of discarding it.
 func (b *Bus) reapCmd(kind string, argv []string, wait func() error) {
 	if err := wait(); err != nil {
 		log.Printf("khudson bus: %s %v: %v", kind, argv, err)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("%s %v: %v", kind, argv, err)})
+		b.actFailed(argv, err)
 	}
+}
+
+// actFailMax caps the recorded failure string: the strip cell is glanceable,
+// not a log line.
+const actFailMax = 64
+
+// actFailed records the latest failed act/verb (ONE slot -- constant cost,
+// never a queue) and broadcasts it to docks; the greeting replays the slot so
+// a dock connecting after the failure still sees it. Rides the failure
+// branches only, never the act path itself.
+func (b *Bus) actFailed(argv []string, err error) {
+	f := &proto.ActFail{TimeNS: time.Now().UnixNano(), Msg: actFailMsg(argv, err)}
+	b.mu.Lock()
+	b.lastActFail = f
+	b.broadcastLocked(proto.Msg{Type: proto.TypeActFail, ActFail: f})
+	b.mu.Unlock()
+}
+
+// actFailMsg is the warn-cell string: the argv head plus the error's first
+// line, capped at actFailMax.
+func actFailMsg(argv []string, err error) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(err.Error()), "\n")
+	s := filepath.Base(argv[0]) + ": " + line
+	if r := []rune(s); len(r) > actFailMax {
+		s = string(r[:actFailMax-3]) + "..."
+	}
+	return s
 }
 
 // enqueueInput hands a dock message to the worker; a full queue drops the
@@ -297,6 +329,7 @@ func (b *Bus) handleAction(m proto.Msg) {
 			log.Printf("khudson bus: action run %v: %v", a.Argv, err)
 			b.broadcast(proto.Msg{Type: proto.TypeNotice,
 				Error: fmt.Sprintf("run %v failed to start: %v", a.Argv, err)})
+			b.actFailed(a.Argv, err)
 			return
 		}
 		go b.reapCmd("action run", a.Argv, wait)
@@ -307,6 +340,7 @@ func (b *Bus) handleAction(m proto.Msg) {
 			log.Printf("khudson bus: action open-url %s: %v", a.URL, err)
 			b.broadcast(proto.Msg{Type: proto.TypeNotice,
 				Error: fmt.Sprintf("open-url failed to start: %v", err)})
+			b.actFailed(argv, err)
 			return
 		}
 		go b.reapCmd("action open-url", argv, wait)

@@ -522,6 +522,31 @@ func TestStripBatteryReadout(t *testing.T) {
 	}
 }
 
+// The act-fail warn cell renders the bus's latest failure in the warn tone
+// while fresh, and is gone entirely -- no cell, no text -- once it decays
+// past actFailFor; the decay is a clock compare against m.now, so the test
+// walks the clock instead of sleeping.
+func TestStripActFailWarnCell(t *testing.T) {
+	m := stripModel()
+	_, bot := stripLines(t, m)
+	if strings.Contains(ansi.Strip(bot), "exit status 1") {
+		t.Fatal("act-fail text rendered before any failure broadcast")
+	}
+
+	m.handleBusMsg(proto.Msg{Type: proto.TypeActFail,
+		ActFail: &proto.ActFail{TimeNS: m.now.UnixNano(), Msg: "open: exit status 1"}})
+	_, bot = stripLines(t, m)
+	if !strings.Contains(bot, chromeWarn.Render("! open: exit status 1")) {
+		t.Error("fresh act failure not rendered in the warn tone")
+	}
+
+	m.now = m.now.Add(actFailFor + time.Second)
+	_, bot = stripLines(t, m)
+	if strings.Contains(ansi.Strip(bot), "exit status 1") {
+		t.Error("act-fail cell survived past the decay window")
+	}
+}
+
 // The kitty_mod cell renders the configured chord as modifier glyphs, and
 // renders nothing at all when the chord is empty.
 func TestStripKittyModNote(t *testing.T) {

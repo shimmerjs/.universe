@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -511,5 +512,106 @@ func TestRowActSurfacesExit(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no notice for the failed row act")
+	}
+}
+
+// A failed act exec records the ONE-slot latest failure and broadcasts
+// TypeActFail alongside the notice; a later failure overwrites the slot, and
+// a dock helloing AFTER the failures receives the slot in its greeting
+// replay.
+func TestActFailRecordsBroadcastsAndReplays(t *testing.T) {
+	b, _ := inputTestBus()
+	b.docks = make(map[net.Conn]*json.Encoder)
+	b.execStart = func(argv []string) (func() error, error) {
+		return nil, fmt.Errorf("exec: %q: executable file not found in $PATH", argv[0])
+	}
+	argv := []string{"khudson", "claude", "focus", "abc"}
+	st, _ := b.reg.Get("w")
+	st.setActs([][]string{argv})
+	ch := addDecodingDock(t, b)
+
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "w", Argv: argv})
+
+	var got *proto.ActFail
+	for got == nil {
+		select {
+		case m, ok := <-ch:
+			if !ok {
+				t.Fatal("dock connection closed before an act-fail broadcast")
+			}
+			if m.Type == proto.TypeActFail {
+				got = m.ActFail
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no act-fail broadcast within 2s")
+		}
+	}
+	if got.TimeNS == 0 || !strings.HasPrefix(got.Msg, "khudson: exec:") {
+		t.Fatalf("act-fail = %+v, want a timestamped argv-head message", got)
+	}
+
+	// a later nonzero exit overwrites the slot: one slot, latest wins
+	b.reapCmd("row act", []string{"open", "-a", "Xcode"}, func() error {
+		return errors.New("exit status 1")
+	})
+	b.mu.Lock()
+	slot := b.lastActFail
+	b.mu.Unlock()
+	if slot == nil || slot.Msg != "open: exit status 1" {
+		t.Fatalf("latest-failure slot = %+v, want the reaped exit", slot)
+	}
+
+	// a dock helloing after the failures gets the slot in its greeting
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	go func() {
+		defer server.Close()
+		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+	}()
+	greet := make(chan proto.Msg, 16)
+	go func() {
+		dec := json.NewDecoder(client)
+		for {
+			var m proto.Msg
+			if err := dec.Decode(&m); err != nil {
+				close(greet)
+				return
+			}
+			greet <- m
+		}
+	}()
+	for {
+		select {
+		case m, ok := <-greet:
+			if !ok {
+				t.Fatal("greeting ended before the act-fail replay")
+			}
+			if m.Type == proto.TypeActFail {
+				if m.ActFail == nil || m.ActFail.Msg != slot.Msg {
+					t.Fatalf("greeting act-fail = %+v, want the latest slot", m.ActFail)
+				}
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no act-fail in the greeting within 2s")
+		}
+	}
+}
+
+// actFailMsg is the argv head (basename) plus the error's first line, capped
+// at actFailMax with a truncation marker.
+func TestActFailMsg(t *testing.T) {
+	if got := actFailMsg([]string{"/usr/bin/open", "-a", "Xcode"}, errors.New("exit status 1")); got != "open: exit status 1" {
+		t.Fatalf("actFailMsg = %q, want the basename head + error", got)
+	}
+	multi := errors.New("first line\nsecond line")
+	if got := actFailMsg([]string{"kitten"}, multi); got != "kitten: first line" {
+		t.Fatalf("actFailMsg = %q, want the first error line only", got)
+	}
+	long := errors.New(strings.Repeat("x", 200))
+	got := actFailMsg([]string{"kitten"}, long)
+	if len([]rune(got)) != actFailMax || !strings.HasSuffix(got, "...") {
+		t.Fatalf("actFailMsg len = %d %q, want capped at %d with a marker", len([]rune(got)), got, actFailMax)
 	}
 }
