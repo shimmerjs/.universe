@@ -104,7 +104,7 @@ func TestSpanIdentityComposition(t *testing.T) {
 		r.Style = rowStyle
 		return r
 	}
-	lines, _ := renderChromeRows(module.Data{Rows: []module.Row{
+	lines, _, _ := renderChromeRows(module.Data{Rows: []module.Row{
 		mk(module.StyleAccent), mk(module.StyleDim),
 	}}, 60, 5, chromeRowStyles)
 	hue := lipgloss.NewStyle().Foreground(identityHue("kraken"))
@@ -123,7 +123,7 @@ func TestSpanIdentityComposition(t *testing.T) {
 
 	plain := module.SpansRow(module.Span{Text: "kraken", Style: module.StyleTitle})
 	plain.Style = module.StyleAccent
-	pl, _ := renderChromeRows(module.Data{Rows: []module.Row{plain}}, 60, 5, chromeRowStyles)
+	pl, _, _ := renderChromeRows(module.Data{Rows: []module.Row{plain}}, 60, 5, chromeRowStyles)
 	if want := chromeAccent.Bold(true).Render("kraken"); !strings.Contains(pl[0], want) {
 		t.Errorf("Ident-less title changed: %q, want %q", pl[0], want)
 	}

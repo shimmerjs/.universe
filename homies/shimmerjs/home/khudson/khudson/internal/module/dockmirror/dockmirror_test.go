@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -101,13 +102,24 @@ const dockPlist = `<?xml version="1.0" encoding="UTF-8"?>
 const lsappinfoList = `34 app(s):
         1) [ 0x0-0x25025] "Finder" ASN:0x0-0x25025:
             executable=/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+            bundleID="com.apple.finder"
             pid = 500 type="Foreground" flavor=3 Version="15.0" fileType="APPL" creator="MACS"
         2) [ 0x0-0x1a01a] "Google Chrome" ASN:0x0-0x1a01a:
             executable=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+            bundleID="com.google.Chrome"
             pid = 741 type="Foreground" flavor=3 Version="126.0.6478.127"
         3) [ 0x0-0x2c02c] "kitty" ASN:0x0-0x2c02c:
             pid = 902 type="Foreground" flavor=3 Version="0.35.2"
 `
+
+// quitMenu is the long-press menu render attaches to a running app whose
+// lsappinfo entry carried a bundle id.
+func quitMenu(id string) []module.Act {
+	return []module.Act{
+		{Label: "Quit", Argv: []string{fakeExe, "ax", "quit", "--bundle", id}},
+		{Label: "Force Quit", Argv: []string{fakeExe, "ax", "force-quit", "--bundle", id}, Destructive: true},
+	}
+}
 
 func TestParsePinnedApps(t *testing.T) {
 	got := parsePinnedApps(dockPlist)
@@ -125,7 +137,9 @@ func TestParsePinnedAppsEmpty(t *testing.T) {
 
 func TestParseRunning(t *testing.T) {
 	got := parseRunning(lsappinfoList)
-	want := map[string]bool{"Finder": true, "Google Chrome": true, "kitty": true}
+	// each app maps to its bundle id; an entry without a bundleID line
+	// (kitty) keeps the app with an empty id
+	want := map[string]string{"Finder": "com.apple.finder", "Google Chrome": "com.google.Chrome", "kitty": ""}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseRunning = %v, want %v", got, want)
 	}
@@ -134,7 +148,7 @@ func TestParseRunning(t *testing.T) {
 func TestRenderRunningOnly(t *testing.T) {
 	// running apps only: pinned-and-running in Dock order, then the rest
 	// alphabetically; pinned-but-not-running (A) never appears
-	d := render(fakeExe, []string{"A", "B"}, map[string]bool{"B": true, "Telegram": true, "Slack": true}, nil, nil)
+	d := render(fakeExe, []string{"A", "B"}, map[string]string{"B": "", "Telegram": "", "Slack": ""}, nil, nil)
 	if d.Title != "dock" {
 		t.Fatalf("title = %q", d.Title)
 	}
@@ -151,9 +165,9 @@ func TestRenderRunningOnly(t *testing.T) {
 // No cap: every running app must reach the rail, which truncates loudly for
 // itself; a module-side cap would skew the rail's overflow count.
 func TestRenderEmitsEveryRunningApp(t *testing.T) {
-	running := map[string]bool{}
+	running := map[string]string{}
 	for i := range 25 {
-		running[fmt.Sprintf("App %02d", i)] = true
+		running[fmt.Sprintf("App %02d", i)] = ""
 	}
 	d := render(fakeExe, nil, running, nil, nil)
 	if len(d.Rows) != 25 {
@@ -167,16 +181,44 @@ func TestRenderEmitsEveryRunningApp(t *testing.T) {
 }
 
 // Real output shapes end to end: every Foreground app from lsappinfo must
-// appear, kitty included.
+// appear, kitty included; apps whose entry carried a bundle id get the
+// quit/force-quit menu, bundle-id-less kitty gets none.
 func TestRenderFromRealOutputShapes(t *testing.T) {
 	d := render(fakeExe, parsePinnedApps(dockPlist), parseRunning(lsappinfoList), nil, nil)
 	want := []module.Row{
-		{Kind: module.RowText, Text: "Google Chrome", Act: []string{"open", "-a", "Google Chrome"}},
+		{Kind: module.RowText, Text: "Google Chrome", Act: []string{"open", "-a", "Google Chrome"},
+			Menu: quitMenu("com.google.Chrome")},
 		{Kind: module.RowText, Text: "kitty", Act: []string{"open", "-a", "kitty"}},
-		{Kind: module.RowText, Text: "Finder", Act: []string{"open", "-a", "Finder"}},
+		{Kind: module.RowText, Text: "Finder", Act: []string{"open", "-a", "Finder"},
+			Menu: quitMenu("com.apple.finder")},
 	}
 	if !reflect.DeepEqual(d.Rows, want) {
 		t.Fatalf("rows = %+v\nwant %+v", d.Rows, want)
+	}
+}
+
+// The menu argv rides the BUNDLE id -- never the display name, never a
+// poll-time pid -- and force-quit is the destructive item; an app without
+// a bundle id gets no menu at all.
+func TestRenderMenuRidesBundleID(t *testing.T) {
+	d := render(fakeExe, nil, map[string]string{"Safari": "com.apple.Safari", "NoBundle": ""}, nil, nil)
+	if len(d.Rows) != 2 {
+		t.Fatalf("rows = %+v, want the two running apps", d.Rows)
+	}
+	if noBundle := d.Rows[0]; noBundle.Text != "NoBundle" || noBundle.Menu != nil {
+		t.Fatalf("bundle-id-less row = %+v, want no menu", noBundle)
+	}
+	safari := d.Rows[1]
+	if !reflect.DeepEqual(safari.Menu, quitMenu("com.apple.Safari")) {
+		t.Fatalf("menu = %+v\nwant %+v", safari.Menu, quitMenu("com.apple.Safari"))
+	}
+	if safari.Menu[0].Destructive || !safari.Menu[1].Destructive {
+		t.Fatalf("destructive flags = %+v, want force-quit only", safari.Menu)
+	}
+	for _, it := range safari.Menu {
+		if slices.Contains(it.Argv, "Safari") {
+			t.Fatalf("menu argv %v carries the display name; want the bundle id only", it.Argv)
+		}
 	}
 }
 
@@ -261,9 +303,9 @@ func TestAppsCadence(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	m := New()
 	m.now = func() time.Time { return clock }
-	m.list = func(context.Context) ([]string, map[string]bool, error) {
+	m.list = func(context.Context) ([]string, map[string]string, error) {
 		calls++
-		return []string{"kitty"}, map[string]bool{"kitty": true}, nil
+		return []string{"kitty"}, map[string]string{"kitty": ""}, nil
 	}
 
 	for range 3 {
@@ -292,7 +334,7 @@ func TestAppsCadence(t *testing.T) {
 
 	// a cached ERROR is reused between ticks too: a failing lsappinfo must
 	// not re-open the per-tick exec flood
-	m.list = func(context.Context) ([]string, map[string]bool, error) {
+	m.list = func(context.Context) ([]string, map[string]string, error) {
 		calls++
 		return nil, nil, fmt.Errorf("lsappinfo: exit status 1")
 	}
@@ -313,7 +355,7 @@ func TestAppsTimeoutNotCached(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	m := New()
 	m.now = func() time.Time { return clock }
-	m.list = func(ctx context.Context) ([]string, map[string]bool, error) {
+	m.list = func(ctx context.Context) ([]string, map[string]string, error) {
 		calls++
 		return nil, nil, ctx.Err()
 	}
@@ -325,12 +367,12 @@ func TestAppsTimeoutNotCached(t *testing.T) {
 	if !m.appsLast.IsZero() {
 		t.Fatalf("canceled listing pinned the cache: appsLast = %v", m.appsLast)
 	}
-	m.list = func(context.Context) ([]string, map[string]bool, error) {
+	m.list = func(context.Context) ([]string, map[string]string, error) {
 		calls++
-		return nil, map[string]bool{"kitty": true}, nil
+		return nil, map[string]string{"kitty": ""}, nil
 	}
 	_, running, err := m.appsCached(context.Background(), nil)
-	if err != nil || !running["kitty"] {
+	if _, ok := running["kitty"]; err != nil || !ok {
 		t.Fatalf("re-list = %v, %v; want the fresh listing", running, err)
 	}
 	if calls != 2 {
@@ -347,7 +389,7 @@ func TestPollUsesCachedApps(t *testing.T) {
 	m := New()
 	m.exe = fakeExe
 	m.now = func() time.Time { return clock }
-	m.list = func(context.Context) ([]string, map[string]bool, error) {
+	m.list = func(context.Context) ([]string, map[string]string, error) {
 		listCalls++
 		return parsePinnedApps(dockPlist), parseRunning(lsappinfoList), nil
 	}
@@ -372,7 +414,7 @@ func TestPollUsesCachedApps(t *testing.T) {
 		t.Fatalf("rows = %+v, want the 3 running apps", first.Rows)
 	}
 
-	m.list = func(context.Context) ([]string, map[string]bool, error) {
+	m.list = func(context.Context) ([]string, map[string]string, error) {
 		listCalls++
 		return nil, nil, fmt.Errorf("lsappinfo: exit status 1")
 	}
@@ -390,7 +432,7 @@ func TestPollUsesCachedApps(t *testing.T) {
 // per-window unminimize verb -- [exe, "ax", "unminimize", title], plus
 // ["--app", app] only when titleApp found a real split.
 func TestRenderMinimizedSection(t *testing.T) {
-	d := render(fakeExe, nil, map[string]bool{"kitty": true}, []minWin{
+	d := render(fakeExe, nil, map[string]string{"kitty": ""}, []minWin{
 		{title: "Inbox - Google Chrome", app: "Google Chrome"},
 		{title: "Keymapp", app: "Keymapp"},
 	}, nil)
@@ -412,7 +454,7 @@ func TestRenderMinimizedSection(t *testing.T) {
 // unminimize argv unconditionally: the degrade path is the verb failing
 // loud, never a downgrade to app-activate.
 func TestRenderMinimizedDegrade(t *testing.T) {
-	d := render(fakeExe, nil, map[string]bool{"kitty": true}, []minWin{{title: "w", app: "w"}},
+	d := render(fakeExe, nil, map[string]string{"kitty": ""}, []minWin{{title: "w", app: "w"}},
 		fmt.Errorf("dock AX sweep: %w", ax.ErrUntrusted))
 	if len(d.Rows) != 3 {
 		t.Fatalf("rows = %d, want running row + note row + window row: %+v", len(d.Rows), d.Rows)
@@ -492,7 +534,7 @@ func TestParseRunningOmitsSelf(t *testing.T) {
             pid = 903 type="Foreground" flavor=3
 `
 	got := parseRunning(out)
-	want := map[string]bool{"Finder": true}
+	want := map[string]string{"Finder": "com.apple.finder"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseRunning = %v, want %v (self omitted)", got, want)
 	}
@@ -503,7 +545,7 @@ func TestParseRunningOmitsSelf(t *testing.T) {
             bundleID="com.example.khudson-imposter"
             pid = 1 type="Foreground" flavor=3
 `
-	if got := parseRunning(out); !got["khudson"] {
+	if got := parseRunning(out); got["khudson"] != "com.example.khudson-imposter" {
 		t.Fatalf("parseRunning = %v, want the non-HUD bundle kept", got)
 	}
 }

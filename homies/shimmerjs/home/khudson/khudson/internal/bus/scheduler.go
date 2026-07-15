@@ -423,12 +423,18 @@ func (b *Bus) applyNative(r nativeResult) {
 		b.mu.Unlock()
 		if st, ok := reg.Get(r.id); ok {
 			st.setNative(data)
-			// publish the poll's row acts for handleRowAct's allowlist;
-			// the error branches above keep the previous set
+			// publish the poll's row acts AND menu argvs for handleRowAct's
+			// allowlist -- menu items inherit the same vet/debounce/exec
+			// path; the error branches above keep the previous set
 			var acts [][]string
 			for _, row := range r.data.Rows {
 				if len(row.Act) > 0 {
 					acts = append(acts, row.Act)
+				}
+				for _, item := range row.Menu {
+					if len(item.Argv) > 0 {
+						acts = append(acts, item.Argv)
+					}
 				}
 			}
 			st.setActs(acts)

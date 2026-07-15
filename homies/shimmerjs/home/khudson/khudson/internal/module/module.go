@@ -72,6 +72,16 @@ type Span struct {
 	Ident string `json:"ident,omitempty"`
 }
 
+// Act is one long-press menu item: a labeled argv, exec'd through the same
+// published-act path as Row.Act. Destructive marks items the dock must gate
+// behind an explicit confirm tap (force-quit class). The dock only
+// unmarshals module.Data, so label and destructive ride the wire.
+type Act struct {
+	Label       string   `json:"label,omitempty"`
+	Argv        []string `json:"argv,omitempty"`
+	Destructive bool     `json:"destructive,omitempty"`
+}
+
 // Row is one rendered line.
 type Row struct {
 	Kind   string    `json:"kind"`
@@ -88,6 +98,9 @@ type Row struct {
 	// Act makes the row a button: tapping it runs this argv on the bus
 	// host (dock-mirror rows activate apps the way the real Dock would).
 	Act []string `json:"act,omitempty"`
+	// Menu is the row's long-press context menu; item argvs are published
+	// into the bus allowlist alongside Act and exec the same way.
+	Menu []Act `json:"menu,omitempty"`
 	// Attention marks this row's item as awaiting input (data-not-style:
 	// the dock renders the input-requested emphasis, composed with the
 	// row's spans and styles).

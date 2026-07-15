@@ -72,14 +72,40 @@ func (r rect) contains(x, y int) bool {
 type hitRegion struct {
 	area rect
 	do   func(x, y int)
+	// longPress, when non-nil, opens the region's context menu anchored at
+	// the press cell (the hitRegion bridge until the gesture keystone lands;
+	// resolveLongPress skips regions without one).
+	longPress func(x, y int)
 }
 
 // resolveTap runs the first hit region containing (x, y); reports whether it
-// consumed the tap.
+// consumed the tap. An open overlay owns EVERY tap first -- the modal gate
+// sits here so both the mouse-fallback and the gesture path route through
+// it, and the base hits (still rebuilt each frame) stay unreachable until
+// the overlay closes.
 func (m *model) resolveTap(x, y int) bool {
+	if m.overlay != nil {
+		m.overlayTap(x, y)
+		return true
+	}
 	for _, h := range m.hits {
 		if h.area.contains(x, y) {
 			h.do(x, y)
+			return true
+		}
+	}
+	return false
+}
+
+// resolveLongPress runs the first hit region containing (x, y) that carries
+// a longPress opener; reports whether one fired. A press while a menu is
+// already open closes it first (dropping any pending confirm), so a second
+// long-press reopens anchored at the new press.
+func (m *model) resolveLongPress(x, y int) bool {
+	m.overlay = nil
+	for _, h := range m.hits {
+		if h.longPress != nil && h.area.contains(x, y) {
+			h.longPress(x, y)
 			return true
 		}
 	}
@@ -178,6 +204,11 @@ type model struct {
 	// scratch by the layout renderer (via resetHits); the first containing
 	// rect wins
 	hits []hitRegion
+	// overlay is the modal long-press popover; nil = closed. While set,
+	// resolveTap routes every tap through it (base hits unreachable) and
+	// View composites overlay.box over the frame on the P0-pinned Canvas
+	// path; the closed path never touches the canvas.
+	overlay *overlayState
 	// trayFlash holds "soon" stubs keyed by entry label; trayCache memoizes
 	// parsed tray entries per widget until the config/layout changes
 	trayFlash map[string]time.Time
@@ -224,6 +255,9 @@ func (m *model) resetLayout() {
 	m.trayCache = nil
 	m.homeCache.ok = false
 	m.hits = m.hits[:0]
+	// an open menu (or an armed confirm) must not float over a layout it
+	// was not anchored in
+	m.overlay = nil
 }
 
 // stripH is the status strip under the body: two rows, so the strip-hosted
@@ -369,6 +403,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		first := m.width == 0
 		m.width, m.height = msg.Width, msg.Height
 		m.homeCache.ok = false
+		m.overlay = nil // anchor and item rects are stale at the new size
 		if first {
 			pcols, prows := m.panelRegion()
 			m.busGen++
@@ -566,6 +601,7 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 			m.resolveTap(g.Col, g.Row)
 		case proto.GestureLongPress:
 			m.lastGst = fmt.Sprintf("long-press @%d,%d", g.Col, g.Row)
+			m.resolveLongPress(g.Col, g.Row)
 		case proto.GestureSwipe:
 			m.lastGst = "swipe-" + g.Dir
 		case proto.GestureTwoFingerSwipe:
@@ -678,7 +714,21 @@ func (m *model) View() tea.View {
 	// join is plain concatenation: both sides are exact-width by
 	// construction.
 	m.hits = m.hits[:len(m.hits):len(m.hits)]
-	v.SetContent(body + "\n" + m.renderStrip())
+	frame := body + "\n" + m.renderStrip()
+	if m.overlay != nil {
+		// open only: composite the pre-built overlay box over the frame on
+		// the P0-pinned Canvas/GraphemeWidth path. Positioned layering MUST
+		// go through NewCompositor -- a bare Canvas.Compose(layer) ignores
+		// Layer.X/Y in v2.0.4 (draws at origin after clearing the area) --
+		// and Z is explicit because equal-z draw order is unspecified.
+		comp := lipgloss.NewCompositor(
+			lipgloss.NewLayer(frame),
+			lipgloss.NewLayer(m.overlay.box).X(m.overlay.anchor.x).Y(m.overlay.anchor.y).Z(1),
+		)
+		v.SetContent(lipgloss.NewCanvas(m.width, m.height).Compose(comp).Render())
+		return v
+	}
+	v.SetContent(frame)
 	return v
 }
 

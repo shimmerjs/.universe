@@ -306,6 +306,55 @@ func TestApplyNativePublishesActsEndToEnd(t *testing.T) {
 	}
 }
 
+// Menu argvs ride the same publication chain as Act: the scheduler's
+// applyNative harvests every row Menu item into st.Acts alongside the row
+// act, so a tapped menu item passes vetRowAct and execs -- and an argv the
+// poll never published (a crafted bundle id) is still refused.
+func TestApplyNativePublishesMenuActs(t *testing.T) {
+	b, _ := inputTestBus()
+	b.cfg.Widgets["n"] = config.Widget{ID: "n",
+		Render: config.Render{Kind: "native", Module: "fake-act"}}
+	b.reg = NewRegistry(b.cfg)
+	var starts [][]string
+	b.execStart = func(argv []string) (func() error, error) {
+		starts = append(starts, argv)
+		return func() error { return nil }, nil
+	}
+	// step the clock past the debounce window per act: this test exercises
+	// publication, not retap suppression
+	clock := time.Now()
+	b.actNow = func() time.Time { clock = clock.Add(rowActDebounce); return clock }
+
+	open := []string{"open", "-a", "Safari"}
+	quit := []string{"/inst/khudson", "ax", "quit", "--bundle", "com.apple.Safari"}
+	fq := []string{"/inst/khudson", "ax", "force-quit", "--bundle", "com.apple.Safari"}
+	b.applyNative(nativeResult{id: "n", data: module.Data{Rows: []module.Row{
+		{Kind: module.RowText, Text: "Safari", Act: open, Menu: []module.Act{
+			{Label: "Quit", Argv: quit},
+			{Label: "Force Quit", Argv: fq, Destructive: true},
+		}},
+	}}})
+
+	st, _ := b.reg.Get("n")
+	if got := st.acts(); len(got) != 3 {
+		t.Fatalf("published acts = %v, want the row act + both menu argvs", got)
+	}
+
+	// both menu argvs pass the vet and exec
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: quit})
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: fq})
+	if len(starts) != 2 || !slices.Equal(starts[0], quit) || !slices.Equal(starts[1], fq) {
+		t.Fatalf("menu act starts = %v, want quit then force-quit", starts)
+	}
+
+	// an unpublished argv -- same verb, crafted bundle -- is refused
+	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n",
+		Argv: []string{"/inst/khudson", "ax", "force-quit", "--bundle", "com.evil.other"}})
+	if len(starts) != 2 {
+		t.Fatalf("unpublished menu argv exec'd: %v", starts)
+	}
+}
+
 // The debounce decision table: an identical key within the window drops, a
 // different key or an elapsed window passes, and a drop never stretches the
 // window (it is measured from the last DISPATCH).

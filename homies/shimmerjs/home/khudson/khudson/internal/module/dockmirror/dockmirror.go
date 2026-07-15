@@ -60,10 +60,10 @@ type Mod struct {
 	last       time.Time
 	mins       []minWin
 	minErr     error
-	list       func(context.Context) ([]string, map[string]bool, error)
+	list       func(context.Context) ([]string, map[string]string, error)
 	appsLast   time.Time
 	pinned     []string
-	running    map[string]bool
+	running    map[string]string
 	appsErr    error
 	promptOnce sync.Once
 	exe        string
@@ -98,7 +98,7 @@ func (m *Mod) Poll(ctx context.Context, params map[string]any) (module.Data, err
 // the cached result (lists OR error) between ticks -- a cached error is
 // returned without an exec, so a failing lsappinfo cannot re-open the
 // per-tick flood either.
-func (m *Mod) appsCached(ctx context.Context, params map[string]any) ([]string, map[string]bool, error) {
+func (m *Mod) appsCached(ctx context.Context, params map[string]any) ([]string, map[string]string, error) {
 	every := appsEvery
 	if s, ok := params["appsEvery"].(string); ok {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
@@ -128,7 +128,7 @@ func (m *Mod) appsCached(ctx context.Context, params map[string]any) ([]string, 
 
 // listApps is the exec pair behind appsCached: pinned ordering from the
 // dock plist, running state from lsappinfo.
-func listApps(ctx context.Context) ([]string, map[string]bool, error) {
+func listApps(ctx context.Context) ([]string, map[string]string, error) {
 	plist, err := run(ctx, "defaults", "export", "com.apple.dock", "-")
 	if err != nil {
 		return nil, nil, err
@@ -228,16 +228,26 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 // Dock order, then the rest alphabetically, then the minimized-window
 // section. Pinned-but-not-running apps do not appear. No cap: the rail
 // truncates loudly for itself, and a cap here would skew its overflow
-// count.
-func render(exe string, pinned []string, running map[string]bool, mins []minWin, minErr error) module.Data {
+// count. Apps whose lsappinfo entry carried a bundle id also get the
+// quit/force-quit long-press menu -- the argv rides the BUNDLE id, never
+// the display name or a poll-time pid: `khudson ax quit|force-quit`
+// re-resolves and re-validates pids at exec time.
+func render(exe string, pinned []string, running map[string]string, mins []minWin, minErr error) module.Data {
 	appRow := func(app string) module.Row {
-		return module.Row{Kind: module.RowText, Text: app, Act: []string{"open", "-a", app}}
+		row := module.Row{Kind: module.RowText, Text: app, Act: []string{"open", "-a", app}}
+		if id := running[app]; id != "" {
+			row.Menu = []module.Act{
+				{Label: "Quit", Argv: []string{exe, "ax", "quit", "--bundle", id}},
+				{Label: "Force Quit", Argv: []string{exe, "ax", "force-quit", "--bundle", id}, Destructive: true},
+			}
+		}
+		return row
 	}
 
 	seen := map[string]bool{}
 	var rows []module.Row
 	for _, app := range pinned {
-		if running[app] && !seen[app] {
+		if _, ok := running[app]; ok && !seen[app] {
 			seen[app] = true
 			rows = append(rows, appRow(app))
 		}
@@ -361,16 +371,18 @@ func arrayBody(s string) string {
 	}
 }
 
-// parseRunning extracts Dock-visible apps from `lsappinfo list`. Entries
-// are multi-line: a numbered header carries the quoted app name
+// parseRunning extracts Dock-visible apps from `lsappinfo list`, mapping
+// each app name to its bundle id ("" when the entry carries none -- the
+// quit/force-quit menu rides the bundle id, so id-less apps get no menu).
+// Entries are multi-line: a numbered header carries the quoted app name
 // (` 1) "loginwindow" ASN:0x0-0x2002:`), a `bundleID="..."` detail line
 // carries the bundle id, and a later detail line carries
 // `type="Foreground"`. Only Foreground apps appear in the real Dock;
 // UIElement/BackgroundOnly processes (agents, helpers) do not. khudson's
 // own HUD bundle is dropped -- by bundle id, by name only when the entry
 // carries no bundle id -- so the mirror never lists itself.
-func parseRunning(lsappinfoOut string) map[string]bool {
-	running := map[string]bool{}
+func parseRunning(lsappinfoOut string) map[string]string {
+	running := map[string]string{}
 	current, bundle, fg := "", "", false
 	flush := func() {
 		if current == "" || !fg {
@@ -379,7 +391,7 @@ func parseRunning(lsappinfoOut string) map[string]bool {
 		if bundle == selfBundleID || (bundle == "" && current == selfName) {
 			return
 		}
-		running[current] = true
+		running[current] = bundle
 	}
 	for line := range strings.SplitSeq(lsappinfoOut, "\n") {
 		t := strings.TrimSpace(line)

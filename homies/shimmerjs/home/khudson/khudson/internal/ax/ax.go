@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -329,6 +330,143 @@ func unminimizeIn(pid int, title string) (found bool, err error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// Quit/force-quit seams: dockmirror's long-press menu publishes
+// `khudson ax quit|force-quit --bundle <id>` argvs, and BOTH verbs resolve
+// the bundle id to live pids HERE, at exec time -- a poll-time pid would be
+// stale or recycled by tap time. lsList feeds resolution and re-validation
+// with fresh `lsappinfo list` output; the kill and the AppleEvent quit are
+// injectable so tests can prove the no-kill paths without touching apps.
+var (
+	lsList = func() (string, error) {
+		out, err := exec.Command("lsappinfo", "list").Output()
+		if err != nil {
+			return "", fmt.Errorf("lsappinfo list: %w", err)
+		}
+		return string(out), nil
+	}
+	killPid = func(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
+	osaQuit = func(bundleID string) error {
+		return exec.Command("osascript", "-e",
+			fmt.Sprintf("tell application id %q to quit", bundleID)).Run()
+	}
+)
+
+// QuitBundle asks the app owning bundleID to quit: an AppleEvent via
+// osascript, targeted at the bundle id (never a display name -- lsappinfo
+// display names mis-resolve helper processes). A bundle with no running
+// pids at exec time is ErrNotFound, and nothing is quit.
+func QuitBundle(bundleID string) error {
+	pids, err := resolveBundlePids(bundleID)
+	if err != nil {
+		return err
+	}
+	if len(pids) == 0 {
+		return notFound(fmt.Sprintf("running bundle %q", bundleID))
+	}
+	return osaQuit(bundleID)
+}
+
+// ForceQuitBundle kill -9s the pids owning bundleID: resolve at exec time,
+// then RE-VALIDATE every pid against a second fresh listing taken right
+// before the kill -- a pid that vanished (or was recycled to another app)
+// between the snapshots is skipped, a bundle gone entirely errors out with
+// NO kill, and a partial kill failure surfaces instead of being swallowed.
+func ForceQuitBundle(bundleID string) error {
+	pids, err := resolveBundlePids(bundleID)
+	if err != nil {
+		return err
+	}
+	if len(pids) == 0 {
+		return notFound(fmt.Sprintf("running bundle %q", bundleID))
+	}
+	still, err := resolveBundlePids(bundleID)
+	if err != nil {
+		return err
+	}
+	valid := make(map[int]bool, len(still))
+	for _, pid := range still {
+		valid[pid] = true
+	}
+	killed := 0
+	var kerr error
+	for _, pid := range pids {
+		if !valid[pid] {
+			continue
+		}
+		if err := killPid(pid); err != nil {
+			kerr = fmt.Errorf("ax: force-quit %q: kill %d: %w", bundleID, pid, err)
+			continue
+		}
+		killed++
+	}
+	if killed == 0 && kerr == nil {
+		return notFound(fmt.Sprintf("bundle %q pids at re-validation", bundleID))
+	}
+	return kerr
+}
+
+// resolveBundlePids parses a fresh lsappinfo listing for entries whose
+// bundleID is exactly bundleID and returns their pids.
+func resolveBundlePids(bundleID string) ([]int, error) {
+	if bundleID == "" {
+		return nil, fmt.Errorf("ax: empty bundle id")
+	}
+	out, err := lsList()
+	if err != nil {
+		return nil, err
+	}
+	return parseBundlePids(out, bundleID), nil
+}
+
+// parseBundlePids extracts the pid of every `lsappinfo list` entry whose
+// bundleID detail is exactly bundleID. Entries are multi-line: a numbered
+// header opens the entry, `bundleID="..."` and `pid = 446` detail lines
+// follow.
+func parseBundlePids(lsappinfoOut, bundleID string) []int {
+	var pids []int
+	inEntry, bundle, pid := false, "", 0
+	flush := func() {
+		if inEntry && bundle == bundleID && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	for line := range strings.SplitSeq(lsappinfoOut, "\n") {
+		t := strings.TrimSpace(line)
+		i := 0
+		for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+			i++
+		}
+		if i > 0 && i < len(t) && t[i] == ')' {
+			flush()
+			inEntry, bundle, pid = true, "", 0
+			continue
+		}
+		if !inEntry {
+			continue
+		}
+		if v, ok := strings.CutPrefix(t, `bundleID="`); ok {
+			if end := strings.Index(v, `"`); end >= 0 {
+				bundle = v[:end]
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "pid") {
+			rest := strings.TrimLeft(t[len("pid"):], " =")
+			j := 0
+			for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+				j++
+			}
+			if j > 0 {
+				if p, err := strconv.Atoi(rest[:j]); err == nil {
+					pid = p
+				}
+			}
+		}
+	}
+	flush()
+	return pids
 }
 
 // dockPid resolves the Dock's pid via lsappinfo -- no AppleScript, same

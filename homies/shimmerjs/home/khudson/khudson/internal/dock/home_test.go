@@ -983,7 +983,7 @@ func TestSparkHeatBucketsAndWidth(t *testing.T) {
 
 func TestChromeRowsMinHeightAndActs(t *testing.T) {
 	act := []string{"do", "it"}
-	lines, acts := renderChromeRows(module.Data{Rows: []module.Row{
+	lines, acts, _ := renderChromeRows(module.Data{Rows: []module.Row{
 		{Kind: module.RowText, Text: "tall", MinHeight: 3, Act: act},
 		{Kind: module.RowText, Text: "after"},
 	}}, 40, 10, chromeRowStyles)
@@ -1012,7 +1012,7 @@ func TestChromeRowsSpansLine(t *testing.T) {
 	)
 	r.Style = module.StyleAccent
 	r.Act = []string{"open"}
-	lines, acts := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, chromeRowStyles)
+	lines, acts, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, chromeRowStyles)
 	if len(lines) != 1 {
 		t.Fatalf("lines = %d, want 1", len(lines))
 	}
@@ -1032,7 +1032,7 @@ func TestChromeRowsSpansLine(t *testing.T) {
 
 	stale := module.SpansRow(module.Span{Text: "name", Style: module.StyleTitle})
 	stale.Style = module.StyleDim
-	lines, _ = renderChromeRows(module.Data{Rows: []module.Row{stale}}, 60, 5, chromeRowStyles)
+	lines, _, _ = renderChromeRows(module.Data{Rows: []module.Row{stale}}, 60, 5, chromeRowStyles)
 	if !strings.Contains(lines[0], chromeDim.Bold(true).Render("name")) {
 		t.Errorf("stale spans line %q, want dim-bold title span", lines[0])
 	}
@@ -1045,7 +1045,7 @@ func TestChromeRowsSpansTruncated(t *testing.T) {
 		module.Span{Text: strings.Repeat("a", 30), Style: module.StyleTitle},
 		module.Span{Text: strings.Repeat("b", 30), Style: module.StyleDim},
 	)
-	lines, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 20, 5, chromeRowStyles)
+	lines, _, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 20, 5, chromeRowStyles)
 	if w := lipgloss.Width(lines[0]); w > 20 {
 		t.Errorf("spans line width = %d, want <= 20", w)
 	}
@@ -1055,7 +1055,7 @@ func TestChromeRowsSpansTruncated(t *testing.T) {
 }
 
 func TestChromeRowsSeriesLine(t *testing.T) {
-	lines, _ := renderChromeRows(module.Data{Rows: []module.Row{
+	lines, _, _ := renderChromeRows(module.Data{Rows: []module.Row{
 		module.Series("cpu", []float64{0.2, 0.9}, "38% of 12"),
 	}}, 60, 5, chromeRowStyles)
 	if len(lines) != 1 {
@@ -1070,7 +1070,7 @@ func TestChromeRowsSeriesLine(t *testing.T) {
 }
 
 func TestChromeRowsResourceLine(t *testing.T) {
-	lines, _ := renderChromeRows(module.Data{Rows: []module.Row{
+	lines, _, _ := renderChromeRows(module.Data{Rows: []module.Row{
 		module.Resource("cpu", 0.38, []float64{0.2, 0.9}, "38% of 12"),
 	}}, 60, 5, chromeRowStyles)
 	if len(lines) != 1 {
@@ -1299,7 +1299,7 @@ func TestAttentionOffByteIdenticalToTitledBox(t *testing.T) {
 	rr := rect{21, 1, 286, 10}
 	m.resetHits()
 	got := m.renderHomeWidget(m.cfg.Widgets["claude-hud"], rr)
-	lines, _ := renderChromeRows(d, rr.w-2, rr.h-2, m.rowStyles())
+	lines, _, _ := renderChromeRows(d, rr.w-2, rr.h-2, m.rowStyles())
 	if got != renderTitledBox("claude 0/1", lines, rr.w, rr.h) {
 		t.Fatal("attention-less region diverged from renderTitledBox")
 	}
@@ -1345,7 +1345,7 @@ func TestAttentionRowWash(t *testing.T) {
 	if ss.attnBG == nil {
 		t.Fatal("attnBG not derived from a full palette")
 	}
-	lines, acts := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, ss)
+	lines, acts, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, ss)
 	if len(lines) != 1 || len(acts[0]) != 1 {
 		t.Fatalf("attention row lines/acts = %d/%v", len(lines), acts)
 	}
@@ -1360,7 +1360,7 @@ func TestAttentionRowWash(t *testing.T) {
 	}
 
 	// steady, not animated: two renders are byte-identical
-	lines2, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, ss)
+	lines2, _, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, ss)
 	if lines2[0] != lines[0] {
 		t.Error("attention wash changed between renders; it must be steady")
 	}
@@ -1368,8 +1368,8 @@ func TestAttentionRowWash(t *testing.T) {
 	// no palette: plain render, byte-identical to the attention-less row
 	calm := r
 	calm.Attention = false
-	withAttn, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, chromeRowStyles)
-	without, _ := renderChromeRows(module.Data{Rows: []module.Row{calm}}, 60, 5, chromeRowStyles)
+	withAttn, _, _ := renderChromeRows(module.Data{Rows: []module.Row{r}}, 60, 5, chromeRowStyles)
+	without, _, _ := renderChromeRows(module.Data{Rows: []module.Row{calm}}, 60, 5, chromeRowStyles)
 	if withAttn[0] != without[0] {
 		t.Error("palette-less attention row diverged from the plain render")
 	}
@@ -1379,7 +1379,7 @@ func TestAttentionRowWash(t *testing.T) {
 	wide := module.SpansRow(module.Span{Text: strings.Repeat("\u4f1a", 8), Style: module.StyleDim})
 	wide.Attention = true
 	for _, cols := range []int{10, 11, 12} {
-		lines, _ := renderChromeRows(module.Data{Rows: []module.Row{wide}}, cols, 5, ss)
+		lines, _, _ := renderChromeRows(module.Data{Rows: []module.Row{wide}}, cols, 5, ss)
 		if w := lipgloss.Width(lines[0]); w != cols {
 			t.Errorf("wide-rune attention row width = %d, want %d", w, cols)
 		}
@@ -1389,7 +1389,7 @@ func TestAttentionRowWash(t *testing.T) {
 	// fitCell semantics)
 	marked := module.SpansRow(module.Span{Text: "cafe\u0301", Style: module.StyleDim})
 	marked.Attention = true
-	lines, _ = renderChromeRows(module.Data{Rows: []module.Row{marked}}, 20, 5, ss)
+	lines, _, _ = renderChromeRows(module.Data{Rows: []module.Row{marked}}, 20, 5, ss)
 	if plain := ansi.Strip(lines[0]); !strings.Contains(plain, "cafe\u0301") {
 		t.Errorf("attention row dropped the combining mark: %q", plain)
 	}

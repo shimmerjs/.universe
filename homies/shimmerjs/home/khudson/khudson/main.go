@@ -81,6 +81,12 @@ func usage() {
   ax unminimize <title> [--app <name>]
                       unminimize one window: press its Dock item (direct AX;
                       --app enables the in-app window fallback)
+  ax quit --bundle <id>
+                      ask a running app to quit (bundle id resolved to live
+                      pids at exec time; a gone bundle errors, nothing quits)
+  ax force-quit --bundle <id>
+                      kill -9 an app's pids, re-validated against the bundle
+                      right before the kill
   ax status           print whether khudson holds the Accessibility grant
   config vet <file>   validate a config against the embedded schema
   hook -dir <spool> <event>
@@ -357,14 +363,16 @@ func cmdClaude(args []string) error {
 	}
 }
 
-// cmdAx runs the accessibility verbs behind dock-mirror's minimized rows,
-// whose Act argv is `khudson ax unminimize <title> [--app <name>]`, exec'd
-// bus-side by handleRowAct. FLAG GOTCHA: that argv puts --app AFTER the
-// positional title and stdlib flag stops at the first non-flag, so the
-// title is taken from rest[0] before Parse -- never Parse the whole tail.
+// cmdAx runs the accessibility-adjacent verbs behind dock-mirror's rows:
+// `ax unminimize` for the minimized tier's Act argv, `ax quit|force-quit
+// --bundle <id>` for the long-press menu -- all exec'd bus-side by
+// handleRowAct as plain local subprocesses. FLAG GOTCHA: the unminimize
+// argv puts --app AFTER the positional title and stdlib flag stops at the
+// first non-flag, so the title is taken from rest[0] before Parse -- never
+// Parse the whole tail.
 func cmdAx(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("ax: need a verb: unminimize <title> [--app <name>] | status")
+		return fmt.Errorf("ax: need a verb: unminimize <title> [--app <name>] | quit --bundle <id> | force-quit --bundle <id> | status")
 	}
 	switch args[0] {
 	case "status":
@@ -395,8 +403,24 @@ func cmdAx(args []string) error {
 			return ax.UnminimizeWindow(*app, title)
 		}
 		return err
+	case "quit", "force-quit":
+		// no AX grant needed: resolution is lsappinfo, the quit an
+		// AppleEvent, the kill a plain signal -- resolve + re-validate
+		// happen inside the verb, at exec time
+		fs := flag.NewFlagSet("ax "+args[0], flag.ExitOnError)
+		bundle := fs.String("bundle", "", "bundle id of the running app")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *bundle == "" {
+			return fmt.Errorf("ax %s: need --bundle <id>", args[0])
+		}
+		if args[0] == "quit" {
+			return ax.QuitBundle(*bundle)
+		}
+		return ax.ForceQuitBundle(*bundle)
 	default:
-		return fmt.Errorf("ax: unknown verb %q (unminimize | status)", args[0])
+		return fmt.Errorf("ax: unknown verb %q (unminimize | quit | force-quit | status)", args[0])
 	}
 }
 

@@ -270,12 +270,14 @@ func (m *model) renderRegion(r config.Region, rr rect) string {
 
 // renderHomeWidget is a titled region: widget title on the border, module
 // rows inside, poll errors loud. The region consumes every tap that lands in
-// it; a tap on a content row with an act fires it.
+// it; a tap on a content row with an act fires it, a long-press on a row
+// with a menu opens the popover anchored at the press.
 func (m *model) renderHomeWidget(w config.Widget, rr rect) string {
 	content := rect{rr.x + 1, rr.y + 1, rr.w - 2, rr.h - 2}
 	title := w.Title
 	var lines []string
 	var acts [][]string
+	var menus [][]module.Act
 	if e, ok := m.widgetErr[w.ID]; ok {
 		lines = []string{chromeWarn.Render(" " + w.Render.Module + ": " + e)}
 	} else if d, ok := m.widgetData[w.ID]; ok {
@@ -284,13 +286,24 @@ func (m *model) renderHomeWidget(w config.Widget, rr rect) string {
 		if d.Title != "" {
 			title = d.Title
 		}
-		lines, acts = renderChromeRows(d, content.w, content.h, m.rowStyles())
+		lines, acts, menus = renderChromeRows(d, content.w, content.h, m.rowStyles())
 	} else {
 		lines = []string{chromeDim.Render(" ...")}
 	}
 	if m.widgetStale[w.ID] {
 		// bold-vs-faint liveness idiom (rows.go): the frame is outdated
 		title += chromeDim.Faint(true).Render(" stale")
+	}
+	var lp func(int, int)
+	if anyMenu(menus) {
+		lp = func(x, y int) {
+			if !content.contains(x, y) {
+				return
+			}
+			if row := y - content.y; row < len(menus) && len(menus[row]) > 0 {
+				m.openOverlay(w.ID, "", menus[row], x, y)
+			}
+		}
 	}
 	m.hits = append(m.hits, hitRegion{area: rr, do: func(x, y int) {
 		if !content.contains(x, y) {
@@ -299,7 +312,7 @@ func (m *model) renderHomeWidget(w config.Widget, rr rect) string {
 		if row := y - content.y; row < len(acts) && len(acts[row]) > 0 {
 			m.sendRowAct(w.ID, acts[row])
 		}
-	}})
+	}, longPress: lp})
 	if m.widgetData[w.ID].Attention {
 		return renderAttentionBox(title, lines, rr.w, rr.h, m.attentionRamp(), m.attentionTick())
 	}
@@ -407,6 +420,7 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 				m.flash(key)
 				m.sendRowAct(w.ID, r.Act)
 			},
+			longPress: m.menuOpener(w.ID, name, r.Menu),
 		})
 	}
 	if overflow > 0 {
@@ -698,12 +712,12 @@ func trayButton(label string, current, flash bool, w int) []string {
 // the given vocabulary, capped to the region's row budget. A degenerate
 // region (interior shorter than the frame) caps at zero rows, never a
 // negative slice.
-func renderChromeRows(d module.Data, cols, rows int, ss rowStyles) (lines []string, acts [][]string) {
-	lines, acts = renderRows(d, cols, ss)
+func renderChromeRows(d module.Data, cols, rows int, ss rowStyles) (lines []string, acts [][]string, menus [][]module.Act) {
+	lines, acts, menus = renderRows(d, cols, ss)
 	if rows = max(rows, 0); len(lines) > rows {
-		lines, acts = lines[:rows], acts[:rows]
+		lines, acts, menus = lines[:rows], acts[:rows], menus[:rows]
 	}
-	return lines, acts
+	return lines, acts, menus
 }
 
 // seriesLine is a series row: dim key, braille history padded to a stable

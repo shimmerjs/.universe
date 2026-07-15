@@ -71,9 +71,10 @@ func (ss rowStyles) spanStyle(r module.Row, s module.Span) lipgloss.Style {
 }
 
 // renderRows maps module rows to lines; acts[i] is the argv behind line i
-// (nil = not a button). MinHeight rows keep their act across every line they
+// (nil = not a button) and menus[i] the long-press menu behind it (nil =
+// none). MinHeight rows keep their act and menu across every line they
 // occupy. Uncapped: callers slice to their row budget.
-func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][]string) {
+func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][]string, menus [][]module.Act) {
 	barW := min(cols/3, 40)
 	for _, r := range d.Rows {
 		var line string
@@ -82,9 +83,11 @@ func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][
 			line = attentionLine(r, cols, ss)
 			lines = append(lines, line)
 			acts = append(acts, r.Act)
+			menus = append(menus, r.Menu)
 			for extra := 1; extra < r.MinHeight; extra++ {
 				lines = append(lines, "")
 				acts = append(acts, r.Act)
+				menus = append(menus, r.Menu)
 			}
 			continue
 		}
@@ -118,12 +121,14 @@ func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][
 		}
 		lines = append(lines, line)
 		acts = append(acts, r.Act)
+		menus = append(menus, r.Menu)
 		for extra := 1; extra < r.MinHeight; extra++ {
 			lines = append(lines, "")
 			acts = append(acts, r.Act)
+			menus = append(menus, r.Menu)
 		}
 	}
-	return lines, acts
+	return lines, acts, menus
 }
 
 // attentionLine renders an input-requested row: its spans (or text) over a
