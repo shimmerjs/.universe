@@ -266,7 +266,24 @@ in
       };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkMerge [
+    # Disable cleanup: mkIf drops the install legs when enable flips off,
+    # but nothing removed the installed agent -- the KeepAlive daemon kept
+    # running (and seizing HID devices) until a manual bootout. Gated on
+    # agent/plist existence so hosts that never ran magicbus pay nothing.
+    # The signed binary and its stamps stay: path + identity are the Input
+    # Monitoring grant subject, so a later re-enable reinstalls over them
+    # without a re-grant.
+    (lib.mkIf (!cfg.enable) {
+      home.activation.magicbusDisableCleanup = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        magicbusUid=$(id -u)
+        if /bin/launchctl print "gui/$magicbusUid/${agentLabel}" > /dev/null 2>&1 || [ -e "${plistPath}" ]; then
+          run /bin/launchctl bootout "gui/$magicbusUid/${agentLabel}" 2>/dev/null || true
+          run rm -f "${plistPath}" "${launcherPath}"
+        fi
+      '';
+    })
+    (lib.mkIf cfg.enable {
     assertions = [
       {
         assertion = cfg.modules.edge || cfg.modules.moonlander || cfg.modules.logiretch;
@@ -389,5 +406,6 @@ in
           run rm -f "${touchdUpdatedMarker}" "${touchdConfigMarker}"
         fi
       '';
-  };
+    })
+  ];
 }
