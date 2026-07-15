@@ -153,27 +153,33 @@ in
     # every rebuild silently kills the Input Monitoring grant and KeepAlive
     # relaunches a touch-dead daemon.
     #
+    # This is the AUTHOR identity (Apple convention: a signing cert identifies
+    # WHO signed, not WHAT -- one author cert signs many binaries; the per-
+    # binary distinction lives in labels/paths), so it defaults to the author,
+    # not a binary name. Configurable per host via this option.
+    #
     # One-time per-machine bootstrap (imperative, accepted cost -- nix cannot
-    # mint login-keychain identities):
+    # mint login-keychain identities); the cert's Common Name MUST equal this
+    # option's value:
     #   1. Keychain Access > Certificate Assistant > Create a Certificate...
-    #      Name: khudson-touchd, Identity Type: Self-Signed Root,
+    #      Name: shimmerjs, Identity Type: Self-Signed Root,
     #      Certificate Type: Code Signing; store in the login keychain.
     #      (No supported `security` one-liner creates a code-signing identity;
     #      the GUI assistant is the documented path.)
     #   2. If codesign later reports the cert untrusted, export it as .cer and:
     #        security add-trusted-cert -p codeSign \
-    #          -k "$HOME/Library/Keychains/login.keychain-db" khudson-touchd.cer
+    #          -k "$HOME/Library/Keychains/login.keychain-db" shimmerjs.cer
     #   3. Verify it resolves:
-    #        security find-identity -p codesigning -v | grep khudson-touchd
+    #        security find-identity -p codesigning -v | grep shimmerjs
     #
     # SINGLE SOURCE for the identity string: khudson signs its Accessibility
-    # client with this same option (module.nix references it) -- never
-    # duplicate or rename it, and never delete the cert while any host runs
-    # khudson.
+    # client with this same option (module.nix references it), and magicbusd
+    # signs its Input Monitoring client with it -- never duplicate it, and
+    # never delete the cert while any host runs khudson.
     signingIdentity = lib.mkOption {
       type = lib.types.str;
-      default = "khudson-touchd";
-      description = "Login-keychain code-signing identity used for the out-of-store khudson and touchd installs.";
+      default = "shimmerjs";
+      description = "Login-keychain code-signing identity (the author) for the out-of-store khudson and magicbusd installs.";
     };
 
     touchdPkgs = lib.mkOption {
