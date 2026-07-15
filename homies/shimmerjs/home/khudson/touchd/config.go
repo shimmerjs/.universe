@@ -48,7 +48,7 @@ type smartShiftConfig struct {
 }
 
 // buttonRemap is one 0x1B04 remap: CID to target CID. A CID listed here is
-// remapped by applyConfig instead of being cleared by takeoverReset.
+// remapped by the takeoverReset walk instead of being divert-cleared.
 type buttonRemap struct {
 	CID   int `json:"cid"`
 	Remap int `json:"remap"`

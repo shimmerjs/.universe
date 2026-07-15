@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -441,7 +443,7 @@ func TestLogiTakeoverReset(t *testing.T) {
 	}
 }
 
-// applyConfig builds the exact setter body per PRESENT capability and issues
+// applySteps builds the exact setter body per PRESENT capability and issues
 // nothing for absent ones (hiresWheel here).
 func TestLogiApplyConfigFrames(t *testing.T) {
 	shortHidppTimeouts(t)
@@ -460,7 +462,7 @@ func TestLogiApplyConfigFrames(t *testing.T) {
 	if err := s.resolveFeatures(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	s.applyConfig(context.Background())
+	s.applySteps(context.Background(), stepAll&^stepTakeover)
 	w := dev.written()
 
 	wantBody(t, findWrite(w, 4, fnDpiSet), "dpi set", dpiSetParams(1600)...)
@@ -485,13 +487,140 @@ func TestLogiApplyConfigErrorContinues(t *testing.T) {
 	if err := s.resolveFeatures(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	s.applyConfig(context.Background())
+	s.applySteps(context.Background(), stepAll&^stepTakeover)
 	w := dev.written()
 	if findWrite(w, 4, fnDpiSet) == nil {
 		t.Fatal("DPI set was never attempted")
 	}
 	if findWrite(w, 5, fnSmartShiftSet) == nil {
 		t.Fatal("smartShift set did not run after the DPI error (aborted?)")
+	}
+}
+
+// flakyDev wraps fakeDev with an injectable write failure, modeling the
+// IOHIDDeviceSetReport error a sleeping mouse returns; a failed write is
+// counted but not recorded, and the reader stays alive (as in the live
+// incident, where battery polling recovered on its own).
+type flakyDev struct {
+	*fakeDev
+	failOn func(req []byte) bool
+	failed int
+}
+
+func (f *flakyDev) Write(p []byte) (int, error) {
+	if f.failOn != nil && f.failOn(p) {
+		f.failed++
+		return 0, errors.New("IOHIDDeviceSetReport failed: (0xE00002BC)")
+	}
+	return f.fakeDev.Write(p)
+}
+
+// failDpiSet matches the 0x2201 setSensorDpi write (featIdx 4 on the fake).
+func failDpiSet(req []byte) bool { return len(req) >= 4 && req[2] == 4 && req[3]>>4 == fnDpiSet }
+
+func countWrites(writes [][]byte, featIdx, fn byte) int {
+	n := 0
+	for _, w := range writes {
+		if len(w) >= 4 && w[2] == featIdx && w[3]>>4 == fn {
+			n++
+		}
+	}
+	return n
+}
+
+// A connect-time apply step failing on a transport error (sleeping mouse) is
+// kept pending and re-attempted by retryApply; the retried step lands exactly
+// once when the mouse wakes and already-succeeded steps never re-fire.
+func TestLogiApplyRetryRecovers(t *testing.T) {
+	shortHidppTimeouts(t)
+	m := newFakeMouse()
+	dev := &flakyDev{fakeDev: newFakeDev(m.respond), failOn: failDpiSet}
+	dpi, hap := 1600, 60
+	s, _ := newSession(t, logiConfig{DPI: &dpi, Haptic: &hap}, dev)
+	if err := s.resolveFeatures(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.startApply(context.Background())
+	if s.pending != stepDPI {
+		t.Fatalf("pending = %v, want %v", s.pending, stepDPI)
+	}
+	if got := countWrites(dev.written(), 8, fnHapticSet); got != 1 {
+		t.Fatalf("haptic set issued %d times at connect, want 1", got)
+	}
+	// tick 1: still asleep -- the step stays pending, one retry burned
+	s.retryApply(context.Background())
+	if s.pending != stepDPI || s.retries != logiApplyRetries-1 {
+		t.Fatalf("after failed retry: pending=%v retries=%d", s.pending, s.retries)
+	}
+	// mouse wakes: the retry lands the DPI write and clears the flag
+	dev.failOn = nil
+	s.retryApply(context.Background())
+	if s.pending != 0 {
+		t.Fatalf("pending = %v after successful retry, want none", s.pending)
+	}
+	if got := countWrites(dev.written(), 4, fnDpiSet); got != 1 {
+		t.Fatalf("dpi set landed %d times, want 1", got)
+	}
+	// steady state: nothing re-fires once succeeded
+	before := len(dev.written())
+	s.retryApply(context.Background())
+	if got := len(dev.written()); got != before {
+		t.Fatalf("retryApply issued %d writes after success, want 0", got-before)
+	}
+	if got := countWrites(dev.written(), 8, fnHapticSet); got != 1 {
+		t.Fatalf("haptic set re-fired: %d writes", got)
+	}
+}
+
+// Retries are bounded: after logiApplyRetries failing ticks the pending steps
+// are dropped with a loud EXHAUSTED line and later ticks attempt no writes.
+func TestLogiApplyRetryExhaustion(t *testing.T) {
+	shortHidppTimeouts(t)
+	m := newFakeMouse()
+	dev := &flakyDev{fakeDev: newFakeDev(m.respond), failOn: failDpiSet}
+	dpi := 1600
+	s, _ := newSession(t, logiConfig{DPI: &dpi}, dev)
+	if err := s.resolveFeatures(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.startApply(context.Background())
+	for i := 0; i < logiApplyRetries-1; i++ {
+		s.retryApply(context.Background())
+	}
+	if s.pending != stepDPI {
+		t.Fatalf("pending dropped before exhaustion: %v", s.pending)
+	}
+	out := captureStderr(t, func() { s.retryApply(context.Background()) })
+	if !strings.Contains(out, "EXHAUSTED") {
+		t.Fatalf("exhaustion not loud, stderr: %q", out)
+	}
+	if s.pending != 0 {
+		t.Fatalf("pending = %v after exhaustion, want none", s.pending)
+	}
+	attempts := dev.failed
+	s.retryApply(context.Background())
+	if dev.failed != attempts {
+		t.Fatal("retryApply attempted a write after exhaustion")
+	}
+	if attempts != 1+logiApplyRetries {
+		t.Fatalf("dpi set attempted %d times, want %d (connect + bounded retries)", attempts, 1+logiApplyRetries)
+	}
+}
+
+// A device-answered HID++ error is not transport-class: the step is dropped at
+// connect (logged FAILED, as before) and never armed for retry.
+func TestLogiApplyDeviceRefusalNoRetry(t *testing.T) {
+	shortHidppTimeouts(t)
+	m := newFakeMouse()
+	m.errOn[[2]byte{4, fnDpiSet}] = 0x03 // OUT_OF_RANGE
+	dpi := 5000
+	s, _ := newSession(t, logiConfig{DPI: &dpi}, newFakeDev(m.respond))
+	if err := s.resolveFeatures(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.startApply(context.Background())
+	if s.pending != 0 {
+		t.Fatalf("device refusal armed a retry: pending=%v", s.pending)
 	}
 }
 
