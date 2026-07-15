@@ -125,8 +125,11 @@ type Msg struct {
 	Stale  bool   `json:"stale,omitempty"`
 }
 
-// Gesture kinds.
+// Gesture kinds. Press is the touch acknowledgment: every contact opens
+// with one, resolved by the tap/long-press/drag-start that follows (docks
+// restyle the pressed element in between).
 const (
+	GesturePress          = "press"
 	GestureTap            = "tap"
 	GestureLongPress      = "long-press"
 	GestureDragStart      = "drag-start"

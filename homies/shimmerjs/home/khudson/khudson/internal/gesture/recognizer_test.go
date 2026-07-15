@@ -22,10 +22,15 @@ func TestTap(t *testing.T) {
 	r := testRecognizer()
 	t0 := time.Now()
 
-	if evs := r.Frame(frame(t0, down(1, 100, 100))); len(evs) != 0 {
-		t.Fatalf("down: got %v, want none", evs)
+	evs := r.Frame(frame(t0, down(1, 100, 100)))
+	if len(evs) != 1 {
+		t.Fatalf("down: got %v, want one Press", evs)
 	}
-	evs := r.Frame(frame(t0.Add(100 * time.Millisecond)))
+	press, ok := evs[0].(Press)
+	if !ok || press.Pos.Col != 10 || press.Pos.Row != 2 {
+		t.Fatalf("down: got %v, want Press at 10,2", evs[0])
+	}
+	evs = r.Frame(frame(t0.Add(100 * time.Millisecond)))
 	if len(evs) != 1 {
 		t.Fatalf("up: got %v, want one Tap", evs)
 	}

@@ -27,8 +27,9 @@ const overlayItemH = 3
 const confirmPrefix = "confirm "
 
 // overlayState is the open popover; nil on the model means closed. box is
-// rendered ONCE on open and on selection/confirm change, never per tick;
-// anchor is the clamped box rect the item rects derive from.
+// rendered ONCE on open, on selection/confirm change, and when the bloom
+// window closes -- never per tick; anchor is the clamped box rect the item
+// rects derive from.
 type overlayState struct {
 	anchor  rect
 	box     string
@@ -36,9 +37,38 @@ type overlayState struct {
 	sel     int
 	confirm *pendingConfirm
 
+	// openedAt drives the bloom: the frame renders accent for the menu's
+	// first tapFlashFor, then settles to chrome (one rebuild, off the
+	// flash tick). originKey is the element whose long-press opened the
+	// menu; a fired item flashes it as the menu closes.
+	openedAt  time.Time
+	originKey string
+
 	// widget + title route the fired argv (sendRowAct) and caption the box.
 	widget string
 	title  string
+}
+
+// overlayFrameStyle is the popover border tone: accent while the menu
+// blooms, chrome dim once settled.
+func (m *model) overlayFrameStyle(o *overlayState) lipgloss.Style {
+	if m.now.Sub(o.openedAt) < tapFlashFor {
+		if ac, ok := m.palette.color("color2"); ok {
+			return lipgloss.NewStyle().Foreground(ac)
+		}
+		return chromeAccent
+	}
+	return chromeDim
+}
+
+// overlayFillStyle is the modal body's raised backdrop: the theme's dark
+// block (color0) behind every interior cell so the popover reads elevated
+// above the base layer; no palette means no fill (indexed fallback).
+func (m *model) overlayFillStyle() lipgloss.Style {
+	if c, ok := m.palette.color("color0"); ok {
+		return lipgloss.NewStyle().Background(c)
+	}
+	return lipgloss.NewStyle()
 }
 
 // menuItem is one tappable menu entry; area is its absolute cell rect,
@@ -130,21 +160,31 @@ func (m *model) openOverlay(widget, title string, menu []module.Act, x, y int) {
 		anchor: rect{bx, by, boxW, boxH},
 		items:  items,
 		sel:    -1,
-		widget: widget,
-		title:  title,
+		// openedAt rides the model clock, never time.Now(): resetting m.now
+		// here would stomp frozen-clock tests, and the flash tick that
+		// settles the bloom advances m.now past the window regardless of lag
+		openedAt:  m.now,
+		originKey: m.overlayOriginKey,
+		widget:    widget,
+		title:     title,
 	}
 	for i := range o.items {
 		o.items[i].area = rect{bx + 1, by + 1 + i*overlayItemH, boxW - 2, overlayItemH}
 	}
-	o.box = o.render()
+	// bloom: the box opens accent-framed; flashArmed schedules the one-shot
+	// tick that settles it to chrome (the same expiry redraw taps use)
+	m.flashArmed = true
+	o.box = o.render(m.overlayFrameStyle(o), m.overlayFillStyle())
 	m.overlay = o
 }
 
-// render composes the popover chrome: renderTitledBox around one
-// overlayItemH band per item, the label on the band's middle row --
-// destructive items in the warn tone, the armed confirm target loud
-// (reverse warn). Opaque by construction: the box interior is real cells.
-func (o *overlayState) render() string {
+// render composes the popover chrome: a framed box around one overlayItemH
+// band per item, the label on the band's middle row -- destructive items in
+// the warn tone, the armed confirm target loud (reverse warn). frame is the
+// border tone (accent while blooming), fill the raised interior backdrop:
+// every interior cell renders on it, so the modal reads elevated. Opaque by
+// construction: the box interior is real cells.
+func (o *overlayState) render(frame, fill lipgloss.Style) string {
 	innerW := o.anchor.w - 2
 	lines := make([]string, 0, len(o.items)*overlayItemH)
 	for i, it := range o.items {
@@ -152,18 +192,33 @@ func (o *overlayState) render() string {
 		if it.destructive {
 			style = chromeWarn
 		}
+		if bg := fill.GetBackground(); bg != nil {
+			style = style.Background(bg)
+		}
 		if o.confirm != nil && o.confirm.item == i {
+			// reverse swaps fg/bg itself: the fill must not ride under it
 			label, style = confirmPrefix+label, chromeWarn.Bold(true).Reverse(true)
 		}
 		for row := range overlayItemH {
 			if row == overlayItemH/2 {
 				lines = append(lines, style.Render(fitCellPad(" "+label, innerW)))
 			} else {
-				lines = append(lines, "")
+				lines = append(lines, fill.Render(fitCellPad("", innerW)))
 			}
 		}
 	}
-	return renderTitledBox(o.title, lines, o.anchor.w, o.anchor.h)
+	return renderTitledBoxFramed(o.title, lines, o.anchor.w, o.anchor.h, frame)
+}
+
+// fireOverlayItem execs a menu item and closes the menu, flashing the
+// element whose long-press opened it -- the fired feedback lands on the
+// origin as the popover disappears.
+func (m *model) fireOverlayItem(o *overlayState, it menuItem) {
+	m.sendRowAct(o.widget, it.argv)
+	if o.originKey != "" {
+		m.flash(o.originKey)
+	}
+	m.overlay = nil
 }
 
 // overlayTap is the modal gate's dispatcher (resolveTap consumes the tap in
@@ -188,17 +243,15 @@ func (m *model) overlayTap(x, y int) {
 				if time.Since(o.confirm.armedAt) < confirmArmDelay {
 					return
 				}
-				m.sendRowAct(o.widget, it.argv)
-				m.overlay = nil
+				m.fireOverlayItem(o, it)
 				return
 			}
 			o.sel = i
 			o.confirm = &pendingConfirm{item: i, area: it.area, armedAt: time.Now()}
-			o.box = o.render()
+			o.box = o.render(m.overlayFrameStyle(o), m.overlayFillStyle())
 			return
 		}
-		m.sendRowAct(o.widget, it.argv)
-		m.overlay = nil
+		m.fireOverlayItem(o, it)
 		return
 	}
 	if o.anchor.contains(x, y) {

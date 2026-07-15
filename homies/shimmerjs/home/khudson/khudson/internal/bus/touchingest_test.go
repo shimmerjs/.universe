@@ -113,7 +113,12 @@ func TestTouchIngestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// every touch opens with the Press acknowledgment, resolved by the Tap
 	g := wantGestureMsg(t, dockCh)
+	if g.Kind != proto.GesturePress || g.Col != 100 || g.Row != 9 {
+		t.Fatalf("broadcast = %+v, want press at cell 100,9", g)
+	}
+	g = wantGestureMsg(t, dockCh)
 	if g.Kind != proto.GestureTap || g.Col != 100 || g.Row != 9 {
 		t.Fatalf("broadcast = %+v, want tap at cell 100,9", g)
 	}

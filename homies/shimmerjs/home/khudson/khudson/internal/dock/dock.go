@@ -76,6 +76,39 @@ type hitRegion struct {
 	// the press cell (the hitRegion bridge until the gesture keystone lands;
 	// resolveLongPress skips regions without one).
 	longPress func(x, y int)
+	// pressKey, when set, is the flash key this element lights while a touch
+	// press is held on it: flashLive ORs the live press in, so any renderer
+	// with tap-flash treatment acknowledges contact for free.
+	pressKey string
+}
+
+// pressState is the touch currently held on a press-keyed element; nil
+// when no press is live. Cleared by the resolving gesture, backstopped by
+// pressHoldMax (a menu-less held release is silent recognizer-side).
+type pressState struct {
+	key string
+	at  time.Time
+}
+
+// pressHoldMax bounds a press light: the recognizer long-press threshold
+// plus margin, so the light survives the whole hold window but never
+// sticks past an unresolved release.
+const pressHoldMax = 700 * time.Millisecond
+
+// pressAt lights the press-keyed hit region containing the touch. The
+// modal gate applies: while a menu is open the base layer must not light.
+func (m *model) pressAt(x, y int) {
+	if m.overlay != nil {
+		return
+	}
+	for _, h := range m.hits {
+		if h.pressKey != "" && h.area.contains(x, y) {
+			m.now = time.Now()
+			m.pressed = &pressState{key: h.pressKey, at: m.now}
+			m.homeCache.ok = false
+			return
+		}
+	}
 }
 
 // resolveTap runs the first hit region containing (x, y); reports whether it
@@ -105,6 +138,9 @@ func (m *model) resolveLongPress(x, y int) bool {
 	m.overlay = nil
 	for _, h := range m.hits {
 		if h.longPress != nil && h.area.contains(x, y) {
+			// stash the element's key first: the fired flash lands on the
+			// menu's origin element when an item execs
+			m.overlayOriginKey = h.pressKey
 			h.longPress(x, y)
 			return true
 		}
@@ -214,6 +250,12 @@ type model struct {
 	// scratch by the layout renderer (via resetHits); the first containing
 	// rect wins
 	hits []hitRegion
+	// pressed is the touch currently held on a press-keyed element (touch
+	// acknowledgment); nil = none. overlayOriginKey is the pressKey of the
+	// element whose long-press opened the current menu -- the fired flash
+	// lands there when an item execs.
+	pressed          *pressState
+	overlayOriginKey string
 	// overlay is the modal long-press popover; nil = closed. While set,
 	// resolveTap routes every tap through it (base hits unreachable) and
 	// View composites overlay.box over the frame on the P0-pinned Canvas
@@ -527,6 +569,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// advance the clock so the expired flash drops off the frame this
 		// redraw composes; no re-arm -- the 1 s tick owns steady state
 		m.now = time.Time(msg)
+		if o := m.overlay; o != nil && m.now.Sub(o.openedAt) >= tapFlashFor {
+			// the bloom window closed: settle the box border to chrome
+			o.box = o.render(m.overlayFrameStyle(o), m.overlayFillStyle())
+		}
 	}
 	return m, nil
 }
@@ -638,6 +684,17 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 			return
 		}
 		g := msg.Gesture
+		if g.Kind == proto.GesturePress {
+			// touch acknowledgment: light the pressed element immediately;
+			// the resolving tap/long-press/drag below clears it. lastGst
+			// keeps the resolution, never the press.
+			m.pressAt(g.Col, g.Row)
+			return
+		}
+		if m.pressed != nil {
+			m.pressed = nil
+			m.homeCache.ok = false
+		}
 		m.lastGst = g.Kind
 		switch g.Kind {
 		case proto.GestureTap:
@@ -801,12 +858,12 @@ func (m *model) renderStrip() string {
 	yTop := m.height - stripH
 	var top, bot strings.Builder
 	x := 0
-	icon := func(glyph string, style lipgloss.Style, do func(int, int)) {
+	icon := func(glyph string, style lipgloss.Style, key string, do func(int, int)) {
 		top.WriteString(strings.Repeat(" ", stripIconW))
 		// force painted cells == stripIconW (fitCell convention): nerd
 		// glyphs are the ambiguous-width poster child
 		bot.WriteString(fitCellPad(" "+style.Render(glyph)+" ", stripIconW))
-		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, stripIconW, stripH}, do: do})
+		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, stripIconW, stripH}, do: do, pressKey: key})
 		x += stripIconW
 	}
 
@@ -815,7 +872,7 @@ func (m *model) renderStrip() string {
 		if m.flashLive("icon:home") {
 			style = m.tapStyle(style)
 		}
-		icon(homeGlyph, style, func(x, y int) {
+		icon(homeGlyph, style, "icon:home", func(x, y int) {
 			m.flash("icon:home")
 			m.homeTap(x, y)
 		})
@@ -848,6 +905,7 @@ func (m *model) renderStrip() string {
 					m.flash("tab:" + e.Label)
 					m.trayActivate(e.Target, e.Label)
 				},
+				pressKey: "tab:" + e.Label,
 			})
 			x += w
 		}
@@ -867,7 +925,7 @@ func (m *model) renderStrip() string {
 				if m.flashLive("icon:chevron") {
 					style = m.tapStyle(style)
 				}
-				icon(glyph, style, func(int, int) {
+				icon(glyph, style, "icon:chevron", func(int, int) {
 					m.flash("icon:chevron")
 					m.trayActivate(target, "kb")
 				})
@@ -888,7 +946,7 @@ func (m *model) renderStrip() string {
 				if g == "" {
 					g = "?"
 				}
-				icon(g, chromeDim, consumeTap)
+				icon(g, chromeDim, "", consumeTap)
 				continue
 			}
 			glyph, style := tg.Off, chromeFG
@@ -909,7 +967,7 @@ func (m *model) renderStrip() string {
 			if m.flashLive(key) {
 				style = m.tapStyle(style)
 			}
-			icon(glyph, style, func(int, int) {
+			icon(glyph, style, key, func(int, int) {
 				m.flash(key)
 				m.sendCaffeinateToggle()
 			})

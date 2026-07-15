@@ -92,6 +92,9 @@ func TestOverlayModalTapGate(t *testing.T) {
 	if o == nil {
 		t.Fatal("openOverlay did not open")
 	}
+	// the bloom arms the flash tick at open (Update drains it); the gate
+	// asserts below must see only gate-caused arming
+	m.drainFlashArmed()
 
 	// (b) box border: consumed, stays open
 	if !m.resolveTap(o.anchor.x, o.anchor.y) {
@@ -249,6 +252,94 @@ func TestLongPressOpensMenuAndReanchors(t *testing.T) {
 	press(4, 23)
 	if m.overlay != nil {
 		t.Fatal("menu survived a long-press on a menu-less region")
+	}
+}
+
+// A press gesture lights the pressed element from contact-down (flashLive
+// rides the press slot) and holds it through the hold window; the resolving
+// gesture clears it, and an unresolved hold expires at pressHoldMax.
+func TestPressLightsElement(t *testing.T) {
+	m := overlayModel(t)
+	press := func(x, y int) {
+		m.handleBusMsg(proto.Msg{Type: proto.TypeGesture,
+			Gesture: &proto.Gesture{Kind: proto.GesturePress, Col: x, Row: y}})
+	}
+
+	press(4, 1) // Safari tile {0,0,9,3}, pressKey rail:0
+	if m.pressed == nil || m.pressed.key != "rail:0" {
+		t.Fatalf("pressed = %+v, want rail:0", m.pressed)
+	}
+	if !m.flashLive("rail:0") {
+		t.Fatal("pressed element not lit at contact-down")
+	}
+
+	// unresolved hold: the light expires at the horizon
+	m.now = m.now.Add(pressHoldMax)
+	if m.flashLive("rail:0") {
+		t.Fatal("press light survived the hold horizon")
+	}
+
+	// resolution clears the slot (the tap flash takes over via the hit's do)
+	press(4, 1)
+	m.handleBusMsg(proto.Msg{Type: proto.TypeGesture,
+		Gesture: &proto.Gesture{Kind: proto.GestureTap, Col: 4, Row: 1}})
+	if m.pressed != nil {
+		t.Fatal("tap resolution did not clear the press")
+	}
+
+	// modal gate: a press while a menu is open must not light base elements
+	m.handleBusMsg(proto.Msg{Type: proto.TypeGesture,
+		Gesture: &proto.Gesture{Kind: proto.GestureLongPress, Col: 4, Row: 1}})
+	if m.overlay == nil {
+		t.Fatal("long-press did not open the menu")
+	}
+	press(14, 1)
+	if m.pressed != nil {
+		t.Fatal("press lit a base element through the modal gate")
+	}
+}
+
+// The popover blooms: accent frame at open, settled to chrome by the flash
+// tick once the bloom window closes.
+func TestOverlayBloomSettles(t *testing.T) {
+	m := overlayModel(t)
+	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	fresh := m.overlay.box
+	if !strings.Contains(fresh, "\x1b[32m") {
+		t.Fatalf("fresh box has no accent frame: %q", fresh[:60])
+	}
+	m.Update(flashTickMsg(time.Now().Add(tapFlashFor)))
+	settled := m.overlay.box
+	if settled == fresh {
+		t.Fatal("bloom did not settle after the flash window")
+	}
+	if strings.Contains(settled, "\x1b[32m") {
+		t.Fatal("settled frame still accent-toned")
+	}
+}
+
+// Firing a menu item flashes the element whose long-press opened the menu
+// as the popover closes -- the fired feedback lands on the origin.
+func TestOverlayFiredFlashesOrigin(t *testing.T) {
+	m := overlayModel(t)
+	msgs := busSink(t, m)
+	m.handleBusMsg(proto.Msg{Type: proto.TypeGesture,
+		Gesture: &proto.Gesture{Kind: proto.GestureLongPress, Col: 4, Row: 1}})
+	if m.overlay == nil || m.overlay.originKey != "rail:0" {
+		t.Fatalf("overlay origin = %+v, want rail:0", m.overlay)
+	}
+	it := m.overlay.items[0]
+	if !m.resolveTap(it.area.x+1, it.area.y+1) {
+		t.Fatal("item tap not consumed")
+	}
+	if m.overlay != nil {
+		t.Fatal("fire did not close the menu")
+	}
+	if !m.flashLive("rail:0") {
+		t.Fatal("origin element did not flash on fire")
+	}
+	if msg := wantBusMsg(t, msgs); msg.Type != proto.TypeRowAct {
+		t.Fatalf("fired msg = %s, want row act", msg.Type)
 	}
 }
 

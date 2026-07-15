@@ -90,8 +90,13 @@ func (m *model) flash(key string) {
 	m.homeCache.ok = false
 }
 
-// flashLive reports whether key's flash is still unexpired.
+// flashLive reports whether key's flash is still unexpired. A held touch
+// press on the key's element counts as live (the touch-down acknowledgment
+// rides the same restyle), bounded by pressHoldMax.
 func (m *model) flashLive(key string) bool {
+	if m.pressed != nil && m.pressed.key == key && m.now.Sub(m.pressed.at) < pressHoldMax {
+		return true
+	}
 	at, ok := m.trayFlash[key]
 	return ok && m.now.Sub(at) < flashWindow(key)
 }
@@ -421,6 +426,7 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 				m.sendRowAct(w.ID, r.Act)
 			},
 			longPress: m.menuOpener(w.ID, name, r.Menu),
+			pressKey:  key,
 		})
 	}
 	if overflow > 0 {
@@ -874,6 +880,12 @@ func fixedBlock(lines []string, w, h int) string {
 // title embedded in the top edge; the body is fixedBlock-normalized to the
 // interior.
 func renderTitledBox(title string, body []string, w, h int) string {
+	return renderTitledBoxFramed(title, body, w, h, chromeDim)
+}
+
+// renderTitledBoxFramed is renderTitledBox with the border tone a
+// parameter (the overlay blooms its frame in accent, then settles).
+func renderTitledBoxFramed(title string, body []string, w, h int, frame lipgloss.Style) string {
 	if w < 3 || h < 2 {
 		return blankBlock(w, h)
 	}
@@ -888,15 +900,15 @@ func renderTitledBox(title string, body []string, w, h int) string {
 	}
 	t = fitCell(t, innerW-1)
 	lines := make([]string, 0, h)
-	lines = append(lines, chromeDim.Render(bd.TopLeft+bd.Top)+chromeFG.Render(t)+
-		chromeDim.Render(strings.Repeat(bd.Top, max(innerW-1-lipgloss.Width(t), 0))+bd.TopRight))
+	lines = append(lines, frame.Render(bd.TopLeft+bd.Top)+chromeFG.Render(t)+
+		frame.Render(strings.Repeat(bd.Top, max(innerW-1-lipgloss.Width(t), 0))+bd.TopRight))
 	if h > 2 {
-		left, right := chromeDim.Render(bd.Left), chromeDim.Render(bd.Right)
+		left, right := frame.Render(bd.Left), frame.Render(bd.Right)
 		for c := range strings.SplitSeq(fixedBlock(body, innerW, h-2), "\n") {
 			lines = append(lines, left+c+right)
 		}
 	}
-	lines = append(lines, chromeDim.Render(bd.BottomLeft+strings.Repeat(bd.Bottom, innerW)+bd.BottomRight))
+	lines = append(lines, frame.Render(bd.BottomLeft+strings.Repeat(bd.Bottom, innerW)+bd.BottomRight))
 	return strings.Join(lines, "\n")
 }
 

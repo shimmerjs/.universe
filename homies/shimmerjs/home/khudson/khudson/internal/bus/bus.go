@@ -696,6 +696,8 @@ func (b *Bus) emit(evs []gesture.Event) {
 
 func toGesture(ev gesture.Event) *proto.Gesture {
 	switch e := ev.(type) {
+	case gesture.Press:
+		return &proto.Gesture{Kind: proto.GesturePress, Col: e.Pos.Col, Row: e.Pos.Row, PX: e.Pos.PX, PY: e.Pos.PY}
 	case gesture.Tap:
 		return &proto.Gesture{Kind: proto.GestureTap, Col: e.Pos.Col, Row: e.Pos.Row, PX: e.Pos.PX, PY: e.Pos.PY}
 	case gesture.LongPress:

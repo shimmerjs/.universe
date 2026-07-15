@@ -82,6 +82,12 @@ const (
 // Event is a recognized gesture.
 type Event interface{ event() }
 
+// Press: primary contact down -- the immediate touch acknowledgment, fired
+// before classification. Every touch opens with exactly one Press; the
+// eventual Tap/LongPress/DragStart is the press's resolution (docks restyle
+// the pressed element between the two).
+type Press struct{ Pos Point }
+
 // Tap: down-up under slop, under the long-press hold.
 type Tap struct{ Pos Point }
 
@@ -124,6 +130,7 @@ type TwoFingerSwipe struct {
 	Cells      int
 }
 
+func (Press) event()          {}
 func (Tap) event()            {}
 func (LongPress) event()      {}
 func (DragStart) event()      {}

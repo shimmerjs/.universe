@@ -103,7 +103,9 @@ func (r *Recognizer) frameSingle(f Frame, tips []Contact) []Event {
 		r.last = r.start
 		r.startTime = f.Time
 		r.state = statePending
-		return nil
+		// touch acknowledgment: every press opens with exactly one Press,
+		// resolved later by the Tap/LongPress/DragStart classification
+		return []Event{Press{Pos: r.start}}
 
 	case statePending:
 		c, ok := findContact(tips, r.primary)
