@@ -103,9 +103,9 @@ The 07-10 batch:
 - Strip error surfacing: verb/act failures were silent for two
   days (claude-verbs.log only). Sketch: bus records the last
   failed act, broadcasts it, strip renders a decaying warn cell.
-- Spool hygiene residue (the one live panel-v3 leftover): bus-boot
-  or periodic spool sweep + shape version-stamping are still
-  missing (hookspool has only end-event retention + the 7d reaper).
+- Spool hygiene: CLOSED 07-15 (spool_version stamp on every hook
+  write, legacy unstamped files tolerated; Sweep prunes age +
+  foreign-version at session end and bus boot, never per-tick).
 - Open hazard (edge-host.md, live-probed 07-10): armed
   no-modifier bottom-right hot corner (start screensaver) +
   screensaver idleTime 600 can blank the HUD from an Edge-glass
@@ -121,13 +121,15 @@ The 07-10 batch:
   HealthyPoll (4x -poll default, -healthy-poll flag), readDCS got
   an 8MB cap + linear scan, and every BATCH-TESTS item has a pin
   (details in the test doc comments; commits carry the rest).
-- magicbusd flag/mode residue (surfaced by the 07-15 flag-matrix
-  pins; behavior unchanged, tests-only pass): bare argv still
-  falls through to spike mode -- a flagless launchd invocation
-  reproduces the -daemon incident; `-daemon -list` silently runs
-  list-and-exit; flags after the subcommand are dropped by Go
-  flag parsing; probe/list silently tolerate -nomode/-record.
-  Guarding bare argv (or pinning runStream) needs a source seam.
+- magicbusd flag/mode residue, second pass 07-15: `-daemon -list`
+  now guarded; bare-argv spike routing seamed (runStreamFn) and
+  hermetically pinned -- spike stays the bare default by design
+  (the launchd launcher passes -daemon). Still open, minor: flags
+  after the subcommand are dropped by Go flag parsing; probe/list
+  silently tolerate -nomode/-record.
+- magicbus disable cleanup: CLOSED 07-15 (a !enable activation leg
+  boots out + removes the agent when the plist exists; the signed
+  binary and stamps stay so re-enable keeps the TCC grant).
 - Design dials: resources box fit, kb column width K=75, SYS pill.
 - Collapse/expand UX: shipped (strip.flip home/home-no-kb);
   eyes-on at switch is the remaining gate.
