@@ -5,7 +5,8 @@
 // battery, and 1B04 divert state. The only functions sent are ping /
 // getFeature / getCount / getFeatureID / getStatus / getCidInfo /
 // getCidReporting -- nothing on the device is mutated, and the usage-page-1
-// pointer collections are never opened.
+// pointer collections are never opened. The reader/demux transport lives in
+// hidppConn (hidppconn.go), shared with the persistent logiretch module.
 package main
 
 import (
@@ -15,16 +16,13 @@ import (
 	"io"
 	"maps"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/sstallion/go-hid"
 )
 
 const (
-	probeReplyTimeout = 4 * time.Second
 	probeListenWindow = 10 * time.Second
-	probeReadTimeout  = 250 * time.Millisecond
 	probeSpoolPrint   = 100 // cap on individually printed frames in step 9
 )
 
@@ -32,227 +30,6 @@ const (
 type captured struct {
 	t     time.Time
 	frame []byte
-}
-
-type pendingReq struct {
-	devIdx, featIdx, fnID, swID byte
-	ch                          chan hidppResult
-}
-
-type hidppResult struct {
-	raw    []byte
-	params []byte
-	code   byte
-	isErr  bool
-}
-
-// probeReader is the single goroutine owning Device.Read for the probe's
-// whole life: the per-handle hidapi queue is bounded at 32 reports with
-// silent oldest-drop (~250ms of 125Hz motion), and mouse reports interleave
-// with HID++ frames on the one handle, so the reader drains continuously,
-// routing swId-matched replies to the pending request and counting/spooling
-// everything else.
-type probeReader struct {
-	dev  *hid.Device
-	stop chan struct{}
-	done chan struct{}
-
-	mu      sync.Mutex
-	pending *pendingReq
-	swSeq   byte // cycles the per-request swId nibble
-	spool   chan captured
-	readErr error
-	total   int
-	byID    map[byte]int          // frame counts by report id
-	lens    map[byte]map[int]bool // observed frame lengths by report id
-	events  int                   // HID++ frames with swId 0 (unsolicited)
-	foreign int                   // HID++ frames not matched to the pending request
-}
-
-// nextSwID cycles the software id across 0x08..0x0F; call under mu.
-func (r *probeReader) nextSwID() byte {
-	r.swSeq++
-	return hidppSwIDLo | (r.swSeq & (hidppSwIDLen - 1))
-}
-
-func newProbeReader(dev *hid.Device) *probeReader {
-	r := &probeReader{
-		dev:  dev,
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
-		byID: map[byte]int{},
-		lens: map[byte]map[int]bool{},
-	}
-	go r.loop()
-	return r
-}
-
-// close stops the reader and joins it; the caller closes the device after
-// (and hid.Exit, deferred in run, comes later still).
-func (r *probeReader) close() {
-	close(r.stop)
-	<-r.done
-}
-
-func (r *probeReader) loop() {
-	defer close(r.done)
-	buf := make([]byte, 64)
-	for {
-		select {
-		case <-r.stop:
-			return
-		default:
-		}
-		n, err := r.dev.ReadWithTimeout(buf, probeReadTimeout)
-		if errors.Is(err, hid.ErrTimeout) {
-			continue
-		}
-		if err != nil {
-			r.mu.Lock()
-			r.readErr = err
-			r.mu.Unlock()
-			return
-		}
-		if n <= 0 {
-			continue
-		}
-		frame := make([]byte, n)
-		copy(frame, buf[:n])
-		r.route(time.Now(), frame)
-	}
-}
-
-func (r *probeReader) route(t time.Time, frame []byte) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.recordFrame(frame)
-	if p := r.pending; p != nil {
-		kind, params, code := classifyReply(frame, p.devIdx, p.featIdx, p.fnID, p.swID)
-		if kind != replyForeign {
-			r.pending = nil
-			p.ch <- hidppResult{raw: frame, params: params, code: code, isErr: kind == replyErr}
-			return
-		}
-	}
-	// not the reply we are waiting for: an unsolicited event or another
-	// master's (or a late reply whose request already timed out)
-	r.tallyUnrouted(frame)
-	if r.spool != nil {
-		select {
-		case r.spool <- captured{t: t, frame: frame}:
-		default: // spool full: keep draining, drop for the printer
-		}
-	}
-}
-
-// recordFrame tallies report-id and length stats for every inbound frame;
-// runs under mu.
-func (r *probeReader) recordFrame(frame []byte) {
-	id := frame[0]
-	r.total++
-	r.byID[id]++
-	if r.lens[id] == nil {
-		r.lens[id] = map[int]bool{}
-	}
-	r.lens[id][len(frame)] = true
-}
-
-// tallyUnrouted classifies a HID++ frame not matched to the pending request:
-// swId 0 is an unsolicited event, any other nibble is foreign. Runs under mu.
-func (r *probeReader) tallyUnrouted(frame []byte) {
-	id := frame[0]
-	if (id != hidppReportLong && id != hidppReportShort) || len(frame) < 5 {
-		return
-	}
-	sw := frame[3] & 0x0F
-	if frame[2] == hidppErrLong || frame[2] == hidppErrShort {
-		sw = frame[4] & 0x0F
-	}
-	if sw == 0 {
-		r.events++
-	} else {
-		r.foreign++
-	}
-}
-
-func (r *probeReader) setSpool(ch chan captured) {
-	r.mu.Lock()
-	r.spool = ch
-	r.mu.Unlock()
-}
-
-// request performs one HID++ round trip: a numbered long-report Write (the
-// report number 0x11 leads the buffer; contrast the UNNUMBERED moonlander
-// write, moonInitReport), then the swId-matched reply or its error frame
-// within the reply deadline. res.raw is valid whenever err wraps hidppError.
-func (r *probeReader) request(ctx context.Context, devIdx, featIdx, fnID byte, params ...byte) (hidppResult, error) {
-	r.mu.Lock()
-	if r.readErr != nil {
-		err := r.readErr
-		r.mu.Unlock()
-		return hidppResult{}, fmt.Errorf("reader dead: %w", err)
-	}
-	if r.pending != nil {
-		r.mu.Unlock()
-		return hidppResult{}, errors.New("request already in flight")
-	}
-	sw := r.nextSwID()
-	req := hidppRequest(devIdx, featIdx, fnID, sw, params...)
-	p := &pendingReq{devIdx: devIdx, featIdx: featIdx, fnID: fnID, swID: sw, ch: make(chan hidppResult, 1)}
-	r.pending = p
-	r.mu.Unlock()
-
-	if _, err := r.dev.Write(req); err != nil {
-		r.clearPending(p)
-		return hidppResult{}, fmt.Errorf("write: %w", err)
-	}
-	select {
-	case res := <-p.ch:
-		if res.isErr {
-			return res, hidppError(res.code)
-		}
-		return res, nil
-	case <-time.After(probeReplyTimeout):
-		r.clearPending(p)
-		return hidppResult{}, fmt.Errorf("no reply within %s", probeReplyTimeout)
-	case <-ctx.Done():
-		r.clearPending(p)
-		return hidppResult{}, ctx.Err()
-	}
-}
-
-func (r *probeReader) clearPending(p *pendingReq) {
-	r.mu.Lock()
-	if r.pending == p {
-		r.pending = nil
-	}
-	r.mu.Unlock()
-}
-
-type readerStats struct {
-	total   int
-	byID    map[byte]int
-	lens    map[byte][]int
-	events  int
-	foreign int
-	readErr error
-}
-
-func (r *probeReader) snapshot() readerStats {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := readerStats{
-		total:   r.total,
-		events:  r.events,
-		foreign: r.foreign,
-		readErr: r.readErr,
-		byID:    maps.Clone(r.byID),
-		lens:    map[byte][]int{},
-	}
-	for id, set := range r.lens {
-		st.lens[id] = slices.Sorted(maps.Keys(set))
-	}
-	return st
 }
 
 // runLogiretchProbe runs the one-shot logiretch-0 feasibility probe against the first
@@ -265,7 +42,7 @@ func runLogiretchProbe(ctx context.Context, w io.Writer) error {
 
 type logiretchProbe struct {
 	w        io.Writer
-	r        *probeReader
+	r        *hidppConn
 	devIdx   byte
 	features map[uint16]featureEntry // discovered via the step-4 walk, id-keyed
 
@@ -296,7 +73,7 @@ func (p *logiretchProbe) run(ctx context.Context) error {
 		p.verdict()
 		return nil
 	}
-	p.r = newProbeReader(dev)
+	p.r = newHidppConn(dev)
 	defer func() {
 		p.r.close() // join the reader before dev.Close and run's deferred hid.Exit
 		dev.Close()
@@ -627,13 +404,19 @@ func (p *logiretchProbe) step8Controls(ctx context.Context) {
 
 // step 9: bounded listen for unsolicited swId-0 traffic (the 0x1004 push
 // check and any 0x1D4B status events), printed raw-hex; mouse reports on the
-// shared handle are tallied, not printed.
+// shared handle are tallied, not printed. The probe wires its spool through
+// the conn's onEvent hook.
 func (p *logiretchProbe) step9Listen(ctx context.Context) {
 	p.printf("== step 9: %s unsolicited-notification listen ==\n", probeListenWindow)
 	p.printf("  (wiggle/click/scroll the mouse; plug or unplug charging if handy)\n")
 	spool := make(chan captured, 64)
-	p.r.setSpool(spool)
-	defer p.r.setSpool(nil)
+	p.r.setOnEvent(func(frame []byte) {
+		select {
+		case spool <- captured{t: time.Now(), frame: frame}:
+		default: // spool full: keep draining, drop for the printer
+		}
+	})
+	defer p.r.setOnEvent(nil)
 	start := time.Now()
 	timer := time.NewTimer(probeListenWindow)
 	defer timer.Stop()

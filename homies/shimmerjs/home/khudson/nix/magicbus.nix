@@ -59,13 +59,36 @@ let
   # encoding/json only -- cuelang.org/go must NOT enter the TCC binary, its
   # init zeroes stdlib log flags). The daemon fails fast on a bad file, so a
   # keyboard-only host can never silently reinstate a perpetual Edge poll.
+  # logiretch device settings, nulls dropped so an unset field is absent from
+  # the exported JSON and the daemon leaves that capability alone. Nested
+  # objects (smartShift) drop their own null subfields; emitted as JSON, which
+  # is valid CUE data, so `cue vet` still checks it against #Logiretch.
+  dropNull = lib.filterAttrs (_: v: v != null);
+  logiretchSettings =
+    let
+      lg = cfg.logiretch;
+    in
+    dropNull {
+      inherit (lg)
+        dpi
+        hiresWheel
+        thumbwheel
+        haptic
+        takeoverReset
+        batteryPollSec
+        buttons
+        ;
+      smartShift = if lg.smartShift == null then null else dropNull { inherit (lg.smartShift) mode threshold torque; };
+    };
   magicbusConfigValues = pkgs.writeText "magicbus-config-values.cue" ''
     package magicbus
 
     config: modules: {
       edge:       ${lib.boolToString cfg.modules.edge}
       moonlander: ${lib.boolToString cfg.modules.moonlander}
+      logiretch:  ${lib.boolToString cfg.modules.logiretch}
     }
+    ${lib.optionalString (logiretchSettings != { }) "config: logiretch: ${builtins.toJSON logiretchSettings}"}
   '';
   touchdConfig =
     pkgs.runCommand "khudson-touchd-config.json"
@@ -102,7 +125,7 @@ let
   touchdLauncher = pkgs.writeText "khudson-touchd-launcher" ''
     #!/bin/sh
     /bin/wait4path /nix/store
-    /bin/wait4path "${touchdInstall}" && exec "${touchdInstall}" -daemon -config "${touchdConfig}"
+    /bin/wait4path "${touchdInstall}" && exec "${touchdInstall}" -daemon -config "${touchdConfig}" -logi-socket "${appSupport}/logiretch.sock"
   '';
   touchdPlist = pkgs.writeText "${agentLabel}.plist" (
     lib.generators.toPlist { escape = true; } {
@@ -165,14 +188,83 @@ in
     modules = {
       edge = lib.mkEnableOption "Corsair Xeneon Edge touch source (touch.sock)";
       moonlander = lib.mkEnableOption "ZSA Moonlander key-event source (keys.sock)";
+      logiretch = lib.mkEnableOption "Logitech MX Master 4 source (logiretch.sock): battery + config-apply + Options+ divert-reset";
     };
+
+    # logiretch device settings. All optional: an unset (null) field is
+    # dropped from the exported config, and the module leaves that capability
+    # alone (absent = do not touch the device). Meaningful only after Options+
+    # is uninstalled -- with it installed both HID++ masters share the node and
+    # Options+ re-diverts.
+    logiretch =
+      let
+        nullInt = lib.mkOption {
+          type = lib.types.nullOr lib.types.int;
+          default = null;
+        };
+        nullBool = lib.mkOption {
+          type = lib.types.nullOr lib.types.bool;
+          default = null;
+        };
+      in
+      {
+        dpi = nullInt // {
+          description = "Target DPI (0x2201); snapped to the device's supported step list.";
+        };
+        smartShift = lib.mkOption {
+          type = lib.types.nullOr (
+            lib.types.submodule {
+              options = {
+                mode = nullInt;
+                threshold = nullInt;
+                torque = nullInt;
+              };
+            }
+          );
+          default = null;
+          description = "SmartShift (0x2111): wheel mode / auto-disengage threshold / tunable torque; each subfield optional.";
+        };
+        hiresWheel = nullBool // {
+          description = "Hi-res wheel resolution (0x2121). EXPERIMENTAL on the MX4 (default untouched).";
+        };
+        thumbwheel = nullBool // {
+          description = "Invert the thumbwheel scroll direction (0x2150).";
+        };
+        haptic = lib.mkOption {
+          type = lib.types.nullOr (lib.types.ints.between 0 100);
+          default = null;
+          description = "Haptic feedback level 0-100 (0x19B0).";
+        };
+        buttons = lib.mkOption {
+          type = lib.types.nullOr (
+            lib.types.listOf (
+              lib.types.submodule {
+                options = {
+                  cid = lib.mkOption { type = lib.types.ints.between 0 65535; };
+                  remap = lib.mkOption { type = lib.types.ints.between 0 65535; };
+                };
+              }
+            )
+          );
+          default = null;
+          description = "0x1B04 remaps: each { cid; remap; } is applied (not cleared) on takeover.";
+        };
+        takeoverReset = nullBool // {
+          description = "Clear Options+ 1B04 divert/rawXY residue on takeover (default true in the daemon).";
+        };
+        batteryPollSec = lib.mkOption {
+          type = lib.types.nullOr (lib.types.ints.between 60 300);
+          default = null;
+          description = "Battery poll cadence in seconds (daemon default 120, clamped 60-300).";
+        };
+      };
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.modules.edge || cfg.modules.moonlander;
-        message = "universe.home.magicbus: enable at least one of modules.edge / modules.moonlander (the daemon exits nonzero on an empty module set).";
+        assertion = cfg.modules.edge || cfg.modules.moonlander || cfg.modules.logiretch;
+        message = "universe.home.magicbus: enable at least one of modules.edge / modules.moonlander / modules.logiretch (the daemon exits nonzero on an empty module set).";
       }
     ];
 

@@ -46,6 +46,7 @@ type options struct {
 	replay     string
 	socket     string
 	keysSocket string
+	logiSocket string
 }
 
 func main() {
@@ -59,6 +60,7 @@ func main() {
 	flag.StringVar(&opts.replay, "replay", "", "serve frames from a recorded `file` instead of hardware")
 	flag.StringVar(&opts.socket, "socket", "", "unix socket path (default ~/Library/Application Support/khudson/touch.sock)")
 	flag.StringVar(&opts.keysSocket, "keys-socket", "", "Moonlander key-event socket path (default ~/Library/Application Support/khudson/keys.sock)")
+	flag.StringVar(&opts.logiSocket, "logi-socket", "", "logiretch (MX Master) state socket path (default ~/Library/Application Support/khudson/logiretch.sock)")
 	flag.Parse()
 	if arg := flag.Arg(0); arg != "" {
 		if arg != "logiretch-probe" {
@@ -94,9 +96,10 @@ func run(ctx context.Context, opts options) error {
 	// resolve the module set first: a config problem must exit nonzero
 	// before any socket binds or HID work
 	var enabled map[string]bool
+	var logiCfg *logiConfig
 	if opts.daemon {
 		var err error
-		if enabled, err = loadModuleConfig(opts.config); err != nil {
+		if enabled, logiCfg, err = loadModuleConfig(opts.config); err != nil {
 			return err
 		}
 	}
@@ -114,6 +117,13 @@ func run(ctx context.Context, opts options) error {
 			return err
 		}
 		opts.keysSocket = sock
+	}
+	if opts.logiSocket == "" {
+		sock, err := defaultSocket("logiretch.sock")
+		if err != nil {
+			return err
+		}
+		opts.logiSocket = sock
 	}
 
 	if opts.replay != "" {
@@ -153,7 +163,7 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	if opts.daemon {
-		return runDaemon(ctx, opts, enabled, rec)
+		return runDaemon(ctx, opts, enabled, logiCfg, rec)
 	}
 
 	return runStream(ctx, rec, opts.mouse, opts.noMode)

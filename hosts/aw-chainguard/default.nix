@@ -61,6 +61,17 @@
         mainKittyIntegration.enable = true;
       };
 
+      # logiretch (MX Master 4) source on the bus: battery on logiretch.sock,
+      # config-apply, and Options+ divert-reset on takeover. Sample config for
+      # the user to tune; the setters are on-device UNVERIFIED and takeoverReset
+      # is meaningful only after Options+ is uninstalled (with it installed both
+      # HID++ masters share the vendor node and it will re-divert).
+      universe.home.magicbus.modules.logiretch = true;
+      universe.home.magicbus.logiretch = {
+        dpi = 1600;
+        takeoverReset = true;
+      };
+
       # Trust the chainguard tap so interactive brew commands (bundle, upgrade,
       # info) can load its formulae under Homebrew >=6 tap trust enforcement.
       # Must be a plain user-owned file, not a home.file symlink into the nix store:

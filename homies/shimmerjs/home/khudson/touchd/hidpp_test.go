@@ -23,7 +23,7 @@ func TestHidppRequestFraming(t *testing.T) {
 	}
 	// every cycled swId must be a nonzero nibble with its MSB set, so replies
 	// can never collide with unsolicited events (swId 0)
-	r := &probeReader{}
+	r := &hidppConn{}
 	seen := map[byte]bool{}
 	for i := 0; i < 16; i++ {
 		sw := r.nextSwID()

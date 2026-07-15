@@ -42,7 +42,7 @@ func startDaemon(t *testing.T, enabled map[string]bool, opts options) (*scanner,
 	sc := newScanner()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runDaemonScanner(ctx, sc, opts, enabled, nil) }()
+	go func() { done <- runDaemonScanner(ctx, sc, opts, enabled, nil, nil) }()
 	return sc, func() error {
 		cancel()
 		select {
@@ -147,8 +147,35 @@ func TestRegistryAllBindsFailedErrors(t *testing.T) {
 	defer squatter.close()
 
 	opts := options{socket: filepath.Join(dir, "touch.sock"), keysSocket: keys}
-	if err := runDaemonScanner(context.Background(), newScanner(), opts, map[string]bool{"moonlander": true}, nil); err == nil {
+	if err := runDaemonScanner(context.Background(), newScanner(), opts, map[string]bool{"moonlander": true}, nil, nil); err == nil {
 		t.Fatal("daemon with no running modules returned nil")
+	}
+}
+
+// logiretch is a first-class registry module: enabling only it binds
+// logiretch.sock, parks exactly the vendor-collection waiter, and leaves the
+// HUD sockets untouched.
+func TestRegistryRunsLogiretch(t *testing.T) {
+	installFakeHID(t)
+	dir := t.TempDir()
+	opts := options{
+		socket:     filepath.Join(dir, "touch.sock"),
+		keysSocket: filepath.Join(dir, "keys.sock"),
+		logiSocket: filepath.Join(dir, "logiretch.sock"),
+	}
+	sc, stop := startDaemon(t, map[string]bool{"logiretch": true}, opts)
+	waitParked(t, sc, 1)
+	if _, err := os.Stat(opts.logiSocket); err != nil {
+		t.Fatalf("enabled logiretch did not bind logiretch.sock: %v", err)
+	}
+	if _, err := os.Stat(opts.socket); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("disabled edge module bound touch.sock (stat err %v)", err)
+	}
+	if got := parkedMatches(sc); len(got) != 1 || got[0] != logiMatch {
+		t.Fatalf("scanner waiters = %v, want only the logiretch match", got)
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
 	}
 }
 

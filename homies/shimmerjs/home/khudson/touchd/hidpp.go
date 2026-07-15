@@ -31,7 +31,7 @@ const (
 	// the next request -- which reuses the same feature/function and would
 	// otherwise misread it (and could dispatch a follow-up write to the wrong
 	// feature index). hidppSwID is the representative value for illustrative
-	// prints only; live requests cycle via probeReader.nextSwID.
+	// prints only; live requests cycle via hidppConn.nextSwID.
 	hidppSwID    = 0x08
 	hidppSwIDLo  = 0x08
 	hidppSwIDLen = 0x08 // 0x08..0x0F
@@ -59,6 +59,45 @@ const (
 	fnCtrlGetCount        = 0x0
 	fnCtrlGetCidInfo      = 0x1
 	fnCtrlGetCidReporting = 0x2
+)
+
+// features the persistent logiretch module drives (getters above are shared
+// with the probe; the setters below are the module's only writes). The module
+// resolves each feature INDEX fresh per connect -- these are the id constants,
+// never a hardcoded index.
+const (
+	featAdjustableDPI = 0x2201
+	featSmartShiftEnh = 0x2111 // SMART_SHIFT_ENHANCED; 0x2110 is absent on the MX4
+	featHiresWheel    = 0x2121
+	featThumbWheel    = 0x2150
+	featHaptic        = 0x19B0
+)
+
+// setter function ids sourced from Solaar (settings_templates.py write_fnid /
+// hidpp20.py, master). Solaar's FeatureRW encodes write_fnid as fnId<<4, so
+// the fnId here is write_fnid>>4. Haptic has no Solaar settings class; its
+// set-level fnId comes from logi-replacement-design.md. Every setter is
+// on-device-UNVERIFIED (user-gated, see logiretch.go).
+const (
+	fnDpiGetList          = 0x1 // 0x2201 getSensorDpiList (Solaar function 0x10)
+	fnDpiGet              = 0x2 // 0x2201 getSensorDpi   (read_fnid 0x20)
+	fnDpiSet              = 0x3 // 0x2201 setSensorDpi   (write_fnid 0x30)
+	fnSmartShiftGet       = 0x1 // 0x2111 read_fnid 0x10
+	fnSmartShiftSet       = 0x2 // 0x2111 write_fnid 0x20
+	fnHiresGet            = 0x1 // 0x2121 read_fnid 0x10
+	fnHiresSet            = 0x2 // 0x2121 write_fnid 0x20
+	fnThumbGet            = 0x1 // 0x2150 read_fnid 0x10
+	fnThumbSet            = 0x2 // 0x2150 write_fnid 0x20
+	fnHapticSet           = 0x2 // 0x19B0 set level (logi-replacement-design.md)
+	fnCtrlSetCidReporting = 0x3 // 0x1B04 setCidReporting (write_fnid 0x30)
+)
+
+// 1B04 setCidReporting mapping-flag bits (Solaar MappingFlag): each state bit
+// takes effect only when its valid/change companion (state<<1) is also set.
+const (
+	mapDiverted = 0x01
+	mapPersist  = 0x04 // persistently-diverted state (Options+ leaves this too)
+	mapRawXY    = 0x10
 )
 
 // step-5 expectations for the MX Master 4 feature table, from the three
@@ -367,6 +406,145 @@ func divertString(flags byte) string {
 		return "not diverted"
 	}
 	return strings.Join(parts, ",")
+}
+
+// --- logiretch setter bodies (pure frame builders, frame-asserted by tests;
+// on-device effect user-gated). Sources cited at each fn const above. ---
+
+// dpiSetParams builds a 0x2201 setSensorDpi body: sensor index 0 then the DPI
+// as 2 big-endian bytes (Solaar write_prefix_bytes b"\x00" + 2-byte value).
+func dpiSetParams(dpi uint16) []byte {
+	return []byte{0x00, byte(dpi >> 8), byte(dpi)}
+}
+
+// parseDpiList decodes a 0x2201 getSensorDpiList reply body (Solaar
+// produce_dpi_list): 2-byte big-endian values terminated by 0x0000, with a
+// range encoded when the top three bits are 0b111 (step in the low 13 bits,
+// followed by the inclusive max). raw is the reply params AFTER the leading
+// sensor-index byte.
+func parseDpiList(raw []byte) []uint16 {
+	var list []uint16
+	for i := 0; i+1 < len(raw); {
+		val := be16(raw[i : i+2])
+		if val == 0 {
+			break
+		}
+		if val>>13 == 0b111 {
+			step := int(val & 0x1FFF)
+			if step == 0 || len(list) == 0 || i+3 >= len(raw) {
+				break
+			}
+			last := int(be16(raw[i+2 : i+4]))
+			for v := int(list[len(list)-1]) + step; v <= last; v += step {
+				list = append(list, uint16(v))
+			}
+			i += 4
+		} else {
+			list = append(list, val)
+			i += 2
+		}
+	}
+	return list
+}
+
+// snapDPI returns the entry of list closest to want; want unchanged if list is
+// empty (the device then rejects an unlisted value, logged as a failed echo).
+func snapDPI(list []uint16, want uint16) uint16 {
+	if len(list) == 0 {
+		return want
+	}
+	best, bestDiff := list[0], diffU16(list[0], want)
+	for _, v := range list[1:] {
+		if d := diffU16(v, want); d < bestDiff {
+			best, bestDiff = v, d
+		}
+	}
+	return best
+}
+
+func diffU16(a, b uint16) uint16 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+// smartShiftSetParams builds a 0x2111 setStatus body: wheel mode, auto-
+// disengage threshold, tunable torque. Solaar writes [mode, threshold] (mode 0
+// leaves the wheel mode, threshold 255 selects the max); torque is the
+// enhanced (0x2111) field per the design doc, 0 = leave. When torque is 0 this
+// zero-pads identically to Solaar's confirmed 2-byte write.
+func smartShiftSetParams(mode, threshold, torque byte) []byte {
+	return []byte{mode, threshold, torque}
+}
+
+// hiresSetParams builds a 0x2121 setMode body: the resolution bit (0x02) is
+// set for hi-res, cleared for standard (Solaar HiresSmoothResolution mask
+// 0x02). The invert (0x04) and target/divert (0x01) bits stay 0 -- the module
+// never diverts the wheel (no gesture engine).
+func hiresSetParams(hires bool) []byte {
+	if hires {
+		return []byte{0x02}
+	}
+	return []byte{0x00}
+}
+
+// thumbSetParams builds a 0x2150 setThumbwheel body: [reportMode, invert].
+// reportMode 0 keeps the thumbwheel on native HID (no divert); invert sets the
+// second byte per Solaar ThumbInvert (true_value b"\x00\x01").
+func thumbSetParams(invert bool) []byte {
+	var inv byte
+	if invert {
+		inv = 0x01
+	}
+	return []byte{0x00, inv}
+}
+
+// hapticSetParams builds a 0x19B0 set-level body: a single level byte 0-100.
+func hapticSetParams(level byte) []byte {
+	return []byte{level}
+}
+
+// cidReportingParams packs a 0x1B04 setCidReporting body per Solaar's
+// struct.pack("!HBH", cid, flags, remap): CID be16, flags byte, remap be16.
+func cidReportingParams(cid uint16, flags byte, remap uint16) []byte {
+	return []byte{byte(cid >> 8), byte(cid), flags, byte(remap >> 8), byte(remap)}
+}
+
+// cidClearDivertParams clears the divert, persistent-divert, and rawXY
+// diversions for cid: each cleared flag sets only its valid/change companion
+// bit (state<<1), leaving the state bit 0. remap is left at 0 = keep-current
+// (v4 applies a remap only with its own change flag, which this never sets),
+// so this un-diverts without disturbing any existing remap.
+func cidClearDivertParams(cid uint16) []byte {
+	return cidReportingParams(cid, mapDiverted<<1|mapPersist<<1|mapRawXY<<1, 0)
+}
+
+// cidRemapParams remaps cid to target without touching its divert state.
+func cidRemapParams(cid, target uint16) []byte {
+	return cidReportingParams(cid, 0, target)
+}
+
+// wirelessReconfReason is the 0x1D4B event's reconnection reason (Solaar:
+// byte 0 == 1 means the link came back and settings must be re-applied). On-
+// device-unverified like the setters; gating on it stops ordinary status
+// events (battery, other reasons) from firing spurious re-applies.
+const wirelessReconfReason = 0x01
+
+// isWirelessReconf reports whether frame is an unsolicited 0x1D4B
+// WIRELESS_DEVICE_STATUS RECONNECTION event for devIdx on the resolved feature
+// index wsIdx -- the belt-and-suspenders reconnect trigger (magicbus-design.md
+// phase-5b dual trigger). It gates on the reconfiguration-reason byte so a
+// non-reconnection status event does not re-apply config; a genuine reconnect
+// that drops the BLE handle is still covered by the reopen path.
+func isWirelessReconf(frame []byte, devIdx, wsIdx byte) bool {
+	if len(frame) < 5 {
+		return false
+	}
+	if frame[0] != hidppReportLong && frame[0] != hidppReportShort {
+		return false
+	}
+	return frame[1] == devIdx && frame[2] == wsIdx && frame[3]&0x0F == 0 && frame[4] == wirelessReconfReason
 }
 
 func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }

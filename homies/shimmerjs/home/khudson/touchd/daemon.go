@@ -67,18 +67,23 @@ func (b *reopenBackoff) reset() { b.next = 0 }
 
 // runDaemon assembles the enabled modules and runs them under the registry:
 // the edge module serves parsed frames on the touch socket, the moonlander
-// module serves decoded key events on the keys socket, and every module
-// reopens its device via the shared arrival scanner. A module whose socket
-// cannot bind is disabled loudly while the others run (config problems fail
-// fast in run instead). -record captures Edge reports only.
-func runDaemon(ctx context.Context, opts options, enabled map[string]bool, rec *recorder) error {
-	return runDaemonScanner(ctx, newScanner(), opts, enabled, rec)
+// module serves decoded key events on the keys socket, the logiretch module
+// serves MX Master state on the logi socket, and every module reopens its
+// device via the shared arrival scanner. A module whose socket cannot bind is
+// disabled loudly while the others run (config problems fail fast in run
+// instead). -record captures Edge reports only.
+func runDaemon(ctx context.Context, opts options, enabled map[string]bool, logiCfg *logiConfig, rec *recorder) error {
+	return runDaemonScanner(ctx, newScanner(), opts, enabled, logiCfg, rec)
 }
 
-func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled map[string]bool, rec *recorder) error {
+func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled map[string]bool, logiCfg *logiConfig, rec *recorder) error {
 	var tap func(int64, []byte)
 	if rec != nil {
 		tap = rec.write
+	}
+	var lc logiConfig
+	if logiCfg != nil {
+		lc = *logiCfg
 	}
 	specs := []struct {
 		mod    Module
@@ -87,6 +92,7 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 	}{
 		{mod: &edgeModule{noMode: opts.noMode}, socket: opts.socket, tap: tap},
 		{mod: moonModule{}, socket: opts.keysSocket},
+		{mod: &logiretchModule{cfg: lc}, socket: opts.logiSocket},
 	}
 	var entries []moduleEntry
 	for _, s := range specs {

@@ -46,6 +46,11 @@ func (p Paths) TouchSocket() string { return filepath.Join(p.Dir, "touch.sock") 
 // KeysSocket is where khudson-touchd serves Moonlander key events.
 func (p Paths) KeysSocket() string { return filepath.Join(p.Dir, "keys.sock") }
 
+// LogiSocket is where khudson-touchd serves logiretch (MX Master) state
+// lines. The bus battery-icon consumer (rendering last-known value + age) is a
+// later cut; this only pins the path so it stays a frozen contract.
+func (p Paths) LogiSocket() string { return filepath.Join(p.Dir, "logiretch.sock") }
+
 // KittySocket is the scrape-substrate kitty's RC socket: the windowless
 // instance hosting scraped TUIs. The HUD window lives in its own instance
 // (HudKittySocket); under the three-process topology no code may treat one
