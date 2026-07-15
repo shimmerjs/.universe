@@ -1369,3 +1369,104 @@ func TestAdoptInFlightClosesMaterializeGate(t *testing.T) {
 		t.Fatalf("ensures = %d, want 1 once the adopt completes", e)
 	}
 }
+
+// TestSchedulerSingleFlightPerWidget pins the per-widget single-flight
+// contract: entry.busy gates each widget, so while its Ensure is parked in
+// flight, later passes must not start a second RC call for it -- exactly
+// one Ensure runs and exactly one busyDone lands once the call resolves.
+func TestSchedulerSingleFlightPerWidget(t *testing.T) {
+	b, sup, _ := schedTestBus(t)
+	addFakeDock(t, b)
+	ctx := context.Background()
+	entries := make(map[string]*schedEntry)
+	busyCh := make(chan busyDone, 16)
+	now := time.Unix(1000, 0)
+
+	gate := make(chan struct{})
+	sup.mu.Lock()
+	sup.ensureGate = gate
+	sup.mu.Unlock()
+
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
+	if !entries["w"].busy {
+		t.Fatal("ensure not in flight")
+	}
+
+	// more passes while the call is parked: the busy gate must hold; any
+	// second Ensure started here would park on the same gate and surface
+	// below as a second completion
+	for range 3 {
+		now = now.Add(schedTick)
+		b.schedulerPass(ctx, now, entries, busyCh, false, false)
+	}
+	if !entries["w"].busy {
+		t.Fatal("busy cleared while the ensure was still parked")
+	}
+
+	close(gate)
+	drainBusy(t, entries, busyCh)
+	select {
+	case d := <-busyCh:
+		t.Fatalf("second single-flight completion for %q", d.id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if e, _, _ := sup.counts(); e != 1 {
+		t.Fatalf("ensures = %d, want exactly 1", e)
+	}
+}
+
+// TestSchedulerCrossWidgetInterleave pins the cross-widget interleave
+// contract: busy gates only its own widget, so one widget's blocked Ensure
+// must not stop another widget's due poll from firing in the same pass or
+// in later passes while the first stays in flight.
+func TestSchedulerCrossWidgetInterleave(t *testing.T) {
+	b, sup, scr := schedTestBus(t)
+	b.cfg.Widgets["v"] = config.Widget{ID: "v", Render: config.Render{
+		Kind: "exec", Argv: []string{"true"}, Poll: "300ms",
+	}}
+	b.cfg.Layouts["main"] = config.Layout{Kind: "dock-grid", Tiles: []string{"w", "v"}}
+	b.reg = NewRegistry(b.cfg)
+	addFakeDock(t, b)
+	ctx := context.Background()
+	entries := make(map[string]*schedEntry)
+	busyCh := make(chan busyDone, 16)
+	now := time.Unix(1000, 0)
+
+	// v is already bound at the panel size, so only its poll branch fires
+	stV, _ := b.reg.Get("v")
+	stV.setWindowID(7)
+	stV.setSize(80, 24)
+
+	gate := make(chan struct{})
+	sup.mu.Lock()
+	sup.ensureGate = gate
+	sup.mu.Unlock()
+
+	// same pass: w's ensure parks on the gate AND v's poll fires
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
+	if !entries["w"].busy {
+		t.Fatal("ensure not in flight")
+	}
+	if scr.count() != 1 {
+		t.Fatalf("polls = %d, want v polled in the same pass as w's blocked ensure", scr.count())
+	}
+	b.applySnapshot(<-b.snapshots, entries)
+
+	// later pass, w still blocked: v's next due poll fires anyway
+	now = now.Add(350 * time.Millisecond)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
+	if scr.count() != 2 {
+		t.Fatalf("polls = %d, want v repolled while w stays blocked", scr.count())
+	}
+	b.applySnapshot(<-b.snapshots, entries)
+
+	close(gate)
+	drainBusy(t, entries, busyCh)
+	if e, _, _ := sup.counts(); e != 1 {
+		t.Fatalf("ensures = %d, want only w's single ensure", e)
+	}
+	stW, _ := b.reg.Get("w")
+	if id, _, _ := stW.Binding(); id == 0 {
+		t.Fatal("w did not bind after ungate")
+	}
+}

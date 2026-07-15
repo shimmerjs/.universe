@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -16,7 +17,14 @@ import (
 // root, plus a decoding dock.
 func logiTestBus(t *testing.T) (*Bus, <-chan proto.Msg, paths.Paths) {
 	t.Helper()
-	p := paths.Paths{Dir: t.TempDir()}
+	// bare MkdirTemp, not t.TempDir(): this test's name pushes the
+	// t.TempDir() logiretch.sock path past the macOS sun_path cap
+	dir, err := os.MkdirTemp("", "logibus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	p := paths.Paths{Dir: dir}
 	cfg := &config.Config{
 		Widgets: map[string]config.Widget{},
 		Layouts: map[string]config.Layout{"main": {Kind: "home"}},
