@@ -11,6 +11,7 @@
 //	khudson-touchd -daemon -record f   also append raw reports to f
 //	khudson-touchd -replay f           serve frames from a recording instead of hardware
 //	khudson-touchd                     spike mode: open digitizer, switch mode, print frames
+//	khudson-touchd logiretch-probe     one-shot MX Master 4 HID++ feasibility report (read-only)
 //	khudson-touchd -list               enumerate the Edge's HID collections
 //	khudson-touchd -mouse              open the mouse collection instead (edgecontrol path)
 //	khudson-touchd -nomode             skip the device-mode feature report
@@ -39,6 +40,7 @@ type options struct {
 	mouse      bool
 	noMode     bool
 	daemon     bool
+	logiretch  bool
 	config     string
 	record     string
 	replay     string
@@ -58,6 +60,13 @@ func main() {
 	flag.StringVar(&opts.socket, "socket", "", "unix socket path (default ~/Library/Application Support/khudson/touch.sock)")
 	flag.StringVar(&opts.keysSocket, "keys-socket", "", "Moonlander key-event socket path (default ~/Library/Application Support/khudson/keys.sock)")
 	flag.Parse()
+	if arg := flag.Arg(0); arg != "" {
+		if arg != "logiretch-probe" {
+			fmt.Fprintf(os.Stderr, "error: unknown subcommand %q\n", arg)
+			os.Exit(2)
+		}
+		opts.logiretch = true
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -77,6 +86,9 @@ func run(ctx context.Context, opts options) error {
 	}
 	if opts.config != "" && !opts.daemon {
 		return errors.New("-config is a daemon flag; use -daemon")
+	}
+	if opts.logiretch && (opts.daemon || opts.replay != "" || opts.list || opts.mouse) {
+		return errors.New("logiretch-probe is a one-shot read-only prober; combine with no mode flags")
 	}
 
 	// resolve the module set first: a config problem must exit nonzero
@@ -121,6 +133,10 @@ func run(ctx context.Context, opts options) error {
 		return fmt.Errorf("hid init: %w", err)
 	}
 	defer hid.Exit()
+
+	if opts.logiretch {
+		return runLogiretchProbe(ctx, os.Stdout)
+	}
 
 	if opts.list {
 		return enumerate()
