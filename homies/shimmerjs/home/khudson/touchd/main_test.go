@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -10,7 +11,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,6 +96,42 @@ func TestParseTouchReport(t *testing.T) {
 func TestRunConfigRequiresDaemon(t *testing.T) {
 	if err := run(context.Background(), options{config: "f"}); err == nil {
 		t.Fatal("-config without -daemon did not error")
+	}
+}
+
+// Every guarded flag/mode combo must error in run before any socket or HID
+// work (a wrong launchd invocation crash-loops loudly instead of running the
+// wrong mode). The substring pins which guard fired: several could plausibly
+// claim a combo, and the guard order is part of the contract.
+func TestRunComboGuards(t *testing.T) {
+	cases := []struct {
+		name string
+		opts options
+		want string
+	}{
+		{"replay+daemon", options{replay: "f", daemon: true}, "replaces hardware"},
+		{"replay+list", options{replay: "f", list: true}, "replaces hardware"},
+		{"replay+mouse", options{replay: "f", mouse: true}, "replaces hardware"},
+		{"replay+nomode", options{replay: "f", noMode: true}, "replaces hardware"},
+		{"replay+record", options{replay: "f", record: "r"}, "replaces hardware"},
+		{"replay+config", options{replay: "f", config: "c"}, "replaces hardware"},
+		{"daemon+mouse", options{daemon: true, mouse: true}, "spike-mode flag"},
+		{"probe+daemon", options{logiretch: true, daemon: true}, "one-shot read-only prober"},
+		{"probe+replay", options{logiretch: true, replay: "f"}, "one-shot read-only prober"},
+		{"probe+list", options{logiretch: true, list: true}, "one-shot read-only prober"},
+		{"probe+mouse", options{logiretch: true, mouse: true}, "one-shot read-only prober"},
+		{"probe+config", options{logiretch: true, config: "c"}, "use -daemon"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(context.Background(), tc.opts)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q, want guard %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -315,5 +354,99 @@ func TestReplayEndToEnd(t *testing.T) {
 	}
 	if d := frames[1].T - frames[0].T; d != 50_000_000 {
 		t.Fatalf("rebased delta %dns, want 50ms", d)
+	}
+}
+
+// -replay plus -socket is a complete invocation through run itself: the
+// replay branch binds the socket and serves frames before hid.Init, so it
+// must work with no hardware at all.
+func TestRunReplayRoute(t *testing.T) {
+	dir := t.TempDir()
+	capPath := filepath.Join(dir, "cap.txt")
+	rep := touchReport(7, 1, map[int]Contact{0: {ID: 0, Tip: true, X: 1, Y: 2}})
+	line := fmt.Sprintf("%d %s\n", 1_000_000_000, hex.EncodeToString(rep))
+	if err := os.WriteFile(capPath, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "r.sock")
+
+	done := make(chan error, 1)
+	go func() { done <- run(context.Background(), options{replay: capPath, socket: sock}) }()
+
+	var conn net.Conn
+	var err error
+	for i := 0; ; i++ {
+		if conn, err = net.Dial("unix", sock); err == nil {
+			break
+		}
+		if i > 200 {
+			t.Fatalf("replay socket never came up: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	if err := json.Unmarshal([]byte(got), &f); err != nil {
+		t.Fatalf("bad ndjson %q: %v", got, err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after replay")
+	}
+}
+
+// mainArgsEnv carries an argv into the re-exec helper branch of TestMainArgv.
+const mainArgsEnv = "MAGICBUSD_TEST_MAIN_ARGS"
+
+// The argv layer main owns: unknown subcommands and unknown flags exit 2
+// before run, and the logiretch-probe subcommand is parsed after flags (not
+// shadowed by them: with -list it reaches run and dies on the combo guard,
+// exit 1, instead of the unknown-subcommand path). Each case re-execs the
+// test binary and drives main with the given argv; every argv here exits
+// before any socket or HID work.
+func TestMainArgv(t *testing.T) {
+	if v := os.Getenv(mainArgsEnv); v != "" {
+		os.Args = append([]string{"magicbusd"}, strings.Split(v, " ")...)
+		main()
+		t.Fatal("main returned") // every helper argv must os.Exit
+	}
+
+	cases := []struct {
+		name   string
+		args   string
+		code   int
+		stderr string
+	}{
+		{"unknown subcommand", "frob", 2, `unknown subcommand "frob"`},
+		{"unknown flag", "-frob", 2, "flag provided but not defined"},
+		{"probe not shadowed by flags", "-list logiretch-probe", 1, "one-shot read-only prober"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=TestMainArgv$")
+			cmd.Env = append(os.Environ(), mainArgsEnv+"="+tc.args)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Fatalf("want exit error, got %v (stderr %q)", err, stderr.String())
+			}
+			if exit.ExitCode() != tc.code {
+				t.Fatalf("exit %d, want %d (stderr %q)", exit.ExitCode(), tc.code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tc.stderr) {
+				t.Fatalf("stderr %q, want %q", stderr.String(), tc.stderr)
+			}
+		})
 	}
 }

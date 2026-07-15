@@ -14,6 +14,19 @@ import (
 	"github.com/sstallion/go-hid"
 )
 
+// shortSockDir returns a temp dir short enough for unix socket paths:
+// t.TempDir embeds the test name, which pushes long-named tests past the
+// 104-byte sun_path cap.
+func shortSockDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "reg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // shortBindRetry shrinks the bind-retry wait so squatter tests stay fast.
 func shortBindRetry(t *testing.T, wait time.Duration) {
 	t.Helper()
@@ -60,7 +73,7 @@ func startDaemon(t *testing.T, enabled map[string]bool, opts options) (*scanner,
 // parked on the bus.
 func TestRegistryRunsExactlyEnabledModules(t *testing.T) {
 	installFakeHID(t)
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	opts := options{
 		socket:     filepath.Join(dir, "touch.sock"),
 		keysSocket: filepath.Join(dir, "keys.sock"),
@@ -82,7 +95,7 @@ func TestRegistryRunsExactlyEnabledModules(t *testing.T) {
 	}
 
 	// inverse cut: edge only -- both collections wait, no keys.sock
-	dir = t.TempDir()
+	dir = shortSockDir(t)
 	opts = options{
 		socket:     filepath.Join(dir, "touch.sock"),
 		keysSocket: filepath.Join(dir, "keys.sock"),
@@ -110,7 +123,7 @@ func TestRegistryRunsExactlyEnabledModules(t *testing.T) {
 func TestRegistryBindFailureDisablesModule(t *testing.T) {
 	installFakeHID(t)
 	shortBindRetry(t, 10*time.Millisecond)
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	keys := filepath.Join(dir, "keys.sock")
 	squatter, err := newBroadcaster(keys)
 	if err != nil {
@@ -138,7 +151,7 @@ func TestRegistryBindFailureDisablesModule(t *testing.T) {
 func TestRegistryAllBindsFailedErrors(t *testing.T) {
 	installFakeHID(t)
 	shortBindRetry(t, 10*time.Millisecond)
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	keys := filepath.Join(dir, "keys.sock")
 	squatter, err := newBroadcaster(keys)
 	if err != nil {
@@ -157,7 +170,7 @@ func TestRegistryAllBindsFailedErrors(t *testing.T) {
 // HUD sockets untouched.
 func TestRegistryRunsLogiretch(t *testing.T) {
 	installFakeHID(t)
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	opts := options{
 		socket:     filepath.Join(dir, "touch.sock"),
 		keysSocket: filepath.Join(dir, "keys.sock"),
