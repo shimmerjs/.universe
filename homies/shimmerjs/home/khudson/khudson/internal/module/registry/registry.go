@@ -46,7 +46,7 @@ func All() map[string]module.Module {
 		media.Mod{},
 		pr,
 		resources.New(cm, dk, pr),
-		sysmon.Mod{},
+		sysmon.New(),
 	}
 	out := make(map[string]module.Module, len(mods))
 	for _, m := range mods {

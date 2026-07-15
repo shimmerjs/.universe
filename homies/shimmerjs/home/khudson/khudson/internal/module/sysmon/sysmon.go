@@ -13,15 +13,25 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 )
 
-// Mod implements module.Module.
-type Mod struct{}
+// Mod implements module.Module. run is the exec test seam; nil means the
+// real subprocess.
+type Mod struct {
+	run runFunc
+}
 
-func (Mod) Name() string { return "sysmon" }
+// New returns the module singleton for the registry.
+func New() *Mod { return &Mod{} }
 
-func (Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
+func (*Mod) Name() string { return "sysmon" }
+
+func (m *Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
+	run := runCmd
+	if m.run != nil {
+		run = m.run
+	}
 	var rows []module.Row
 
-	if load, ncpu, err := loadAvg(ctx); err == nil {
+	if load, ncpu, err := loadAvg(ctx, run); err == nil {
 		frac := 0.0
 		if ncpu > 0 {
 			frac = load / float64(ncpu)
@@ -31,14 +41,14 @@ func (Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
 		rows = append(rows, module.Row{Kind: module.RowText, Text: "load: " + err.Error(), Style: module.StyleWarn})
 	}
 
-	if used, total, err := memory(ctx); err == nil {
+	if used, total, err := memory(ctx, run); err == nil {
 		rows = append(rows, module.Gauge("mem", used/total,
 			fmt.Sprintf("%.1f / %.0f GiB", used, total)))
 	} else {
 		rows = append(rows, module.Row{Kind: module.RowText, Text: "mem: " + err.Error(), Style: module.StyleWarn})
 	}
 
-	if usedPct, avail, err := disk(ctx); err == nil {
+	if usedPct, avail, err := disk(ctx, run); err == nil {
 		rows = append(rows, module.Gauge("disk", usedPct/100,
 			fmt.Sprintf("%.0f%% used, %s free", usedPct, avail)))
 	} else {
@@ -53,7 +63,10 @@ func (Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
 	return module.Data{Title: "system", Rows: rows}, nil
 }
 
-func run(ctx context.Context, name string, args ...string) (string, error) {
+// runFunc is the exec seam shape: run one command, return its stdout.
+type runFunc func(ctx context.Context, name string, args ...string) (string, error)
+
+func runCmd(ctx context.Context, name string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, name, args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", name, err)
@@ -63,7 +76,7 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 
 // loadAvg parses `sysctl -n vm.loadavg` ("{ 1.23 4.56 7.89 }") and core
 // count.
-func loadAvg(ctx context.Context) (float64, int, error) {
+func loadAvg(ctx context.Context, run runFunc) (float64, int, error) {
 	out, err := run(ctx, "sysctl", "-n", "vm.loadavg")
 	if err != nil {
 		return 0, 0, err
@@ -85,7 +98,7 @@ func loadAvg(ctx context.Context) (float64, int, error) {
 }
 
 // memory returns (used GiB, total GiB) from hw.memsize and vm_stat.
-func memory(ctx context.Context) (float64, float64, error) {
+func memory(ctx context.Context, run runFunc) (float64, float64, error) {
 	memOut, err := run(ctx, "sysctl", "-n", "hw.memsize")
 	if err != nil {
 		return 0, 0, err
@@ -107,7 +120,7 @@ func memory(ctx context.Context) (float64, float64, error) {
 }
 
 // disk returns (used percent, available human) for /.
-func disk(ctx context.Context) (float64, string, error) {
+func disk(ctx context.Context, run runFunc) (float64, string, error) {
 	out, err := run(ctx, "df", "-h", "/")
 	if err != nil {
 		return 0, "", err
