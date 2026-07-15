@@ -92,21 +92,42 @@ func (c *Client) call(cmd string, payload any) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
+// readDCSMax bounds the response buffer: the largest legitimate frames
+// (get-text --ansi of the full glass, ls of a busy tree) run tens of KB, so
+// a peer still streaming at this watermark is broken or hostile and errors
+// out instead of growing the buffer without bound.
+const readDCSMax = 8 << 20
+
 // readDCS scans the stream for one <ESC>P@kitty-cmd ... <ESC>\ frame and
 // returns the bytes between. Anything before the prefix is skipped; EOF
-// without a complete frame is an error.
+// without a complete frame is an error. The scan is linear: scanned marks
+// how far the buffer is known token-free, backed off by one partial-token
+// tail so a prefix or suffix split across reads still matches.
 func readDCS(r io.Reader) ([]byte, error) {
 	var buf bytes.Buffer
 	tmp := make([]byte, 4096)
+	start := -1 // index just past the prefix, once seen
+	scanned := 0
 	for {
 		n, rerr := r.Read(tmp)
 		buf.Write(tmp[:n])
 		b := buf.Bytes()
-		if start := bytes.Index(b, []byte(dcsPrefix)); start >= 0 {
-			rest := b[start+len(dcsPrefix):]
-			if end := bytes.Index(rest, []byte(dcsSuffix)); end >= 0 {
-				return rest[:end], nil
+		if start < 0 {
+			if i := bytes.Index(b[scanned:], []byte(dcsPrefix)); i >= 0 {
+				start = scanned + i + len(dcsPrefix)
+				scanned = start
+			} else {
+				scanned = max(0, len(b)-len(dcsPrefix)+1)
 			}
+		}
+		if start >= 0 {
+			if i := bytes.Index(b[scanned:], []byte(dcsSuffix)); i >= 0 {
+				return b[start : scanned+i], nil
+			}
+			scanned = max(start, len(b)-len(dcsSuffix)+1)
+		}
+		if buf.Len() > readDCSMax {
+			return nil, fmt.Errorf("response exceeds %d bytes without a frame terminator", readDCSMax)
 		}
 		if rerr != nil {
 			if rerr == io.EOF {

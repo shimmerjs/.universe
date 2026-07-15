@@ -3,9 +3,12 @@ package rc
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -92,6 +95,51 @@ func TestReadDCSSkipsGarbage(t *testing.T) {
 	}
 	if string(raw) != `{"ok":true}` {
 		t.Fatalf("got %q", raw)
+	}
+}
+
+// TestReadDCSSplitAcrossReads drives 1-byte reads so the prefix and suffix
+// land split at every boundary -- the linear-scan watermark must keep
+// partial-token tails re-scannable.
+func TestReadDCSSplitAcrossReads(t *testing.T) {
+	raw, err := readDCS(iotest.OneByteReader(strings.NewReader(
+		"noise" + dcsPrefix + `{"ok":true}` + dcsSuffix + "trailer")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"ok":true}` {
+		t.Fatalf("got %q", raw)
+	}
+}
+
+// junkReader streams unterminated payload forever (with a backstop well
+// past the watermark so a broken cap fails the test instead of hanging it).
+type junkReader struct{ n int }
+
+func (j *junkReader) Read(p []byte) (int, error) {
+	if j.n > 2*readDCSMax {
+		return 0, io.EOF
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	j.n += len(p)
+	return len(p), nil
+}
+
+// TestReadDCSWatermark pins the buffer cap: a peer that never terminates
+// the frame errors out at readDCSMax instead of growing without bound.
+func TestReadDCSWatermark(t *testing.T) {
+	junk := &junkReader{}
+	_, err := readDCS(io.MultiReader(strings.NewReader(dcsPrefix), junk))
+	if err == nil {
+		t.Fatal("unterminated stream did not error")
+	}
+	if !strings.Contains(err.Error(), "frame terminator") {
+		t.Fatalf("err %v, want the watermark error", err)
+	}
+	if junk.n > 2*readDCSMax {
+		t.Fatalf("read %d bytes -- the backstop fired, not the watermark", junk.n)
 	}
 }
 
