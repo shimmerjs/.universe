@@ -118,10 +118,12 @@ let
   agentLabel = "org.magicbus.daemon";
   launcherPath = "${agentsDir}/magicbusd";
   plistPath = "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel}.plist";
-  # -daemon is LOAD-BEARING: the bare binary is spike mode, which dies
-  # one-shot on the gestures-driver digitizer seize and crash-loops under
-  # KeepAlive. wait4path parks a fresh boot (or fresh host) until
-  # khudsonTouchdInstall has run once.
+  # -daemon is LOAD-BEARING: the daemon serve loop only runs under it (the
+  # bare binary exits on a no-mode-selected error -- spike mode needs an
+  # explicit -spike since the 07-15 hardening -- so a flag regression here
+  # crash-loops loudly under KeepAlive instead of seizing hardware).
+  # wait4path parks a fresh boot (or fresh host) until khudsonTouchdInstall
+  # has run once.
   touchdLauncher = pkgs.writeText "magicbusd-launcher" ''
     #!/bin/sh
     /bin/wait4path /nix/store

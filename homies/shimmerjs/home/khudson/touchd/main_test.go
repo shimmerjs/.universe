@@ -115,13 +115,22 @@ func TestRunComboGuards(t *testing.T) {
 		{"replay+nomode", options{replay: "f", noMode: true}, "replaces hardware"},
 		{"replay+record", options{replay: "f", record: "r"}, "replaces hardware"},
 		{"replay+config", options{replay: "f", config: "c"}, "replaces hardware"},
-		{"daemon+mouse", options{daemon: true, mouse: true}, "spike-mode flag"},
+		{"replay+spike", options{replay: "f", spike: true}, "replaces hardware"},
+		{"daemon+mouse", options{daemon: true, mouse: true}, "spike-mode flags"},
+		{"daemon+spike", options{daemon: true, spike: true}, "spike-mode flags"},
 		{"daemon+list", options{daemon: true, list: true}, "one-shot enumerate-and-exit"},
 		{"probe+daemon", options{logiretch: true, daemon: true}, "one-shot read-only prober"},
 		{"probe+replay", options{logiretch: true, replay: "f"}, "one-shot read-only prober"},
 		{"probe+list", options{logiretch: true, list: true}, "one-shot read-only prober"},
 		{"probe+mouse", options{logiretch: true, mouse: true}, "one-shot read-only prober"},
+		{"probe+spike", options{logiretch: true, spike: true}, "one-shot read-only prober"},
+		{"probe+nomode", options{logiretch: true, noMode: true}, "one-shot read-only prober"},
+		{"probe+record", options{logiretch: true, record: "r"}, "one-shot read-only prober"},
 		{"probe+config", options{logiretch: true, config: "c"}, "use -daemon"},
+		{"list+spike", options{list: true, spike: true}, "spike/daemon flags do not apply"},
+		{"list+mouse", options{list: true, mouse: true}, "spike/daemon flags do not apply"},
+		{"list+nomode", options{list: true, noMode: true}, "spike/daemon flags do not apply"},
+		{"list+record", options{list: true, record: "r"}, "spike/daemon flags do not apply"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,19 +417,33 @@ func TestRunReplayRoute(t *testing.T) {
 // Bare options (no mode flags) must dispatch to spike mode -- the launchd
 // launcher passes -daemon, so the bare default is hand-run only. runStream
 // opens real hardware, so the seam swap keeps the routing pin hermetic.
-func TestRunBareSpikeRoute(t *testing.T) {
+// Spike mode needs an explicit selector: -spike and -mouse route to the
+// stream seam; bare options (and bare knob flags) die on the no-mode guard
+// instead of defaulting onto the hardware -- the flagless-launchd trap.
+func TestRunSpikeRouteRequiresSelector(t *testing.T) {
 	orig := runStreamFn
 	t.Cleanup(func() { runStreamFn = orig })
-	called := false
+	calls := 0
 	runStreamFn = func(ctx context.Context, rec *recorder, mouse, noMode bool) error {
-		called = true
+		calls++
 		return nil
 	}
-	if err := run(context.Background(), options{}); err != nil {
-		t.Fatal(err)
+	for _, opts := range []options{{spike: true}, {mouse: true}, {spike: true, mouse: true, noMode: true}} {
+		if err := run(context.Background(), opts); err != nil {
+			t.Fatalf("run(%+v) = %v, want spike route", opts, err)
+		}
 	}
-	if !called {
-		t.Fatal("bare options did not route to spike mode")
+	if calls != 3 {
+		t.Fatalf("stream seam called %d times, want 3", calls)
+	}
+	for _, opts := range []options{{}, {noMode: true}, {record: "f"}} {
+		err := run(context.Background(), opts)
+		if err == nil || !strings.Contains(err.Error(), "no mode selected") {
+			t.Fatalf("run(%+v) = %v, want the no-mode guard", opts, err)
+		}
+	}
+	if calls != 3 {
+		t.Fatal("no-mode invocations reached the stream seam")
 	}
 }
 
@@ -449,6 +472,8 @@ func TestMainArgv(t *testing.T) {
 		{"unknown subcommand", "frob", 2, `unknown subcommand "frob"`},
 		{"unknown flag", "-frob", 2, "flag provided but not defined"},
 		{"probe not shadowed by flags", "-list logiretch-probe", 1, "one-shot read-only prober"},
+		{"trailing args rejected", "logiretch-probe -daemon", 2, "unexpected arguments after logiretch-probe"},
+		{"bare argv dies loud", "-socket /tmp/x.sock", 1, "no mode selected"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
