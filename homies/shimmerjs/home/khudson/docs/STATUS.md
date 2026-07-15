@@ -15,7 +15,12 @@ also carried the first registry tests, a kb golden snapshot, and the
 clod skills block; the codex 5.6-sol pin and clod overlays.nix ride
 the same clod arc).
 
-IN TREE, UNCOMMITTED (the 07-10 batch):
+LANDED SINCE: the 07-10 batch below committed via the
+clod-khudson-hardening merge (now on main); the 07-14 incident
+hardening (fscache O(1) panel, launcher supervision, cadence caches)
+and the 07-15 magicbus/logiretch arc live in git history.
+
+The 07-10 batch:
 
 - Keyboard full render 17 -> 15 body lines: thumb cluster is one
   4-key line pair, wide piano key at the inner end against the
@@ -109,14 +114,20 @@ IN TREE, UNCOMMITTED (the 07-10 batch):
 
 ## Backlog (dials and batches)
 
-- BATCH-POLLCACHE: procs top duty cycle, dockmirror plist export,
-  claudesessions discover lstats, hudlaunch healthy-tick JXA --
-  same cadence-cache seam.
-- BATCH-TESTS: touch ingest e2e, hudlaunch Run loop, sysmon seam,
-  rc LS/Launch shapes, scheduler interleave pin, cmdCtl, touchd
-  flags.
-- readDCS watermark. (kittykrib nix wiring RESOLVED: buildGoModule
-  in home/kitty/default.nix, F2 pipes through the store path.)
+- BATCH-POLLCACHE, BATCH-TESTS, readDCS watermark: CLOSED 07-15.
+  dockmirror + claudesessions legs were already covered by the
+  07-14 cadence/fscache work; procs top now samples behind a 15s
+  sampleEvery cache, the hud-launcher healthy tick rides
+  HealthyPoll (4x -poll default, -healthy-poll flag), readDCS got
+  an 8MB cap + linear scan, and every BATCH-TESTS item has a pin
+  (details in the test doc comments; commits carry the rest).
+- magicbusd flag/mode residue (surfaced by the 07-15 flag-matrix
+  pins; behavior unchanged, tests-only pass): bare argv still
+  falls through to spike mode -- a flagless launchd invocation
+  reproduces the -daemon incident; `-daemon -list` silently runs
+  list-and-exit; flags after the subcommand are dropped by Go
+  flag parsing; probe/list silently tolerate -nomode/-record.
+  Guarding bare argv (or pinning runStream) needs a source seam.
 - Design dials: resources box fit, kb column width K=75, SYS pill.
 - Collapse/expand UX: shipped (strip.flip home/home-no-kb);
   eyes-on at switch is the remaining gate.
