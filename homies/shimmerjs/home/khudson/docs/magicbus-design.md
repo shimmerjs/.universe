@@ -13,7 +13,7 @@ four requirements:
 
 ## recommendation: magicbus-in-place
 
-keep the khudson-touchd binary, identity, install path, and launchd label exactly as they are -- TCC cost zero -- and modularize inside it. candidate A's skeleton with five repairs stolen from B, plus four grafts from C (below). the daemon's hardwired three-goroutine fan-in (touchd/daemon.go:69-98) becomes a module registry: edge, moonlander, logi.
+keep the daemon binary, identity, install path, and launchd label stable and modularize inside it (candidate A over a re-platform). [2026-07-15: the in-place ARCHITECTURE stands, but the naming freeze was lifted -- the binary/label were renamed khudson-touchd/org.khudson.touchd -> magicbusd/org.magicbus.daemon once the user accepted a one-time re-grant; the signing identity stayed khudson-touchd, the shared project cert.] candidate A's skeleton with five repairs stolen from B, plus four grafts from C (below). the daemon's hardwired three-goroutine fan-in (touchd/daemon.go:69-98) becomes a module registry: edge, moonlander, logi.
 
 ```mermaid
 flowchart LR
@@ -120,7 +120,7 @@ Direct BLE is a SINGLE vendor node, pure HID++ 2.0 -- so the receiver two-node m
 
 - the TCC binary stops being small-and-rarely-rebuilt: logi + demux + config + broadcaster v2 land in the granted binary; feature work means routine re-sign + kickstart, each blipping the streams (the pinned touchdPkgs input still shields it from nixpkgs churn).
 - broadcaster complexity on the hottest path: 141 LOC write-only fanout -> bidirectional dual-queue per-connection writer.
-- naming debt is permanent unless a re-grant is paid: keyboard-only hosts run `khudson-touchd` under `Application Support/khudson` with an `org.khudson.touchd` label.
+- naming debt [RESOLVED 2026-07-15]: the daemon is `magicbusd` under `Application Support/khudson` with an `org.magicbus.daemon` label (the user accepted the one-time Input Monitoring re-grant the rename costs). The signing identity stays `khudson-touchd` (shared with the khudson HUD's Accessibility client, unchanged).
 - fresh-host onboarding stays imperative and two-step (cert bootstrap, then a first-run Input Monitoring prompt that, if dismissed, leaves a denied row KeepAlive happily relaunches into).
 - absent-device steady-state cost is ~0 (idle socket is free; the central scanner is one cheap enumerate/30s) -- NOT worth sweating. The only residual without the optional phase 3 is reattach LATENCY: up to 30s to notice a re-dock/re-pair.
 - socket paths stay hand-mirrored across the module boundary (touchd/main.go:146-152 vs khudson/internal/paths), pinned by tests only.

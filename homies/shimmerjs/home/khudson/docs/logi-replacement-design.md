@@ -7,7 +7,7 @@ user steer (verbatim, 2026-07-14): "figure out if its plausible to build out all
 
 ## logiretch-0 SPIKE RESULT (2026-07-15, on the real MX Master 4 over direct BT) -- GO
 
-Ran `khudson-touchd logiretch-probe` against the physical device (pid 0xB042, BLE, serial 7D724EEB). Every conditional-GO gate cleared, and the three extrapolations the spike existed to check are now confirmed on-device, NOT inferred from Bolt captures:
+Ran `magicbusd logiretch-probe` (the daemon was named khudson-touchd at probe time; renamed 2026-07-15) against the physical device (pid 0xB042, BLE, serial 7D724EEB). Every conditional-GO gate cleared, and the three extrapolations the spike existed to check are now confirmed on-device, NOT inferred from Bolt captures:
 
 - **Access:** non-exclusive open of 0xFF43/0x0202 succeeded; HID++ 2.0 root ping on devIdx 0xFF returned protocol 4.5. Topology is **0x11-only** (no short/long node pair) -- the receiver two-node demux machinery is confirmed MOOT.
 - **Feature table:** 45 features, all 10 expect-PRESENT and all 6 expect-ABSENT assertions hold (0 missing, 0 unexpected). Confirmed: **0x2111 SMART_SHIFT_ENHANCED present, 0x2110 absent** (the doc's correction is real on-device); **0x8100 ONBOARD_PROFILES and 0x1C00 absent** -> host-side re-assert (phase 5b) is the ONLY persistence, as designed; 0x1004 UNIFIED_BATTERY is **v5**; 0x19B0 HAPTIC + 0x19C0 FORCE_SENSING_BUTTON + 0x2201 ADJUSTABLE_DPI v2 (0x2202 absent) all present.
