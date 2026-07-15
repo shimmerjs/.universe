@@ -252,6 +252,32 @@ func TestLongPressOpensMenuAndReanchors(t *testing.T) {
 	}
 }
 
+// The gestures-driver path delivers a touch long-press as a right click:
+// it must open the same menu tier as a recognizer LongPress (left clicks
+// stay taps), or the menus are unreachable while the driver owns the
+// digitizer.
+func TestRightClickOpensMenu(t *testing.T) {
+	m := overlayModel(t)
+	m.Update(tea.MouseClickMsg{X: 4, Y: 1, Button: tea.MouseRight})
+	if m.overlay == nil {
+		t.Fatal("right click did not open the menu")
+	}
+	if m.overlay.anchor.x != 4 || m.overlay.anchor.y != 1 {
+		t.Fatalf("anchor = %+v, want the click cell", m.overlay.anchor)
+	}
+	if !slices.Equal(m.overlay.items[0].argv, []string{"/inst/khudson", "ax", "quit", "--bundle", "com.apple.Safari"}) {
+		t.Fatalf("menu argv = %v, want Safari's", m.overlay.items[0].argv)
+	}
+	m.Update(tea.MouseClickMsg{X: 4, Y: 23, Button: tea.MouseRight})
+	if m.overlay != nil {
+		t.Fatal("menu survived a right click on a menu-less region")
+	}
+	m.Update(tea.MouseClickMsg{X: 4, Y: 1, Button: tea.MouseLeft})
+	if m.overlay != nil {
+		t.Fatal("left click opened a menu; it must stay a tap")
+	}
+}
+
 // The widget-box row path: a long-press on a titled-region row with a Menu
 // opens it (menus ride renderRows' parallel table, MinHeight-replicated);
 // rows without one stay inert.

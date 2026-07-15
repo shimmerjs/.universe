@@ -438,7 +438,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sendGrid()
 
 	case tea.MouseClickMsg:
-		// kitty mouse fallback: works with or without the bus
+		// kitty mouse fallback: works with or without the bus. The gestures
+		// driver delivers a touch long-press as a right click (its
+		// hold-as-right-click vocabulary), so right routes to the context
+		// menu exactly like a recognizer LongPress -- the menu tier stays
+		// reachable while the driver owns the digitizer.
+		if msg.Button == tea.MouseRight {
+			m.lastGst = fmt.Sprintf("long-press @%d,%d (mouse)", msg.X, msg.Y)
+			m.resolveLongPress(msg.X, msg.Y)
+			return m, nil
+		}
 		m.taps++
 		m.resolveTap(msg.X, msg.Y)
 		if m.drainFlashArmed() {
