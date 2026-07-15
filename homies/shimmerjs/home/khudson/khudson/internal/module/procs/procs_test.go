@@ -2,6 +2,7 @@ package procs
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -220,6 +221,93 @@ func TestUtilizationAccessor(t *testing.T) {
 	m.setUtil(0, false)
 	if _, ok := m.Utilization(); ok {
 		t.Error("fallback poll did not clear the utilization")
+	}
+}
+
+// TestPollCadenceCache pins the sampler cadence: inside sampleEvery the
+// cached rows and utilization serve with zero sampler calls; past the
+// cadence the sampler reruns; a changed top param busts the cache; the
+// sampleEvery param overrides the default floor.
+func TestPollCadenceCache(t *testing.T) {
+	base := time.Now()
+	clock := base
+	calls := 0
+	m := New()
+	m.now = func() time.Time { return clock }
+	m.sample = func(ctx context.Context, top int) (module.Data, float64, bool, error) {
+		calls++
+		return module.Data{Title: "procs", Rows: []module.Row{module.KV("proc", "1.0%c 1.0%m")}}, 0.5, true, nil
+	}
+	ctx := context.Background()
+	if _, err := m.Poll(ctx, nil); err != nil || calls != 1 {
+		t.Fatalf("first poll: err=%v calls=%d, want nil/1", err, calls)
+	}
+	if util, ok := m.Utilization(); !ok || util != 0.5 {
+		t.Fatalf("Utilization() = %v/%v, want 0.5/true", util, ok)
+	}
+	clock = base.Add(5 * time.Second)
+	if data, err := m.Poll(ctx, nil); err != nil || calls != 1 || len(data.Rows) != 1 {
+		t.Fatalf("cached poll: err=%v calls=%d rows=%d, want nil/1/1 (no exec inside the cadence)", err, calls, len(data.Rows))
+	}
+	clock = base.Add(sampleEvery)
+	if _, err := m.Poll(ctx, nil); err != nil || calls != 2 {
+		t.Fatalf("post-cadence poll: err=%v calls=%d, want nil/2", err, calls)
+	}
+	if _, err := m.Poll(ctx, map[string]any{"top": 3}); err != nil || calls != 3 {
+		t.Fatalf("top-change poll: err=%v calls=%d, want nil/3 (top change busts the cache)", err, calls)
+	}
+	clock = clock.Add(2 * time.Second)
+	if _, err := m.Poll(ctx, map[string]any{"top": 3, "sampleEvery": "1s"}); err != nil || calls != 4 {
+		t.Fatalf("sampleEvery-param poll: err=%v calls=%d, want nil/4", err, calls)
+	}
+}
+
+// TestPollErrorCached pins the failure side of the cadence: a sampler error
+// (with a live ctx) is cached like rows are, so a failing sampler cannot
+// re-open the per-tick exec cost.
+func TestPollErrorCached(t *testing.T) {
+	base := time.Now()
+	clock := base
+	calls := 0
+	m := New()
+	m.now = func() time.Time { return clock }
+	m.sample = func(ctx context.Context, top int) (module.Data, float64, bool, error) {
+		calls++
+		return module.Data{}, 0, false, errors.New("ps: boom")
+	}
+	ctx := context.Background()
+	if _, err := m.Poll(ctx, nil); err == nil || calls != 1 {
+		t.Fatalf("first poll: err=%v calls=%d, want error/1", err, calls)
+	}
+	if _, ok := m.Utilization(); ok {
+		t.Error("failed poll left a utilization")
+	}
+	clock = base.Add(time.Second)
+	if _, err := m.Poll(ctx, nil); err == nil || calls != 1 {
+		t.Fatalf("cached poll: err=%v calls=%d, want cached error/1", err, calls)
+	}
+}
+
+// TestPollTimeoutNotCached pins the dockmirror-shared caveat: a result that
+// failed because the poll deadline expired never enters the cache, so the
+// next poll retries immediately.
+func TestPollTimeoutNotCached(t *testing.T) {
+	calls := 0
+	m := New()
+	m.sample = func(ctx context.Context, top int) (module.Data, float64, bool, error) {
+		calls++
+		if calls == 1 {
+			return module.Data{}, 0, false, errors.New("top: signal: killed")
+		}
+		return module.Data{Title: "procs", Rows: []module.Row{module.KV("proc", "1.0%c 1.0%m")}}, 0.1, true, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ctx.Err() != nil marks the failure as a timeout
+	if _, err := m.Poll(ctx, nil); err == nil {
+		t.Fatal("timeout poll did not surface the error")
+	}
+	if _, err := m.Poll(context.Background(), nil); err != nil || calls != 2 {
+		t.Fatalf("retry poll: err=%v calls=%d, want nil/2 (timeout must not enter the cache)", err, calls)
 	}
 }
 

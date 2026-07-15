@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"golang.org/x/sys/unix"
@@ -23,10 +24,25 @@ import (
 // defaultTop bounds the emitted rows when params.top is absent.
 const defaultTop = 10
 
-// Mod implements module.Module. The singleton caches the last poll's
-// utilization sample.
+// sampleEvery is the default floor between sampler execs; params
+// "sampleEvery" (a duration string) overrides it. top -l 2 -s 1 holds ~1s
+// wall and walks every process twice, so at the resources widget's 5s poll
+// the exec alone is a ~20% duty cycle -- ticks between refreshes re-render
+// from the cache with zero subprocesses, the same cadence-cache seam as
+// dockmirror.
+const sampleEvery = 15 * time.Second
+
+// Mod implements module.Module. The singleton caches the sampler's result
+// (rows OR error, plus the utilization) between cadence ticks; now and
+// sample are test seams.
 type Mod struct {
 	mu      sync.Mutex
+	now     func() time.Time
+	sample  func(ctx context.Context, top int) (module.Data, float64, bool, error)
+	last    time.Time
+	lastTop int
+	data    module.Data
+	err     error
 	util    float64
 	hasUtil bool
 }
@@ -36,14 +52,49 @@ func New() *Mod { return &Mod{} }
 
 func (*Mod) Name() string { return "procs" }
 
+// Poll reruns the sampler at most once per cadence tick and reuses the
+// cached result (rows OR error) between ticks -- a cached error is returned
+// without an exec too, so a failing sampler cannot re-open the per-tick
+// exec cost either. A changed top param busts the cache (the row cap is
+// baked into the sampled rows).
 func (m *Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error) {
 	top := module.IntParam(params, "top", defaultTop)
-	if rows, util, ok, err := pollTop(ctx, top); err == nil && len(rows) > 0 {
-		m.setUtil(util, ok)
-		return module.Data{Title: "procs", Rows: rows}, nil
+	every := sampleEvery
+	if s, ok := params["sampleEvery"].(string); ok {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			every = d
+		}
 	}
-	m.setUtil(0, false)
-	return pollPS(ctx, top)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now, sample := time.Now, samplePoll
+	if m.now != nil {
+		now = m.now
+	}
+	if m.sample != nil {
+		sample = m.sample
+	}
+	if !m.last.IsZero() && now().Sub(m.last) < every && top == m.lastTop {
+		return m.data, m.err
+	}
+	data, util, hasUtil, err := sample(ctx, top)
+	if err != nil && ctx.Err() != nil {
+		return data, err // timeout: leave m.last unset so the next poll retries
+	}
+	m.data, m.err = data, err
+	m.util, m.hasUtil = util, hasUtil
+	m.last, m.lastTop = now(), top
+	return m.data, m.err
+}
+
+// samplePoll is the exec behind Poll: top primary, ps fallback (which
+// carries no host-wide cpu line, so utilization reads unmeasured).
+func samplePoll(ctx context.Context, top int) (module.Data, float64, bool, error) {
+	if rows, util, ok, err := pollTop(ctx, top); err == nil && len(rows) > 0 {
+		return module.Data{Title: "procs", Rows: rows}, util, ok, nil
+	}
+	data, err := pollPS(ctx, top)
+	return data, 0, false, err
 }
 
 // Utilization reports the whole-host cpu busy fraction (0..1) measured by
