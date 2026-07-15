@@ -4,7 +4,8 @@ Reconciled 2026-07-10 (supersedes the accreted 07-08/09/10 bullets;
 mapped doc-by-doc against the working tree by a 5-mapper pass).
 Living state only: history lives in git, doctrine in DESIGN.md, RC
 integration in nix/main-kitty-integration.md, host scoping in
-nix/edge-host.md, panel visual reference in panel-anatomy.html.
+nix/edge-host.md, panel visual reference in panel-anatomy.html,
+component/permission map in architecture.html.
 
 ## State
 
@@ -100,9 +101,9 @@ The 07-10 batch:
   binary could poke the bus per session event for instant repolls
   (ActHandler repoll precedent). FSEvents needs cgo; kqueue costs
   an fd per dir -- the hook poke avoids both.
-- Strip error surfacing: verb/act failures were silent for two
-  days (claude-verbs.log only). Sketch: bus records the last
-  failed act, broadcasts it, strip renders a decaying warn cell.
+- Strip error surfacing: CLOSED 07-15 (TypeActFail one-slot record
+  + greeting replay; strip warn cell decays after 60s; act path
+  untouched on the failure branch).
 - Spool hygiene: CLOSED 07-15 (spool_version stamp on every hook
   write, legacy unstamped files tolerated; Sweep prunes age +
   foreign-version at session end and bus boot, never per-tick).
@@ -121,12 +122,18 @@ The 07-10 batch:
   HealthyPoll (4x -poll default, -healthy-poll flag), readDCS got
   an 8MB cap + linear scan, and every BATCH-TESTS item has a pin
   (details in the test doc comments; commits carry the rest).
-- magicbusd flag/mode residue, second pass 07-15: `-daemon -list`
-  now guarded; bare-argv spike routing seamed (runStreamFn) and
-  hermetically pinned -- spike stays the bare default by design
-  (the launchd launcher passes -daemon). Still open, minor: flags
-  after the subcommand are dropped by Go flag parsing; probe/list
-  silently tolerate -nomode/-record.
+- magicbusd flag/mode residue: FULLY RESOLVED 07-15 third pass. A
+  mode is now REQUIRED (bare argv errors -- the flagless-launchd
+  trap is dead; spike needs -spike, -mouse implies it); trailing
+  args after logiretch-probe rejected; probe/list reject every
+  spike/daemon knob; full combo matrix pinned in TestRunComboGuards
+  + TestMainArgv.
+- Long-press on glass: root-caused 07-15 (gestures driver still
+  seizes the digitizer, so the recognizer LongPress path never
+  fires; driver delivers hold as RIGHT-CLICK). Dock now routes
+  right-click to the same menu opener -- menus reachable under the
+  driver today, unchanged post-swap. Lands on glass at the next
+  switch + HUD restart.
 - magicbus disable cleanup: CLOSED 07-15 (a !enable activation leg
   boots out + removes the agent when the plist exists; the signed
   binary and stamps stay so re-enable keeps the TCC grant).
