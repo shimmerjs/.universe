@@ -3,6 +3,7 @@ package hudlaunch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -223,6 +224,56 @@ func TestRunChildHealthyTickCadence(t *testing.T) {
 	}
 	if queries != 0 {
 		t.Fatalf("display query ran %d times on the waiting cadence; healthy ticks must ride HealthyPoll", queries)
+	}
+}
+
+// devOverride: a fresh marker naming a real binary is honored; a stale
+// marker or a missing binary is loudly ignored; no marker is silent.
+func TestDevOverride(t *testing.T) {
+	sd := t.TempDir()
+	logged := ""
+	logf := func(f string, a ...any) { logged += fmt.Sprintf(f, a...) }
+
+	if got := devOverride(sd, logf); got != "" || logged != "" {
+		t.Fatalf("no marker: got %q log %q, want silence", got, logged)
+	}
+
+	bin := filepath.Join(sd, "dev-khudson")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(sd, devOverrideFile)
+	if err := os.WriteFile(marker, []byte(bin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := devOverride(sd, logf); got != bin {
+		t.Fatalf("fresh marker: got %q, want %q", got, bin)
+	}
+	if !strings.Contains(logged, "DEV OVERRIDE active") {
+		t.Fatal("active override not loudly logged")
+	}
+
+	logged = ""
+	stale := time.Now().Add(-devOverrideMaxAge - time.Hour)
+	if err := os.Chtimes(marker, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got := devOverride(sd, logf); got != "" {
+		t.Fatalf("stale marker honored: %q", got)
+	}
+	if !strings.Contains(logged, "IGNORED") {
+		t.Fatal("stale override not loudly ignored")
+	}
+
+	logged = ""
+	if err := os.WriteFile(marker, []byte(filepath.Join(sd, "gone")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := devOverride(sd, logf); got != "" {
+		t.Fatalf("missing binary honored: %q", got)
+	}
+	if !strings.Contains(logged, "missing") {
+		t.Fatal("missing dev binary not loudly reported")
 	}
 }
 

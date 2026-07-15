@@ -153,7 +153,13 @@ func Run(ctx context.Context, opts Options) error {
 
 		start := time.Now()
 		saveBackoff(backoffPath, backoffState{LastLaunch: start, Backoff: backoff})
-		outcome := runChild(ctx, opts, x, y)
+		// dev override read fresh per launch: clearing the marker and killing
+		// the HUD kitty is the whole restore path
+		launch := opts
+		if dev := devOverride(sd, opts.Logf); dev != "" {
+			launch.KhudsonBin = dev
+		}
+		outcome := runChild(ctx, launch, x, y)
 		switch {
 		case ctx.Err() != nil:
 			return nil
@@ -177,6 +183,45 @@ func Run(ctx context.Context, opts Options) error {
 			return nil
 		}
 	}
+}
+
+// The dev-override marker (fast UX iteration, tier 3): a state-dir file
+// naming a working-tree khudson binary the launcher runs the dock from
+// instead of the deployed install. Read fresh per launch and loudly
+// logged; ignored (loudly) once stale so a forgotten override cannot
+// outlive the iteration session. The dock holds no TCC grants, so the
+// swap never touches the signed installs.
+const (
+	devOverrideFile   = "hud-dev-binary"
+	devOverrideMaxAge = 6 * time.Hour
+)
+
+// devOverride returns the dev binary to launch instead of the deployed
+// khudson, or "" for none.
+func devOverride(sd string, logf func(string, ...any)) string {
+	p := filepath.Join(sd, devOverrideFile)
+	fi, err := os.Stat(p)
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	bin := strings.TrimSpace(string(b))
+	if bin == "" {
+		return ""
+	}
+	if age := time.Since(fi.ModTime()); age > devOverrideMaxAge {
+		logf("hud-launcher: dev override %s is %s old; IGNORED (rm or re-touch %s)", bin, age.Round(time.Minute), p)
+		return ""
+	}
+	if _, err := os.Stat(bin); err != nil {
+		logf("hud-launcher: dev override binary missing (%v); using the deployed install", err)
+		return ""
+	}
+	logf("hud-launcher: DEV OVERRIDE active: dock runs %s (marker expires %s after its mtime)", bin, devOverrideMaxAge)
+	return bin
 }
 
 type childOutcome int

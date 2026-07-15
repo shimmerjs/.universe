@@ -133,6 +133,55 @@ let
     '';
   };
 
+  # Fast UX iteration, tier 2: a working-tree dock in the CURRENT kitty
+  # window against the LIVE bus. The bus serves any number of docks and
+  # broadcasts widget data, theme, and gestures to all of them, so the dev
+  # dock renders real state (Edge touches included) -- edit, rerun, see, no
+  # switch. KHUDSON_DEV_CONFIG overrides the deployed edge.cue.
+  khudsonDockDev = pkgs.writeShellApplication {
+    name = "khudson-dock-dev";
+    runtimeInputs = [ pkgs.go ];
+    text = ''
+      cd ${khudsonRootExpr}
+      exec go run . dock -config "''${KHUDSON_DEV_CONFIG:-$HOME/.config/khudson/edge.cue}" "$@"
+    '';
+  };
+
+  # Fast UX iteration, tier 3: swap the ON-GLASS dock for a working-tree
+  # build. Writes the hud-launcher's dev-override marker and kills the HUD
+  # kitty; the launcher respawns it in ~1-2s running the dev binary (loudly
+  # logged, auto-expiring after 6h so a forgotten override cannot linger).
+  # The dock holds no TCC grants, so the swap touches nothing signed.
+  khudsonGlassDev = pkgs.writeShellApplication {
+    name = "khudson-glass-dev";
+    runtimeInputs = [ pkgs.go pkgs.coreutils ];
+    text = ''
+      cd ${khudsonRootExpr}
+      state="$HOME/Library/Application Support/khudson"
+      go build -o "$state/bin/khudson-dev" .
+      printf '%s\n' "$state/bin/khudson-dev" > "$state/hud-dev-binary"
+      if pid=$(cat "$state/hud-kitty.pid" 2>/dev/null); then
+        kill "$pid" 2>/dev/null || true
+      fi
+      echo "dev dock heading to the glass (launcher respawn ~1-2s; override expires in 6h)"
+      echo "back to deployed: khudson-glass-restore"
+    '';
+  };
+
+  # Clear the dev override and bounce the HUD back onto the deployed binary.
+  khudsonGlassRestore = pkgs.writeShellApplication {
+    name = "khudson-glass-restore";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      state="$HOME/Library/Application Support/khudson"
+      rm -f "$state/hud-dev-binary"
+      if pid=$(cat "$state/hud-kitty.pid" 2>/dev/null); then
+        kill "$pid" 2>/dev/null || true
+      fi
+      echo "override cleared; launcher respawns the deployed dock"
+    '';
+  };
+
   tasks = [
     khudsonTest
     khudsonRace
@@ -140,6 +189,9 @@ let
     khudsonVet
     khudsonLive
     khudsonVendorhash
+    khudsonDockDev
+    khudsonGlassDev
+    khudsonGlassRestore
   ];
 in
 pkgs.mkShell {
@@ -165,6 +217,9 @@ pkgs.mkShell {
       khudson-vet         build + go vet ./...
       khudson-live        env-gated live tests   (KHUDSON_KEYMAPP_DB/CLAUDE_LIVE/SPIKE1/AX)
       khudson-vendorhash  recompute khudson + touchd vendorHash (after a dep bump)
+      khudson-dock-dev    working-tree dock in THIS window against the live bus
+      khudson-glass-dev   working-tree dock ON THE GLASS (launcher dev override, 6h expiry)
+      khudson-glass-restore  clear the override, respawn the deployed dock
     cd "$KHUDSON_MODULE_ROOT" to work in the khudson module.
     EOF
   '';
