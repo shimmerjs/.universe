@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shimmerjs/kittykrib/chord"
+	"github.com/shimmerjs/krib/chord"
 )
 
 // SchemaVersion is the version this library writes. Readers accept N and N-1
@@ -63,10 +63,13 @@ type GroupMeta struct {
 	Description string   `json:"description,omitempty"`
 	WhenToUse   string   `json:"whenToUse,omitempty"`
 	Phases      []string `json:"phases,omitempty"`
+	// Examples are display-only usage samples for the group (additive; the
+	// clod-cheat migration needs them to be non-lossy).
+	Examples []string `json:"examples,omitempty"`
 }
 
 func (m GroupMeta) IsZero() bool {
-	return m.Description == "" && m.WhenToUse == "" && len(m.Phases) == 0
+	return m.Description == "" && m.WhenToUse == "" && len(m.Phases) == 0 && len(m.Examples) == 0
 }
 
 // Entry is kind-discriminated: bindings entries carry Keys (+Mode), cards
@@ -80,16 +83,37 @@ type Entry struct {
 	Group string `json:"group,omitempty"`
 	Term  string `json:"term,omitempty"`
 	Body  string `json:"body,omitempty"`
+	// Card disambiguates cards sharing a group+term (multiple examples per
+	// group); it joins the id when present.
+	Card string `json:"card,omitempty"`
+	// Flag carries structured flag-table columns (additive; flattening them
+	// into Body is lossy).
+	Flag *FlagCols `json:"flag,omitempty"`
 	// shared
 	Cmd string `json:"cmd,omitempty"`
 }
 
+// FlagCols is the structured flag table shape (the clod-cheat 5-column
+// contract: short + name(Term)/type/default/range/help).
+type FlagCols struct {
+	Short   string `json:"short,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Default string `json:"default,omitempty"`
+	Range   string `json:"range,omitempty"`
+	Help    string `json:"help,omitempty"`
+}
+
 // ID derives the stable entry identity: bindings are mode+"/"+canonical
-// keyseq (empty mode reads as "default"), cards are group+"/"+term.
+// keyseq (empty mode reads as "default"), cards are group+"/"+term with the
+// optional card discriminator appended.
 func (e Entry) ID(kind string) string {
 	switch kind {
 	case KindCards:
-		return e.Group + "/" + e.Term
+		id := e.Group + "/" + e.Term
+		if e.Card != "" {
+			id += "/" + e.Card
+		}
+		return id
 	default:
 		mode := e.Mode
 		if mode == "" {
@@ -163,7 +187,7 @@ func vetEntry(kind string, en Entry, groups map[string]bool) error {
 		if len(en.Keys) == 0 {
 			return fmt.Errorf("bindings entry has no keys")
 		}
-		if en.Term != "" || en.Body != "" {
+		if en.Term != "" || en.Body != "" || en.Card != "" || en.Flag != nil {
 			return fmt.Errorf("bindings entry carries cards fields")
 		}
 		// name fields hold the id + one-line contracts; keys are exempt (a
@@ -192,6 +216,9 @@ func vetEntry(kind string, en Entry, groups map[string]bool) error {
 		}
 		if c, bad := badNameChar(en.Term); bad {
 			return fmt.Errorf("term %q must not contain %q", en.Term, c)
+		}
+		if c, bad := badNameChar(en.Card); bad {
+			return fmt.Errorf("card %q must not contain %q", en.Card, c)
 		}
 	}
 	if en.Group != "" && len(groups) > 0 && !groups[en.Group] {

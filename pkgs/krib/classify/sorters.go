@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shimmerjs/kittykrib/envelope"
+	"github.com/shimmerjs/krib/envelope"
 )
 
 // Sorter stably reorders entries in place. Sorters compose: a chain applies

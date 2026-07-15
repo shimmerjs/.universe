@@ -1,0 +1,102 @@
+{
+    "name": "kitty",
+    "sort": [
+        "leading-key",
+        "longest-last",
+        "group-next-prev"
+    ],
+    "exec": {
+        "run": "run",
+        "argv": [
+            "kitten",
+            "@",
+            "action",
+            "--match=id:{window}",
+            "{cmd}"
+        ]
+    },
+    "theme": {
+        "keys": "#d3c6aa",
+        "cmd": "#d699b6",
+        "header": "#5c3f4f",
+        "rowSep": "#859289",
+        "dim": "#9da9a0",
+        "leftWidth": 26
+    },
+    "groups": [
+        {
+            "name": "windows",
+            "key": "w",
+            "match": {
+                "re": "window|layout_action",
+                "exact": [
+                    "launch --location=hsplit --cwd=current",
+                    "launch --location=vsplit --cwd=current",
+                    "launch --location=split --cwd=current"
+                ]
+            },
+            "sort": [
+                "leading-key",
+                "longest-last",
+                "group-next-prev",
+                "int-keys-last"
+            ]
+        },
+        {
+            "name": "tabs",
+            "key": "t",
+            "match": {
+                "re": "tab"
+            }
+        },
+        {
+            "name": "layout",
+            "key": "l",
+            "match": {
+                "re": "layout"
+            }
+        },
+        {
+            "name": "scrolling",
+            "key": "m",
+            "match": {
+                "re": "^scroll_|show_scrollback|show_.*_command_output|clear_terminal"
+            }
+        },
+        {
+            "name": "system",
+            "key": "s",
+            "header": true,
+            "match": {
+                "re": "config|macos|show_kitty_doc",
+                "exact": [
+                    "quit"
+                ]
+            }
+        },
+        {
+            "name": "clipboard",
+            "key": "c",
+            "match": {
+                "re": "clipboard|copy",
+                "exact": [
+                    "copy_or_noop",
+                    "paste_from_selection",
+                    "pass_selection_from_program"
+                ]
+            }
+        },
+        {
+            "name": "other",
+            "key": "o"
+        }
+    ],
+    "entries": [
+        {
+            "match": {
+                "re": "^quit$|^close_"
+            },
+            "confirm": true
+        }
+    ]
+}

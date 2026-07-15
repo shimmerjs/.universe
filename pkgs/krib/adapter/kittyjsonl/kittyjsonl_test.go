@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shimmerjs/kittykrib/chord"
-	"github.com/shimmerjs/kittykrib/envelope"
+	"github.com/shimmerjs/krib/chord"
+	"github.com/shimmerjs/krib/envelope"
 )
 
 func decodeFixture(t *testing.T) *envelope.Envelope {

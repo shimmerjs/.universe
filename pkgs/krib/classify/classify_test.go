@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shimmerjs/kittykrib/chord"
-	"github.com/shimmerjs/kittykrib/envelope"
+	"github.com/shimmerjs/krib/chord"
+	"github.com/shimmerjs/krib/envelope"
 )
 
 func bind(spec, cmd string) envelope.Entry {
@@ -169,5 +169,40 @@ func TestByGroup(t *testing.T) {
 	}
 	if gs[2].Name != "aw-implant" {
 		t.Fatalf("undeclared group should trail: %+v", gs[2])
+	}
+}
+
+func TestRuleFirstMatchWins(t *testing.T) {
+	s := Sheet{Entries: []EntryRule{
+		{Match: Match{Re: "^close_"}, Confirm: true},
+		{Match: Match{Exact: []string{"close_window"}}, Exec: &ExecSpec{Run: "copy"}},
+	}}
+	r := s.Rule("close_window")
+	if r == nil || !r.Confirm || r.Exec != nil {
+		t.Fatalf("rule = %+v, want the first (confirm) rule", r)
+	}
+	if s.Rule("new_tab") != nil {
+		t.Fatal("unmatched cmd returned a rule")
+	}
+}
+
+func TestVetSheet(t *testing.T) {
+	good := Sheet{Name: "ok", Groups: []GroupSpec{{Name: "all"}},
+		Exec:    &ExecSpec{Run: "run", Argv: []string{"x", "{cmd}"}},
+		Entries: []EntryRule{{Match: Match{Exact: []string{"quit"}}, Confirm: true}}}
+	if err := VetSheet(good); err != nil {
+		t.Fatal(err)
+	}
+	bad := []Sheet{
+		{Name: "sort", Sort: []string{"nope"}, Groups: []GroupSpec{{Name: "all"}}},
+		{Name: "rule-re", Groups: []GroupSpec{{Name: "all"}}, Entries: []EntryRule{{Match: Match{Re: "("}}}},
+		{Name: "rule-empty", Groups: []GroupSpec{{Name: "all"}}, Entries: []EntryRule{{}}},
+		{Name: "exec-vocab", Groups: []GroupSpec{{Name: "all"}}, Exec: &ExecSpec{Run: "shell"}},
+		{Name: "exec-empty", Groups: []GroupSpec{{Name: "all"}}, Exec: &ExecSpec{Run: "run"}},
+	}
+	for _, s := range bad {
+		if err := VetSheet(s); err == nil {
+			t.Errorf("%s: want error", s.Name)
+		}
 	}
 }

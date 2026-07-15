@@ -6,12 +6,12 @@
   ...
 }:
 let
-  # Build custom kitty cheatsheet tool (single source of truth: pkgs/kittykrib,
-  # binary `krib`; the former ./cheatsheet fork is retired).
-  kittykrib = (
+  # Build the krib cheatsheet/palette engine (single source of truth:
+  # pkgs/krib, binary `krib`).
+  krib = (
     pkgs.buildGoModule {
-      pname = "kittykrib";
-      src = ../../../../pkgs/kittykrib;
+      pname = "krib";
+      src = ../../../../pkgs/krib;
       version = "0.1.0";
       vendorHash = "sha256-Gc1vL8/qJczgi8TUAhLwLOxvvGsMAaqvq7/OjPEIvj0=";
       # guard the classify/chord/parity tests at build (they ran under no
@@ -19,6 +19,41 @@ let
       doCheck = true;
     }
   );
+
+  # nix-set default for the palette's show-all view (the per-session toggle
+  # lives on ctrl-a inside fzf).
+  paletteShowAll = false;
+
+  # ONE launcher path for every palette summon trigger (f3, the right-press
+  # mouse_map, and remote control): scrape the live bindings once into a
+  # session cache, then hand off to `krib palette` (fzf frontend; accept
+  # executes through the sheet's exec descriptor, targeting the parent
+  # window passed as $1).
+  #
+  # Remote-control summon, from any process with kitty rc access (the seam a
+  # future khudson dock act will call):
+  #   kitten @ launch --type=overlay --allow-remote-control -- \
+  #     krib-palette @active-kitty-window-id
+  # (@active-kitty-window-id expands to the summoning window's id -- the
+  # overlay's parent -- exactly like the f3/mouse bindings below.)
+  krib-palette = pkgs.writeShellApplication {
+    name = "krib-palette";
+    runtimeInputs = [
+      krib
+      pkgs.fzf
+    ];
+    text = ''
+      cache=$(mktemp)
+      trap 'rm -f "$cache"' EXIT
+      kitten @ kitten kits/keybindings.py > "$cache"
+      args=(palette --data "$cache")
+      ${lib.optionalString paletteShowAll ''args+=(--all)''}
+      if [ $# -ge 1 ] && [ -n "$1" ]; then
+        args+=(--window "$1")
+      fi
+      krib "''${args[@]}"
+    '';
+  };
 in
 {
   programs.kitty = {
@@ -34,7 +69,11 @@ in
       "f1" = "show_kitty_doc conf";
       # Show current keybindings
       "f2" =
-        "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${kittykrib}/bin/krib print\"";
+        "launch --type=overlay --hold --allow-remote-control sh -c \"kitten @ kitten kits/keybindings.py | ${krib}/bin/krib print\"";
+      # krib palette: actionable fzf palette over the live bindings.
+      # @active-kitty-window-id is the summoning (parent) window, so accepted
+      # window-class actions target it, not the overlay.
+      "f3" = "launch --type=overlay --allow-remote-control ${lib.getExe krib-palette} @active-kitty-window-id";
       "kitty_mod+f3" = "command_palette";
       # clod workflow cheatsheet, rendered from each aw-*.js meta.flags
       "f4" = ''launch --type=overlay sh -c "clod-cheat | less -R"'';
@@ -132,6 +171,10 @@ in
       env = "PATH=${config.home.profileDirectory}/bin:/run/current-system/sw/bin:$PATH";
       # Required to automate kitty
       allow_remote_control = "yes";
+      # Mouse summon for the krib palette (right-press while the program has
+      # not grabbed the mouse); the HM keybindings attrset only emits `map`
+      # lines, so this lives in settings.
+      mouse_map = "right press ungrabbed launch --type=overlay --allow-remote-control ${lib.getExe krib-palette} @active-kitty-window-id";
       # Dont update unless its via Nix
       update_check_interval = 0;
       # Take full control of keybindings

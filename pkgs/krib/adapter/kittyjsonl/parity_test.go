@@ -6,13 +6,14 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/shimmerjs/kittykrib/classify"
+	"github.com/shimmerjs/krib/classify"
+	"github.com/shimmerjs/krib/sheets"
 )
 
 // oldCategories is the hardcoded table from the old cheatsheet main.go,
 // verbatim. oldClassify reimplements its matching: regex OR exact list over
 // the raw action string, membership in every matching category, unmatched
-// falls through to other. classify.KittySheet must reproduce it exactly.
+// falls through to other. The embedded kitty sheet must reproduce it exactly.
 var oldCategories = []struct {
 	name    string
 	re      string
@@ -50,7 +51,11 @@ func oldClassify(action string) []string {
 func TestClassifyParityWithOldTable(t *testing.T) {
 	env := decodeFixture(t)
 
-	groups, err := classify.Classify(classify.KittySheet(), env)
+	sheet, err := sheets.Load("kitty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := classify.Classify(sheet, env)
 	if err != nil {
 		t.Fatal(err)
 	}

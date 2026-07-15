@@ -11,6 +11,8 @@
 #                             fast-path) for hosts with khudson enabled.
 #   - khudson-posture-<host>: RC + state-root posture pins on the rendered
 #                             khudson artifacts, same gate.
+#   - krib-sheets-<host>:     CUE-export drift guard for the committed
+#                             pkgs/krib/sheets JSON artifacts.
 { inputs }:
 
 let
@@ -147,7 +149,19 @@ let
            value = import ../homies/shimmerjs/home/khudson/nix/posture-check.nix { inherit pkgs; hmCfg = hmUserCfg; }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck ];
+  # CUE-export drift guard for pkgs/krib/sheets: the committed JSON artifacts
+  # (go:embed'd into krib) must equal `cue export` of their .cue sources.
+  # Host-independent content, discovered per host like every other builder.
+  mkKribSheetsCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+  in if builtins.pathExists ../pkgs/krib/sheets
+    then { inherit system; name = "krib-sheets-${hostname}";
+           value = import ./krib-sheets-check.nix { inherit pkgs; }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

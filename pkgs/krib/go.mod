@@ -1,4 +1,4 @@
-module github.com/shimmerjs/kittykrib
+module github.com/shimmerjs/krib
 
 go 1.24.2
 

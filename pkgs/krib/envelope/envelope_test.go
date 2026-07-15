@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shimmerjs/kittykrib/chord"
+	"github.com/shimmerjs/krib/chord"
 )
 
 func bindingsEnv(entries ...Entry) *Envelope {
@@ -194,5 +194,73 @@ func TestNamesRejectControlWhitespace(t *testing.T) {
 				t.Fatalf("Vet = %v, want error naming %s", err, tt.want)
 			}
 		})
+	}
+}
+
+// The additive extension: examples, structured flag columns, and the card
+// discriminator decode; existing envelopes (no new fields) are untouched.
+func TestDecodeAdditiveExtension(t *testing.T) {
+	in := `{
+	  "schemaVersion": 1,
+	  "kind": "cards",
+	  "groups": [{"name": "aw-review", "meta": {"description": "d", "examples": ["aw-review votes=5", "aw-review passes=3"]}}],
+	  "entries": [
+	    {"group": "aw-review", "term": "votes", "flag": {"short": "v", "type": "int", "default": "3", "range": "1-9", "help": "verifier quorum"}},
+	    {"group": "aw-review", "term": "example", "card": "1", "cmd": "aw-review votes=5"},
+	    {"group": "aw-review", "term": "example", "card": "2", "cmd": "aw-review passes=3"}
+	  ]
+	}`
+	env, warnings, err := Decode(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if got := env.Groups[0].Meta.Examples; len(got) != 2 || got[0] != "aw-review votes=5" {
+		t.Fatalf("examples = %v", got)
+	}
+	f := env.Entries[0].Flag
+	if f == nil || f.Short != "v" || f.Type != "int" || f.Default != "3" || f.Range != "1-9" || f.Help != "verifier quorum" {
+		t.Fatalf("flag = %+v", f)
+	}
+	if got := env.Entries[1].ID(env.Kind); got != "aw-review/example/1" {
+		t.Fatalf("card id = %q", got)
+	}
+}
+
+// Card disambiguation: same group+term with distinct cards vets clean, a
+// repeated card collides, a slashed card is rejected by name, and bindings
+// entries may not carry the new cards fields.
+func TestVetCardDisambiguation(t *testing.T) {
+	env := &Envelope{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindCards,
+		Entries: []Entry{
+			{Group: "g", Term: "example", Card: "1"},
+			{Group: "g", Term: "example", Card: "2"},
+		},
+	}
+	if _, err := env.Vet(); err != nil {
+		t.Fatalf("distinct cards should vet clean: %v", err)
+	}
+
+	env.Entries[1].Card = "1"
+	if _, err := env.Vet(); err == nil || !strings.Contains(err.Error(), "duplicate entry id") {
+		t.Fatalf("want duplicate id error, got %v", err)
+	}
+
+	env.Entries[1].Card = "a/b"
+	if _, err := env.Vet(); err == nil || !strings.Contains(err.Error(), `card "a/b"`) {
+		t.Fatalf("want error naming the slashed card, got %v", err)
+	}
+
+	b := bindingsEnv(Entry{Keys: key(nil, "a"), Cmd: "x", Card: "1"})
+	if _, err := b.Vet(); err == nil {
+		t.Fatal("bindings entry with a card should fail vet")
+	}
+	b = bindingsEnv(Entry{Keys: key(nil, "a"), Cmd: "x", Flag: &FlagCols{Short: "s"}})
+	if _, err := b.Vet(); err == nil {
+		t.Fatal("bindings entry with flag columns should fail vet")
 	}
 }

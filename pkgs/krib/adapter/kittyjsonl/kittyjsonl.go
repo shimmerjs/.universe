@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/shimmerjs/kittykrib/chord"
-	"github.com/shimmerjs/kittykrib/envelope"
+	"github.com/shimmerjs/krib/chord"
+	"github.com/shimmerjs/krib/envelope"
 )
 
 // Decode parses kitten JSONL into a vetted bindings envelope. Vet warnings
