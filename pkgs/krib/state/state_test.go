@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,15 +12,21 @@ import (
 	"github.com/shimmerjs/krib/envelope"
 )
 
-func bindingsEnv(cmd string) *envelope.Envelope {
+func binding(key, cmd string) envelope.Entry {
+	return envelope.Entry{Mode: "default", Keys: []chord.Chord{{Mods: []string{"cmd"}, Key: key}}, Cmd: cmd}
+}
+
+func envWith(entries ...envelope.Entry) *envelope.Envelope {
 	return &envelope.Envelope{
 		SchemaVersion: envelope.SchemaVersion,
 		Kind:          envelope.KindBindings,
 		Meta:          envelope.Meta{Sheet: "kitty"},
-		Entries: []envelope.Entry{
-			{Mode: "default", Keys: []chord.Chord{{Mods: []string{"cmd"}, Key: "w"}}, Cmd: cmd},
-		},
+		Entries:       entries,
 	}
+}
+
+func bindingsEnv(cmd string) *envelope.Envelope {
+	return envWith(binding("w", cmd))
 }
 
 func TestObserveTransitions(t *testing.T) {
@@ -52,6 +59,38 @@ func TestObserveTransitions(t *testing.T) {
 	e = f.Entries["default/cmd+w"]
 	if !e.Since.Equal(t2) || !e.FirstSeen.Equal(t0) {
 		t.Fatalf("changed entry = %+v, want since=t2 firstSeen=t0", e)
+	}
+}
+
+// Ids gone from the envelope are swept, not retained: lingering state would
+// resurrect a stale firstSeen (and read as a value change) on re-add. An
+// empty envelope is a degenerate scrape and sweeps nothing.
+func TestObserveSweepsAbsentIDs(t *testing.T) {
+	f := New()
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	f.Observe(envWith(binding("w", "close_window"), binding("t", "new_tab")), t0)
+	f.RecordUse("default/cmd+t", t0)
+
+	if !f.Observe(envWith(binding("w", "close_window")), t0.Add(time.Hour)) {
+		t.Fatal("sweep should be dirty")
+	}
+	if _, ok := f.Entries["default/cmd+t"]; ok {
+		t.Fatalf("absent id retained: %+v", f.Entries)
+	}
+	if _, ok := f.Entries["default/cmd+w"]; !ok {
+		t.Fatal("live id swept")
+	}
+
+	// unchanged envelope stays clean after the sweep
+	if f.Observe(envWith(binding("w", "close_window")), t0.Add(2*time.Hour)) {
+		t.Fatal("post-sweep observation should not be dirty")
+	}
+
+	if f.Observe(envWith(), t0.Add(3*time.Hour)) {
+		t.Fatal("empty envelope should not be dirty")
+	}
+	if len(f.Entries) != 1 {
+		t.Fatalf("empty envelope wiped state: %+v", f.Entries)
 	}
 }
 
@@ -100,6 +139,56 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		if strings.HasPrefix(de.Name(), ".krib-state-") {
 			t.Fatalf("stale temp file %s", de.Name())
 		}
+	}
+}
+
+// Concurrent instances (several kitty windows) serialize the load-modify-save
+// cycle on the lock sidecar: no accept increment is lost.
+func TestUpdateConcurrentWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "krib", "kitty.json")
+	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	const writers = 16
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := Update(path, func(f *File) bool {
+				f.Observe(bindingsEnv("close_window"), now)
+				f.RecordUse("default/cmd+w", now)
+				return true
+			})
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := Load(path).Entries["default/cmd+w"].Accepts; got != writers {
+		t.Fatalf("accepts = %d, want %d (lost updates)", got, writers)
+	}
+}
+
+// A clean cycle (fn reports no change) writes no statefile.
+func TestUpdateSkipsCleanRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "krib", "kitty.json")
+	f, err := Update(path, func(*File) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Entries) != 0 {
+		t.Fatalf("fresh file = %+v", f)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("clean cycle wrote the statefile: %v", err)
 	}
 }
 

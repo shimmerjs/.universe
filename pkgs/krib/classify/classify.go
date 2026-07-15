@@ -7,6 +7,8 @@ package classify
 import (
 	"fmt"
 	"regexp"
+	"strings"
+	"unicode"
 
 	"github.com/shimmerjs/krib/envelope"
 )
@@ -92,9 +94,13 @@ func (s Sheet) Rule(cmd string) *EntryRule {
 }
 
 // VetSheet validates a sheet config independent of any data: group set
-// coherence, RE2 patterns, sorter names, and exec vocabulary. Loaders call
-// it so config errors surface at load, not first use.
+// coherence, group name/key hazards, RE2 patterns, sorter names, and exec
+// vocabulary. Loaders call it so config errors surface at load, not first
+// use.
 func VetSheet(s Sheet) error {
+	if err := vetGroups(s.Name, s.Groups); err != nil {
+		return err
+	}
 	if _, err := Classify(s, &envelope.Envelope{}); err != nil {
 		return err
 	}
@@ -120,6 +126,54 @@ func VetSheet(s Sheet) error {
 		}
 	}
 	return nil
+}
+
+// nameReserved are the group-name runes that break downstream consumers:
+// "," is the list output's groups-column separator; "(", ")" and "\" break
+// the change-query fzf bind the name is spliced into; "'", "!", "^", "$"
+// and "|" are fzf extended-search operators, so the injected filter term
+// would not match the name literally.
+const nameReserved = `,()'!^$|\`
+
+// vetGroups hardens group names and filter keys against how they are
+// consumed: names feed the palette's groups column, the fzf group-filter
+// binds, and the case-insensitive --filter; keys become alt-<key> fzf binds.
+func vetGroups(sheet string, groups []GroupSpec) error {
+	names := make(map[string]string, len(groups))
+	keys := make(map[string]string, len(groups))
+	for _, g := range groups {
+		if g.Name == "" {
+			return fmt.Errorf("sheet %s: group with empty name", sheet)
+		}
+		for _, r := range g.Name {
+			switch {
+			case unicode.IsSpace(r) || unicode.IsControl(r):
+				return fmt.Errorf("sheet %s: group %q: name contains whitespace or a control character", sheet, g.Name)
+			case strings.ContainsRune(nameReserved, r):
+				return fmt.Errorf("sheet %s: group %q: name contains reserved character %q", sheet, g.Name, r)
+			}
+		}
+		folded := strings.ToLower(g.Name)
+		if prev, ok := names[folded]; ok {
+			return fmt.Errorf("sheet %s: groups %q and %q collide in the case-insensitive filters", sheet, prev, g.Name)
+		}
+		names[folded] = g.Name
+		if g.Key == "" {
+			continue
+		}
+		if len(g.Key) != 1 || !isKeyChar(g.Key[0]) {
+			return fmt.Errorf("sheet %s: group %q: filter key %q is not one ASCII letter or digit", sheet, g.Name, g.Key)
+		}
+		if prev, ok := keys[g.Key]; ok {
+			return fmt.Errorf("sheet %s: groups %q and %q share filter key %q", sheet, prev, g.Name, g.Key)
+		}
+		keys[g.Key] = g.Name
+	}
+	return nil
+}
+
+func isKeyChar(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 func vetExec(e *ExecSpec) error {

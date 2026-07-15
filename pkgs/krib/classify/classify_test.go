@@ -206,3 +206,44 @@ func TestVetSheet(t *testing.T) {
 		}
 	}
 }
+
+// Group names feed the palette's groups column, the fzf group-filter binds,
+// and the case-insensitive --filter; keys become alt-<key> binds. Hazardous
+// names and keys are load errors naming the sheet and group.
+func TestVetSheetGroupHardening(t *testing.T) {
+	sheet := func(gs ...GroupSpec) Sheet { return Sheet{Name: "h", Groups: gs} }
+	re := &Match{Re: "x"}
+
+	good := sheet(
+		GroupSpec{Name: "aw-review", Key: "r", Match: re},
+		GroupSpec{Name: "misc_2.0", Key: "M"},
+	)
+	if err := VetSheet(good); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := map[string]Sheet{
+		"empty name":      sheet(GroupSpec{Name: ""}),
+		"space in name":   sheet(GroupSpec{Name: "two words"}),
+		"tab in name":     sheet(GroupSpec{Name: "a\tb"}),
+		"comma in name":   sheet(GroupSpec{Name: "a,b"}),
+		"paren in name":   sheet(GroupSpec{Name: "win)"}),
+		"quote in name":   sheet(GroupSpec{Name: "don't"}),
+		"fzf operator":    sheet(GroupSpec{Name: "a|b"}),
+		"case-folded dup": sheet(GroupSpec{Name: "Windows", Match: re}, GroupSpec{Name: "windows"}),
+		"multi-char key":  sheet(GroupSpec{Name: "a", Key: "ab"}),
+		"non-alnum key":   sheet(GroupSpec{Name: "a", Key: ","}),
+		"duplicate key":   sheet(GroupSpec{Name: "a", Key: "w", Match: re}, GroupSpec{Name: "b", Key: "w"}),
+	}
+	for name, s := range bad {
+		if err := VetSheet(s); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+
+	// loud: the error names the sheet and the offending group
+	err := VetSheet(sheet(GroupSpec{Name: "a,b"}))
+	if err == nil || !strings.Contains(err.Error(), "sheet h") || !strings.Contains(err.Error(), `"a,b"`) {
+		t.Fatalf("error does not name sheet and group: %v", err)
+	}
+}

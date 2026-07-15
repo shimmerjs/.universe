@@ -14,6 +14,7 @@ import (
 	"github.com/shimmerjs/krib/classify"
 	"github.com/shimmerjs/krib/envelope"
 	"github.com/shimmerjs/krib/sheets"
+	"github.com/shimmerjs/krib/state"
 )
 
 // runExec resolves one accepted entry id against the session cache (--data;
@@ -174,19 +175,22 @@ func confirmOnTTY(label string) (bool, error) {
 	return confirm(tty, tty, label), nil
 }
 
-// recordUse bumps the accept count in the statefile; usage tracking never
-// blocks execution. The envelope is observed first so a fresh statefile gets
-// real value-hashes -- RecordUse alone would create a hashless entry that the
-// next list/print misreads as a value change.
+// recordUse bumps the accept count in the statefile, in one locked
+// load-modify-save cycle; usage tracking never blocks execution. The
+// envelope is observed first so a fresh statefile gets real value-hashes --
+// RecordUse alone would create a hashless entry that the next list/print
+// misreads as a value change.
 func recordUse(env *envelope.Envelope, id string) {
-	st, path := loadState(env)
-	if path == "" {
+	p, err := state.Path(env.Meta.Sheet)
+	if err != nil {
 		return
 	}
 	now := time.Now()
-	st.Observe(env, now)
-	st.RecordUse(id, now)
-	if err := st.Save(path); err != nil {
+	if _, err := state.Update(p, func(f *state.File) bool {
+		f.Observe(env, now)
+		f.RecordUse(id, now)
+		return true
+	}); err != nil {
 		fmt.Fprintln(os.Stderr, "krib: warning: statefile:", err)
 	}
 }

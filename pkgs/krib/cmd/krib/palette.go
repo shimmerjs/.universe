@@ -40,8 +40,7 @@ func runPalette(args []string) error {
 		return err
 	}
 	now := time.Now()
-	st, stPath := loadState(env)
-	observeAndSave(st, stPath, env, now)
+	st := observeState(env, now)
 	entries, err := buildList(env, sheet, st, listOpts{all: *all, recentWindow: 14 * 24 * time.Hour, now: now})
 	if err != nil {
 		return err

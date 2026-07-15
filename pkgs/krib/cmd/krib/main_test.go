@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,33 @@ func TestListRecentMarkers(t *testing.T) {
 		if le.changed {
 			t.Fatalf("entry %q marked outside the window", le.id)
 		}
+	}
+}
+
+// observeState persists observations through the locked cycle and sweeps
+// state for ids gone from the envelope.
+func TestObserveStatePersistsAndSweeps(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	env, err := decode("auto", strings.NewReader(kittenInput))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	observeState(env, now)
+	path := filepath.Join(dir, "krib", "kitty.json")
+	if got := len(state.Load(path).Entries); got != 2 {
+		t.Fatalf("persisted %d entries, want 2", got)
+	}
+
+	// one binding disappears: its state entry sweeps on the next observe
+	env.Entries = env.Entries[:1]
+	st := observeState(env, now.Add(time.Hour))
+	if _, ok := st.Entries["default/cmd+w"]; ok {
+		t.Fatal("absent id retained in the returned state")
+	}
+	if got := len(state.Load(path).Entries); got != 1 {
+		t.Fatalf("swept statefile holds %d entries, want 1", got)
 	}
 }
 

@@ -78,8 +78,7 @@ func runPrint(args []string) error {
 	if err != nil {
 		return err
 	}
-	st, stPath := loadState(env)
-	observeAndSave(st, stPath, env, time.Now())
+	observeState(env, time.Now())
 	groups, err := groupsFor(env, sheet)
 	if err != nil {
 		return err
@@ -112,8 +111,7 @@ func runList(args []string) error {
 		return err
 	}
 	now := time.Now()
-	st, stPath := loadState(env)
-	observeAndSave(st, stPath, env, now)
+	st := observeState(env, now)
 	entries, err := buildList(env, sheet, st, listOpts{
 		all: *all, recent: *recent, recentWindow: *window, now: now,
 	})
@@ -355,24 +353,25 @@ func decodeEnvelope(b []byte) (*envelope.Envelope, error) {
 	return env, err
 }
 
-// loadState resolves and loads the statefile for env's sheet; a resolution
-// failure degrades to in-memory state (empty path skips saves).
-func loadState(env *envelope.Envelope) (*state.File, string) {
-	p, err := state.Path(env.Meta.Sheet)
-	if err != nil {
-		return state.New(), ""
-	}
-	return state.Load(p), p
-}
-
-// observeAndSave folds the envelope into the statefile and rewrites it only
-// when something changed. Failures warn; observation never blocks output.
-func observeAndSave(st *state.File, path string, env *envelope.Envelope, now time.Time) {
-	if st.Observe(env, now) && path != "" {
-		if err := st.Save(path); err != nil {
+// observeState folds the envelope into the statefile for env's sheet in one
+// locked load-observe-save cycle (concurrent instances share the file).
+// Resolution or update failures warn and degrade to in-memory state;
+// observation never blocks output.
+func observeState(env *envelope.Envelope, now time.Time) *state.File {
+	if p, err := state.Path(env.Meta.Sheet); err == nil {
+		st, err := state.Update(p, func(f *state.File) bool {
+			return f.Observe(env, now)
+		})
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "krib: warning: statefile:", err)
 		}
+		if st != nil {
+			return st
+		}
 	}
+	st := state.New()
+	st.Observe(env, now)
+	return st
 }
 
 // groupsFor classifies bindings against the sheet config and groups cards by

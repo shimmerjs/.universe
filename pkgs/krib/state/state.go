@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/shimmerjs/krib/envelope"
@@ -97,12 +98,16 @@ func hashValue(e envelope.Entry) string {
 // Observe folds the envelope's current values in: an unseen id gets
 // firstSeen = since = now; a changed value-hash moves since (firstSeen
 // stays); an unchanged value is untouched. Ids absent from the envelope are
-// retained. Reports whether anything changed (callers skip the rewrite
-// otherwise).
+// swept: a lingering entry would resurrect a stale firstSeen (and read as a
+// value change) if the id ever came back. An empty envelope is a degenerate
+// scrape, not an emptied sheet -- it sweeps nothing. Reports whether anything
+// changed (callers skip the rewrite otherwise).
 func (f *File) Observe(env *envelope.Envelope, now time.Time) bool {
 	dirty := false
+	live := make(map[string]bool, len(env.Entries))
 	for _, e := range env.Entries {
 		id := e.ID(env.Kind)
+		live[id] = true
 		h := hashValue(e)
 		cur, ok := f.Entries[id]
 		switch {
@@ -113,6 +118,15 @@ func (f *File) Observe(env *envelope.Envelope, now time.Time) bool {
 			cur.Hash = h
 			cur.Since = now
 			f.Entries[id] = cur
+			dirty = true
+		}
+	}
+	if len(live) == 0 {
+		return dirty
+	}
+	for id := range f.Entries {
+		if !live[id] {
+			delete(f.Entries, id)
 			dirty = true
 		}
 	}
@@ -159,4 +173,52 @@ func (f *File) Save(path string) error {
 		return fmt.Errorf("rewrite statefile: %w", err)
 	}
 	return nil
+}
+
+// Lock takes a blocking exclusive flock on path's sidecar lock file
+// (path+".lock"), creating it and the state dir as needed. The sidecar,
+// not the statefile, holds the lock because Save replaces the statefile
+// inode on every rewrite. The returned func releases the lock.
+func Lock(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if err == nil {
+			break
+		}
+		if err != syscall.EINTR {
+			f.Close()
+			return nil, fmt.Errorf("lock statefile: %w", err)
+		}
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
+}
+
+// Update runs one locked load-modify-save cycle: fn mutates the loaded file
+// and reports whether it changed; a dirty file is rewritten before the lock
+// releases. Concurrent krib instances (several kitty windows) serialize here
+// instead of losing each other's read-modify-write. The loaded file is
+// returned for read-side reuse.
+func Update(path string, fn func(*File) bool) (*File, error) {
+	unlock, err := Lock(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	f := Load(path)
+	if fn(f) {
+		if err := f.Save(path); err != nil {
+			return f, err
+		}
+	}
+	return f, nil
 }

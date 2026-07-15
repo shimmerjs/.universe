@@ -61,6 +61,8 @@ func TestDecodeRejects(t *testing.T) {
 		"empty exec argv": `{"name": "x", "exec": {"run": "run"}, "groups": [{"name": "all"}]}`,
 		"empty rule":      `{"name": "x", "groups": [{"name": "all"}], "entries": [{"match": {}}]}`,
 		"two catch-alls":  `{"name": "x", "groups": [{"name": "a"}, {"name": "b"}]}`,
+		"hazardous name":  `{"name": "x", "groups": [{"name": "a,b", "match": {"re": "x"}}, {"name": "all"}]}`,
+		"dup filter key":  `{"name": "x", "groups": [{"name": "a", "key": "w", "match": {"re": "x"}}, {"name": "all", "key": "w"}]}`,
 	}
 	for name, in := range cases {
 		if _, err := Decode(strings.NewReader(in)); err == nil {
