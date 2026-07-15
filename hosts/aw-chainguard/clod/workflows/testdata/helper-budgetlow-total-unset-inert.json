@@ -1,0 +1,7 @@
+{
+  "script": "aw-research.js",
+  "kind": "helper",
+  "helper": "budgetLow",
+  "input": [{ "total": 0 }, 0.2],
+  "expect": false
+}

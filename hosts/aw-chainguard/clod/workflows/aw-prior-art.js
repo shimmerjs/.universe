@@ -102,6 +102,17 @@ function tallyVotes(vv, total) {
 function worstCaseAgents(passes, fanout, votes, cap, overhead) {
   return passes * (fanout + cap * votes) + overhead
 }
+// runtime budget guard: the phase-0 worst case is static, but real spend is
+// not. With a run budget set (budget.total), input-driven growth points stop
+// once budget.remaining() dips under RESERVE of the total, keeping the tail
+// for the synthesize stage (which must ALWAYS run). No budget set ->
+// remaining() is Infinity per the loop-until-budget contract, so the guard is
+// inert and the static ceilings above govern alone. Copied verbatim across
+// the aw-*.js with input-driven growth points.
+const BUDGET_RESERVE = 0.2
+function budgetLow(b, reserve) {
+  return !!(b && b.total) && b.remaining() < b.total * reserve
+}
 const stock = flags.subagents === 'stock'
 
 const RESEARCHER = stock ? undefined : 'researcher'
@@ -210,7 +221,10 @@ if (flags['verify-scope'] === 'none') {
 } else {
   const targets = flags['verify-scope'] === 'all' ? fresh : fresh.filter(c => c.loadBearing)
   unverifiedPool.push(...fresh.filter(c => !targets.includes(c)))   // out of scope: never checked
-  const { take, over } = capClaims(targets, CAP)
+  // budget-derived ceiling: a low budget cuts the verify cap to 0 (loud, -> UNVERIFIED).
+  const vcap = budgetLow(budget, BUDGET_RESERVE) ? 0 : CAP
+  if (vcap < CAP) log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left -- verify cap cut to 0')
+  const { take, over } = capClaims(targets, vcap)
   if (over.length) log('verify cap: verified ' + take.length + '/' + targets.length + ', ' + over.length + ' over cap -> UNVERIFIED')
   overCap = over.length
   checkedCount = take.length
@@ -241,7 +255,7 @@ const basisNote = flags['verify-scope'] === 'none'
   : verified.length
     ? 'VERIFIED claims each survived a ' + flags.votes + '-skeptic refutation quorum; UNVERIFIED claims were never checked (out of verify scope, over cap, or verifier crash) -- usable for breadth, but label any load-bearing use of them as unverified'
     : checkedCount === 0
-      ? 'NOTHING was in verify scope (no claim was marked load-bearing), so no claim was ever checked: every claim below is UNVERIFIED; label the whole report unverified'
+      ? 'NOTHING was actually checked (no claim in verify scope, or the budget guard cut the cap to 0): every claim below is UNVERIFIED; label the whole report unverified'
       : 'NO claim survived verification: every claim below is UNVERIFIED; label the whole report unverified'
 const report = await named('synthesize',
   'Write a cited report answering: ' + prompt + '\nBasis: ' + basisNote + '\n' +

@@ -104,6 +104,17 @@ function tallyVotes(vv, total) {
 function worstCaseAgents(passes, fanout, votes, cap, overhead) {
   return passes * (fanout + cap * votes) + overhead
 }
+// runtime budget guard: the phase-0 worst case is static, but real spend is
+// not. With a run budget set (budget.total), input-driven growth points stop
+// once budget.remaining() dips under RESERVE of the total, keeping the tail
+// for the synthesize stage (which must ALWAYS run). No budget set ->
+// remaining() is Infinity per the loop-until-budget contract, so the guard is
+// inert and the static ceilings above govern alone. Copied verbatim across
+// the aw-*.js with input-driven growth points.
+const BUDGET_RESERVE = 0.2
+function budgetLow(b, reserve) {
+  return !!(b && b.total) && b.remaining() < b.total * reserve
+}
 // design= is path-or-unset: set -> the file IS the design (kind=doc); unset -> the
 // prompt is the design problem (kind=proposed) and must be a real problem statement.
 function designKind(design, prompt) {
@@ -235,7 +246,10 @@ const fresh = found.filter(f => {
 log('design-review: ' + found.length + ' flaws, ' + fresh.length + ' fresh' + (codexDown ? ' (codex leg DOWN)' : ''))
 
 phase('Verify')
-const { take, over } = capClaims(fresh, VERIFY_CAP)
+// budget-derived ceiling: a low budget cuts the verify cap to 0 (loud, -> UNVERIFIED).
+const vcap = budgetLow(budget, BUDGET_RESERVE) ? 0 : VERIFY_CAP
+if (vcap < VERIFY_CAP) log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left -- verify cap cut to 0')
+const { take, over } = capClaims(fresh, vcap)
 if (over.length) log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
 const judged = (await parallel(take.map(f => () =>
   parallel(Array.from({ length: flags.votes }, (_, v) => () =>

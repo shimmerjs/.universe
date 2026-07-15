@@ -96,6 +96,17 @@ function capClaims(list, cap) {
 function worstCaseAgents(passes, fanout, votes, cap, overhead) {
   return passes * (fanout + cap * votes) + overhead
 }
+// runtime budget guard: the phase-0 worst case is static, but real spend is
+// not. With a run budget set (budget.total), input-driven growth points stop
+// once budget.remaining() dips under RESERVE of the total, keeping the tail
+// for the synthesize stage (which must ALWAYS run). No budget set ->
+// remaining() is Infinity per the loop-until-budget contract, so the guard is
+// inert and the static ceilings above govern alone. Copied verbatim across
+// the aw-*.js with input-driven growth points.
+const BUDGET_RESERVE = 0.2
+function budgetLow(b, reserve) {
+  return !!(b && b.total) && b.remaining() < b.total * reserve
+}
 // sub-quorum -> UNVERIFIED (not kept, not dropped); ties -> REFUTED (refuted >= confirmed),
 // per the workflows/CLAUDE.md reducer rule; judged over actual votes returned.
 function tallyVotes(vv, total) {
@@ -160,6 +171,10 @@ if (worst > AGENT_BUDGET) {
 const seen = new Set(), confirmed = [], unverified = []
 let refuted = 0, failed = 0, overCap = 0
 for (let round = 0; round < flags.passes; round++) {
+  if (budgetLow(budget, BUDGET_RESERVE)) {
+    log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left (< ' + BUDGET_RESERVE * 100 + '% reserve) -- stopping search rounds, synthesizing from what we have')
+    break
+  }
   phase('Search')
   const thunks = Array.from({ length: flags.fanout }, (_, i) => {
     const mode = flags.breadth[i % flags.breadth.length]
@@ -186,7 +201,13 @@ for (let round = 0; round < flags.passes; round++) {
 
   if (flags.verify === 0) { unverified.push(...fresh); continue }  // verify disabled: unverified, not laundered into confirmed
   phase('Verify')
-  const { take, over } = capClaims(fresh, CAP)
+  // budget-derived ceiling: a low budget cuts this round's verify cap to 0 (loud, -> UNVERIFIED).
+  const vcap = budgetLow(budget, BUDGET_RESERVE) ? 0 : CAP
+  if (vcap < CAP) log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left -- verify cap cut to 0 this round')
+  // cited claims verify first when the cap truncates (stable within each group,
+  // so the codex head-prepend survives -- codex claims all carry sources).
+  const ordered = fresh.filter(c => c.source).concat(fresh.filter(c => !c.source))
+  const { take, over } = capClaims(ordered, vcap)
   if (over.length) {
     log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
     unverified.push(...over)
