@@ -5,6 +5,23 @@ status: proposed. produced by a prior-art workflow (93 agents; 3-skeptic refute-
 user steer (verbatim, 2026-07-14): "figure out if its plausible to build out all of the functionality of the logitech app (esp in terms of input functionality [dpi, etc]) purely via our own substrate (hid bus and go toolchain/app). end goal is no logioptions app or anything in the family, entirely self managed. battery pct should have specialized icon in bottom row of khud (same one with home/kb/clod/caffeine/etc)"
 
 
+## logiretch-0 SPIKE RESULT (2026-07-15, on the real MX Master 4 over direct BT) -- GO
+
+Ran `khudson-touchd logiretch-probe` against the physical device (pid 0xB042, BLE, serial 7D724EEB). Every conditional-GO gate cleared, and the three extrapolations the spike existed to check are now confirmed on-device, NOT inferred from Bolt captures:
+
+- **Access:** non-exclusive open of 0xFF43/0x0202 succeeded; HID++ 2.0 root ping on devIdx 0xFF returned protocol 4.5. Topology is **0x11-only** (no short/long node pair) -- the receiver two-node demux machinery is confirmed MOOT.
+- **Feature table:** 45 features, all 10 expect-PRESENT and all 6 expect-ABSENT assertions hold (0 missing, 0 unexpected). Confirmed: **0x2111 SMART_SHIFT_ENHANCED present, 0x2110 absent** (the doc's correction is real on-device); **0x8100 ONBOARD_PROFILES and 0x1C00 absent** -> host-side re-assert (phase 5b) is the ONLY persistence, as designed; 0x1004 UNIFIED_BATTERY is **v5**; 0x19B0 HAPTIC + 0x19C0 FORCE_SENSING_BUTTON + 0x2201 ADJUSTABLE_DPI v2 (0x2202 absent) all present.
+- **Battery:** 0x1004 getStatus decoded (75%, discharging, ext-power 0) -- the khud icon's data source works.
+- **Numbered write:** leading-0x11 SetReport round-trips (what the unnumbered moonlander write could not prove).
+- **1B04:** 9 controls; CID 0x01A0 (Actions Ring/force, task 0x0109) and 0x00C3 (gesture button) both present and divertable.
+
+CAVEATS (do not paper over):
+- **Battery PUSH not observed.** The 10s listen saw 0 unsolicited HID++ frames (312 mouse reports on 0x02, so the device was active). SoC did not change in the window, so nothing pushed -- push-capability is UNPROVEN, not refuted. Build the icon on the bounded getStatus poll (the proven path); treat push as an optimization to confirm later (needs a charge-state change to trigger).
+- **Options+ is currently installed and active.** 1 foreign-swId HID++ frame seen (coexistence held -- our swId-matched requests still completed), and controls 0x53/0x56/0xC3/0xC4/0x01A0 are ALREADY diverted by it. This is the migration hazard the design flagged: on takeover after Options+ is removed, the logiretch module must reset 1B04 diverts/remaps to a known baseline. The 0x01A0/0x00C3 "diverted" state here is Options+'s, not ours.
+- One transient getFeatureID write failure mid-walk (feature idx 0x1A, a hidden/engineering feature; error 0xE00002BC) -- likely shared-handle contention with Options+; the walk recovered. All load-bearing features resolved.
+
+Net: transport, battery, and the feature model are confirmed; the battery module (phase 5) is unblocked to build against facts. Push-freshness and the divert-reset-on-takeover are the two items to carry forward.
+
 ## Top-line answer
 
 **Yes -- the entire Options+ family is replaceable by the khudson substrate (touchd logiretch module + host-side consumers), with a short list of accepted app-only losses, conditional on the logiretch-0 spike.** Every daily-driver capability is either device-side HID++ 2.0 (proven on this exact device by logiops/Solaar prior art [U84][U89]), macOS-native (pointer accel, scroll speed, thumbwheel pan [U93][U33]), or host-reimplementable inside TCC grants khudson already holds (Input Monitoring in touchd, Accessibility in the khudson bus -- zero new prompts [U96]). The access mechanism (userland hidapi opening the 0xFF43 vendor collection over direct BT on macOS) is double-sourced: Solaar PR #2730, merged 2025-01-01, tested MX Master 3S + MX Keys [14][U109], plus OpenLogi as an independent shipping macOS replacement [U101, unverified]. What nobody anywhere has done is **MX Master 4 + macOS + direct BLE specifically** -- all three public MX4 feature dumps are Bolt-receiver captures [5][U77][U87] -- so the design doc's "conditional-GO pending one-device probe" (magicbus-design.md:80) stands and must not be upgraded by this research.
