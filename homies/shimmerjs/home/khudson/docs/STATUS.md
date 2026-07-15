@@ -107,11 +107,10 @@ The 07-10 batch:
 - Spool hygiene: CLOSED 07-15 (spool_version stamp on every hook
   write, legacy unstamped files tolerated; Sweep prunes age +
   foreign-version at session end and bus boot, never per-tick).
-- Open hazard (edge-host.md, live-probed 07-10): armed
-  no-modifier bottom-right hot corner (start screensaver) +
-  screensaver idleTime 600 can blank the HUD from an Edge-glass
-  corner tap; caffeinate does not block user-triggered
-  screensavers. Fix never landed anywhere.
+- Screensaver blank hazard: CLOSED 07-15 per the edge-host.md
+  plan (wvous-br-corner disarmed + mru-spaces pinned in
+  system.defaults.dock; idleTime zeroed via -currentHost
+  activation). Effective at the next switch + Dock restart.
 
 ## Backlog (dials and batches)
 
