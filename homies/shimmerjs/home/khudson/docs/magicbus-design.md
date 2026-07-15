@@ -1,6 +1,6 @@
-# hidbus -- a modular hid device bus (design)
+# magicbus -- a modular hid device bus (design)
 
-status: phases 1-2 IMPLEMENTED (committed on clod-khudson-hardening, 2026-07-14: touchd module registry, central arrival scanner, -config CUE->JSON, universe.home.hidbus HM module in nix/hidbus.nix -- signingIdentity/touchdPkgs/install/plist anchors below that cite module.nix now live there). Phases 3-5 remain proposed. Original design produced by a 3-candidate design workflow (12 agents, 36 stress flaws) plus a follow-up stress pass; claims file:line-grounded against the tree as of 2026-07-14 (pre-extraction line refs).
+status: phases 1-2 IMPLEMENTED (committed on clod-khudson-hardening, 2026-07-14: touchd module registry, central arrival scanner, -config CUE->JSON, universe.home.magicbus HM module in nix/magicbus.nix -- signingIdentity/touchdPkgs/install/plist anchors below that cite module.nix now live there). Phases 3-5 remain proposed. Original design produced by a 3-candidate design workflow (12 agents, 36 stress flaws) plus a follow-up stress pass; claims file:line-grounded against the tree as of 2026-07-14 (pre-extraction line refs).
 
 ## problem
 
@@ -11,7 +11,7 @@ four requirements:
 3. logitech is coming: HID++ is bidirectional request/response over the same handles that stream input, and a Unifying/Bolt receiver multiplexes several logical devices over one node pair.
 4. the Input Monitoring TCC grant keys on binary path + signing identity (nix/module.nix:37, :273-277; install-script.nix:60-73 re-signs the same identity on every rebuild without re-prompting). grant continuity is worth real design distortion.
 
-## recommendation: hidbus-in-place
+## recommendation: magicbus-in-place
 
 keep the khudson-touchd binary, identity, install path, and launchd label exactly as they are -- TCC cost zero -- and modularize inside it. candidate A's skeleton with five repairs stolen from B, plus four grafts from C (below). the daemon's hardwired three-goroutine fan-in (touchd/daemon.go:69-98) becomes a module registry: edge, moonlander, logi.
 
@@ -69,9 +69,9 @@ per-host module config authored in CUE, vetted and exported to plain JSON at nix
 
 ## packaging
 
-extract `universe.home.hidbus`, a sibling home-manager module owning everything touchd-scoped: the derivation (module.nix:81-93), signingIdentity + touchdPkgs options (:273-284), install activation (:415-425), agent plist/launcher (:165-206), state dirs, kickstart marker (:449-452), rendered config, and the shipped standalone consumer. khudson's module requires hidbus with edge+moonlander enabled.
+extract `universe.home.magicbus`, a sibling home-manager module owning everything touchd-scoped: the derivation (module.nix:81-93), signingIdentity + touchdPkgs options (:273-284), install activation (:415-425), agent plist/launcher (:165-206), state dirs, kickstart marker (:449-452), rendered config, and the shipped standalone consumer. khudson's module requires magicbus with edge+moonlander enabled.
 
-INVARIANT (was implicit, now stated): the identity string `khudson-touchd` also signs khudson itself -- the Accessibility TCC client (module.nix:49-50, :383-392). it is single-sourced in hidbus, referenced by khudson, never renamed, never duplicated-divergent; the cert is never deleted while any host runs khudson. fresh keyboard-only hosts inherit the imperative precondition: the GUI keychain cert bootstrap (module.nix:261-272) must precede the first switch or activation aborts at codesign (install-script.nix:68 under set -e).
+INVARIANT (was implicit, now stated): the identity string `khudson-touchd` also signs khudson itself -- the Accessibility TCC client (module.nix:49-50, :383-392). it is single-sourced in magicbus, referenced by khudson, never renamed, never duplicated-divergent; the cert is never deleted while any host runs khudson. fresh keyboard-only hosts inherit the imperative precondition: the GUI keychain cert bootstrap (module.nix:261-272) must precede the first switch or activation aborts at codesign (install-script.nix:68 under set -e).
 
 ## logi module (hidpp) -- DECIDED: direct-Bluetooth first, MX Master 4, battery leads
 
@@ -104,7 +104,7 @@ Direct BLE is a SINGLE vendor node, pure HID++ 2.0 -- so the receiver two-node m
 
 ## phases (each independently deployable)
 
-1. **module registry + hidbus HM module + kbtop.** requirement 1 lands whole: a khudson-less host runs the daemon with only the moonlander module, and a NAMED consumer ships with it -- kbtop, a terminal moonlander viewer reusing khudson/internal/keyboard (board/geometry/matrix + keymappdb/oryx) with a keys.sock dial loop patterned on bus/keys.go:25-44 plus a --raw ndjson tail. a bound socket with zero subscribers is packaging theater (the fatal that killed both other candidates as-written). Edge hosts behaviorally unchanged.
+1. **module registry + magicbus HM module + kbtop.** requirement 1 lands whole: a khudson-less host runs the daemon with only the moonlander module, and a NAMED consumer ships with it -- kbtop, a terminal moonlander viewer reusing khudson/internal/keyboard (board/geometry/matrix + keymappdb/oryx) with a keys.sock dial loop patterned on bus/keys.go:25-44 plus a --raw ndjson tail. a bound socket with zero subscribers is packaging theater (the fatal that killed both other candidates as-written). Edge hosts behaviorally unchanged.
 2. **central arrival scanner.** absent-device cost drops to one capped scan for all waiting modules; enumerate race closed. daemon-internal only.
 3. **IOKit matching-callback shim (cgo) -- OPTIONAL, deferred.** phase 2 already gets steady-state absent cost to ~0: a bound-but-idle socket is free, and the central scanner is ONE cheap `hid.Enumerate` per 30s shared across all absent modules. So this phase does NOT buy steady-state cost -- it buys REATTACH LATENCY (instant device-arrival vs up-to-30s on the capped poll). Ship it only if up-to-30s to notice a re-dock / re-pair is unacceptable. Keeping it optional removes the design's one unverified feasibility item (a second IOHIDManager coexisting with go-hid's) from the critical path.
 4. **broadcaster v2 + Commander.** dual-queue writer, id-correlated requests, retained lines, in-flight cap. also the seam for a moonlander command surface later (oryx protocol: layer set/lock, RGB) with no further transport work.
@@ -113,7 +113,7 @@ Direct BLE is a SINGLE vendor node, pure HID++ 2.0 -- so the receiver two-node m
 ## rejected
 
 - **A as written** (grow touchd, consumers frozen): FATAL -- names no consumer for the keyboard-only host; keys.sock's complete consumer chain today is bus keyLoop -> dock kb widget, absent by definition there. typing works without the daemon; the vendor channel is a visualization/command feed (moonlander.go:1-9). shipping it would be a TCC-granted daemon fanning events to nobody.
-- **B (hidbusd re-platform)**: same fatal (its only designed client is the khudson-side busclient), plus a re-prompt + new cert bootstrap + protocol + migration choreography that buys events nobody consumes. its good mechanisms (arrival env, demux, dual-queue, committed cgo spike) are stolen above.
+- **B (magicbusd re-platform)**: same fatal (its only designed client is the khudson-side busclient), plus a re-prompt + new cert bootstrap + protocol + migration choreography that buys events nobody consumes. its good mechanisms (arrival env, demux, dual-queue, committed cgo spike) are stolen above.
 - **C (feature bus)**: stressed separately after the first review truncated it. same standalone-consumer fatal (its own claims concede the thin client is "enabled, not shipped"); logitech lenses found the cross-node reply hazard unhandled and replies evictable; migration forces the proven gesture hot path through a brand-new single-socket read side. its four good mechanisms are grafted above; the feature taxonomy itself buys nothing once logi.sock carries per-device ids -- receiver multiplexing is 6 id values, and cross-topic aggregation is a topology fact not worth the taxonomy seam churn.
 
 ## what gets worse

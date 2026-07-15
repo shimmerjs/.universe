@@ -1,6 +1,6 @@
-# hidbus: the modular HID daemon (khudson-touchd) as its own home-manager
+# magicbus: the modular HID daemon (khudson-touchd) as its own home-manager
 # module, so a keyboard-only host can run the Moonlander source without the
-# HUD stack (hidbus-design.md). Owns everything touchd-scoped: the
+# HUD stack (magicbus-design.md). Owns everything touchd-scoped: the
 # derivation, the out-of-store signed install, the launchd agent, the
 # rendered -config JSON, and the kickstart markers. The binary name, install
 # path, launchd label, and signing identity are FROZEN -- the Input
@@ -13,7 +13,7 @@
   ...
 }:
 let
-  cfg = config.universe.home.hidbus;
+  cfg = config.universe.home.magicbus;
 
   # Same state root khudson uses: the socket paths (touch.sock, keys.sock)
   # are a frozen contract with the bus, docks, and kuiboard.
@@ -59,8 +59,8 @@ let
   # encoding/json only -- cuelang.org/go must NOT enter the TCC binary, its
   # init zeroes stdlib log flags). The daemon fails fast on a bad file, so a
   # keyboard-only host can never silently reinstate a perpetual Edge poll.
-  hidbusConfigValues = pkgs.writeText "hidbus-config-values.cue" ''
-    package hidbus
+  magicbusConfigValues = pkgs.writeText "magicbus-config-values.cue" ''
+    package magicbus
 
     config: modules: {
       edge:       ${lib.boolToString cfg.modules.edge}
@@ -73,8 +73,8 @@ let
         nativeBuildInputs = [ pkgs.cue ];
       }
       ''
-        cue vet -c ${./hidbus-config.cue} ${hidbusConfigValues}
-        cue export ${./hidbus-config.cue} ${hidbusConfigValues} -e config --out json > $out
+        cue vet -c ${./magicbus-config.cue} ${magicbusConfigValues}
+        cue export ${./magicbus-config.cue} ${magicbusConfigValues} -e config --out json > $out
       '';
 
   # Reinstall marker (touched by install-script.nix's reinstall branch only)
@@ -122,8 +122,8 @@ let
   );
 in
 {
-  options.universe.home.hidbus = {
-    enable = lib.mkEnableOption "hidbus HID daemon (khudson-touchd)";
+  options.universe.home.magicbus = {
+    enable = lib.mkEnableOption "magicbus HID daemon (khudson-touchd)";
 
     # touchd is signed with a persistent identity from the login
     # keychain, NOT ad-hoc (`--sign -`), because ad-hoc = per-build cdhash =
@@ -172,11 +172,11 @@ in
     assertions = [
       {
         assertion = cfg.modules.edge || cfg.modules.moonlander;
-        message = "universe.home.hidbus: enable at least one of modules.edge / modules.moonlander (the daemon exits nonzero on an empty module set).";
+        message = "universe.home.magicbus: enable at least one of modules.edge / modules.moonlander (the daemon exits nonzero on an empty module set).";
       }
     ];
 
-    home.activation.hidbusRuntimeDirs = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    home.activation.magicbusRuntimeDirs = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       # -m 700 every time: BSD install -d chmods a pre-existing directory to
       # its default 0755, so omitting the mode RE-OPENS the state root (and
       # its sockets) to world-read on every switch
@@ -187,7 +187,7 @@ in
     # with the persistent identity when the store source changed OR the
     # installed signature no longer verifies (install-script.nix; the verify
     # runs on every activation). The .touchd-updated marker tells
-    # hidbusKickstart whether a kickstart is owed, so the script only touches
+    # magicbusKickstart whether a kickstart is owed, so the script only touches
     # it on the reinstall branch.
     #
     # stamp = store path + signing recipe: a changed codesign invocation
@@ -207,7 +207,7 @@ in
     # Keeps its khudson-era name: khudson's khudsonAgents step orders after
     # it by name, and existing installs keep their stamp path.
     home.activation.khudsonTouchdInstall =
-      lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "hidbusRuntimeDirs" ]
+      lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "magicbusRuntimeDirs" ]
         ''
           run ${binInstallScript}/bin/khudson-bin-install \
             "${khudson-touchd}/bin/khudson-touchd" \
@@ -224,31 +224,31 @@ in
     # stays byte-identical. Plist bootout/reinstall/bootstrap only on
     # change, plus a bootstrap-if-unloaded repair leg so a hand-booted-out
     # agent comes back.
-    home.activation.hidbusAgents =
+    home.activation.magicbusAgents =
       lib.hm.dag.entryBetween
-        [ "hidbusKickstart" ]
+        [ "magicbusKickstart" ]
         [
           "setupLaunchAgents"
           "khudsonTouchdInstall"
         ]
         ''
           run install -d -m 700 "${agentsDir}"
-          hidbusAgentsUid=$(id -u)
+          magicbusAgentsUid=$(id -u)
           run install -m 755 "${touchdLauncher}" "${launcherPath}"
           if ! /usr/bin/cmp -s "${touchdPlist}" "${plistPath}"; then
-            run /bin/launchctl bootout "gui/$hidbusAgentsUid/${agentLabel}" 2>/dev/null || true
+            run /bin/launchctl bootout "gui/$magicbusAgentsUid/${agentLabel}" 2>/dev/null || true
             run install -m 444 "${touchdPlist}" "${plistPath}"
-            run /bin/launchctl bootstrap "gui/$hidbusAgentsUid" "${plistPath}" || true
-          elif ! /bin/launchctl print "gui/$hidbusAgentsUid/${agentLabel}" > /dev/null 2>&1; then
-            run /bin/launchctl bootstrap "gui/$hidbusAgentsUid" "${plistPath}" || true
+            run /bin/launchctl bootstrap "gui/$magicbusAgentsUid" "${plistPath}" || true
+          elif ! /bin/launchctl print "gui/$magicbusAgentsUid/${agentLabel}" > /dev/null 2>&1; then
+            run /bin/launchctl bootstrap "gui/$magicbusAgentsUid" "${plistPath}" || true
           fi
         '';
 
     # A config change owes a kickstart but NOT a reinstall+re-sign: the
     # install stamp only tracks binary + recipe, so the rendered config gets
     # its own hash marker, written before the kickstart leg reads it.
-    home.activation.hidbusConfigStamp =
-      lib.hm.dag.entryBetween [ "hidbusKickstart" ] [ "hidbusRuntimeDirs" ] ''
+    home.activation.magicbusConfigStamp =
+      lib.hm.dag.entryBetween [ "magicbusKickstart" ] [ "magicbusRuntimeDirs" ] ''
         if [ "$(cat "${touchdConfigStamp}" 2>/dev/null || true)" != "${touchdConfig}" ]; then
           run touch "${touchdConfigMarker}"
           [ -n "''${DRY_RUN:-}" ] || printf %s "${touchdConfig}" > "${touchdConfigStamp}"
@@ -259,11 +259,11 @@ in
     # binary or new config). The TCC grant survives the restart because
     # path + signing identity are stable (M1). Ordered before khudsonRestart
     # (when present) to keep the old touchd-first restart sequence.
-    home.activation.hidbusKickstart =
-      lib.hm.dag.entryBetween [ "khudsonRestart" ] [ "hidbusAgents" ] ''
+    home.activation.magicbusKickstart =
+      lib.hm.dag.entryBetween [ "khudsonRestart" ] [ "magicbusAgents" ] ''
         if [ -e "${touchdUpdatedMarker}" ] || [ -e "${touchdConfigMarker}" ]; then
-          hidbusUid=$(id -u)
-          run /bin/launchctl kickstart -k "gui/$hidbusUid/${agentLabel}" || true
+          magicbusUid=$(id -u)
+          run /bin/launchctl kickstart -k "gui/$magicbusUid/${agentLabel}" || true
           run rm -f "${touchdUpdatedMarker}" "${touchdConfigMarker}"
         fi
       '';

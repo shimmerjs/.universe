@@ -1,7 +1,7 @@
 # khudson home-manager module, imported host-scoped by
 # hosts/aw-chainguard/default.nix (the Edge host is the only consumer)
 # behind universe.home.khudson.enable; needs the one-time signing cert
-# bootstrap (hidbus.nix, which owns the shared signing identity and the
+# bootstrap (magicbus.nix, which owns the shared signing identity and the
 # touchd daemon -- khudson requires it with both sources enabled). khudson
 # deps fetch via vendorHash (no committed vendor tree); dev lifecycle runs
 # in nix-shell from the khudson dir (shell.nix -> nix/devshell.nix).
@@ -13,7 +13,7 @@
 }:
 let
   cfg = config.universe.home.khudson;
-  hidbus = config.universe.home.hidbus;
+  magicbus = config.universe.home.magicbus;
 
   # Runtime state root: macOS reaps /private/tmp entries idle
   # >~3 days, so no sockets or spools live there. Layout (three-process
@@ -38,10 +38,10 @@ let
   # Accessibility TCC client, and a store-path client re-prompts on every
   # rebuild. hud-launcher execs this path too so the dock (spawned via
   # os.Executable) shares the stable identity. The identity string is
-  # single-sourced in hidbus (it signs touchd too); referenced, never
+  # single-sourced in magicbus (it signs touchd too); referenced, never
   # duplicated.
   khudsonInstall = "${appSupport}/bin/khudson";
-  khudsonSignRecipe = "sign-v1:${hidbus.signingIdentity}";
+  khudsonSignRecipe = "sign-v1:${magicbus.signingIdentity}";
 
   # The verify+reinstall logic for both out-of-store installs, extracted so
   # the khudson-bininstall flake check (install-check.nix) exercises the
@@ -171,7 +171,7 @@ let
       )
     );
 
-  # The input daemon (touchd) is hidbus's agent now (hidbus.nix); it owns
+  # The input daemon (touchd) is magicbus's agent now (magicbus.nix); it owns
   # the Input Monitoring TCC grant and emits contact frames on touch.sock
   # and Moonlander key events on keys.sock.
   agentCommands = {
@@ -220,13 +220,13 @@ let
   };
 in
 {
-  imports = [ ./hidbus.nix ];
+  imports = [ ./magicbus.nix ];
 
   options.universe.home.khudson = {
     enable = lib.mkEnableOption "khudson Edge HUD";
 
-    # The signing identity + touchd daemon options moved to hidbus.nix
-    # (universe.home.hidbus), the single source for both.
+    # The signing identity + touchd daemon options moved to magicbus.nix
+    # (universe.home.magicbus), the single source for both.
 
     # The claude-sessions spool is the only khudson piece that touches the
     # clod config (it contributes claude-code hooks). Split behind its own
@@ -251,18 +251,18 @@ in
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
     # The HUD needs both HID sources feeding the bus: touch.sock (edge) and
-    # keys.sock (moonlander) come from hidbus's daemon. mkDefault so a host
+    # keys.sock (moonlander) come from magicbus's daemon. mkDefault so a host
     # could still override explicitly, with the assertion catching a cut
     # that would silently starve the bus.
-    universe.home.hidbus = {
+    universe.home.magicbus = {
       enable = lib.mkDefault true;
       modules.edge = lib.mkDefault true;
       modules.moonlander = lib.mkDefault true;
     };
     assertions = [
       {
-        assertion = hidbus.enable && hidbus.modules.edge && hidbus.modules.moonlander;
-        message = "universe.home.khudson.enable requires universe.home.hidbus with modules.edge and modules.moonlander enabled: the bus consumes touch.sock and keys.sock.";
+        assertion = magicbus.enable && magicbus.modules.edge && magicbus.modules.moonlander;
+        message = "universe.home.khudson.enable requires universe.home.magicbus with modules.edge and modules.moonlander enabled: the bus consumes touch.sock and keys.sock.";
       }
     ];
 
@@ -313,15 +313,15 @@ in
 
     # --- ordered activation pipeline, DAG-encoded ---
     # config flip (linkGeneration, implicit)
-    #   -> khudsonRuntimeDirs (+ hidbusRuntimeDirs, hidbus.nix)
-    #   -> khudsonBinInstall + khudsonTouchdInstall (hidbus.nix)
+    #   -> khudsonRuntimeDirs (+ magicbusRuntimeDirs, magicbus.nix)
+    #   -> khudsonBinInstall + khudsonTouchdInstall (magicbus.nix)
     #                             (explicitly before setupLaunchAgents, M1d)
     #   -> setupLaunchAgents      (home-manager: retires the old
     #                              org.nix-community.home.* agents)
     #   -> khudsonAgents          (module-owned: launchers + plists + bootstrap;
-    #                              hidbusAgents owns the touchd agent)
+    #                              magicbusAgents owns the touchd agent)
     #   -> khudsonRestart         (substrate -> bus -> hud-launcher, liveness-
-    #                              gated; touchd's kickstart is hidbusKickstart,
+    #                              gated; touchd's kickstart is magicbusKickstart,
     #                              ordered before this)
     # Accepted cost: any switch touching khudson restarts the whole HUD,
     # including keepAlive scraped panes.
@@ -336,7 +336,7 @@ in
       run install -m 644 "${btopConf}" "${btopCfgDir}/btop/btop.conf"
     '';
 
-    # khudson gets the same copy-out-and-sign as touchd (see hidbus.nix's
+    # khudson gets the same copy-out-and-sign as touchd (see magicbus.nix's
     # khudsonTouchdInstall for the staging discipline and the
     # no-hardened-runtime rationale, which applies verbatim: khudson links
     # nix-store dylibs too). No .updated
@@ -353,7 +353,7 @@ in
             "${khudsonInstall}" \
             "${appSupport}/bin/.khudson.store-path" \
             "${khudson} ${khudsonSignRecipe}" \
-            ${lib.escapeShellArg hidbus.signingIdentity}
+            ${lib.escapeShellArg magicbus.signingIdentity}
         '';
 
     # One ordered restart pipeline, each step gated on liveness of
@@ -375,7 +375,7 @@ in
       }
       khudsonUid=$(id -u)
 
-      # (touchd's conditional kickstart moved to hidbusKickstart, hidbus.nix,
+      # (touchd's conditional kickstart moved to magicbusKickstart, magicbus.nix,
       # ordered before this step.)
 
       # 1. scrape substrate. The agent clears its own stale socket pre-exec;
