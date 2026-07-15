@@ -5,10 +5,15 @@
 <title>khudson architecture</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
+  /* palette stolen from ~/dev/diagrams/style/theme.d2 (Chainguard-token
+     violet scale + paleslate/ash/purp accents), remapped onto a dark canvas:
+     N1 bg, N2 panels, B2 borders, N4/N3 text, B3 flow spine, B5 agents,
+     AA5 conflict/warn, AB5 spawn */
   :root {
-    --bg: #101318; --panel: #171b22; --edge: #2a303b;
-    --fg: #cfd6e0; --dim: #667082; --accent: #6fd3a4; --warn: #e8b45a;
-    --hl: #7aa7e8; --note: #9aa4b2; --tcc: #d38ad3;
+    --bg: #0D161C; --panel: #14003D; --edge: #4B3F72;
+    --fg: #D0CFEE; --dim: #72668B; --accent: #D1E0CD; --warn: #ff9fc8;
+    --hl: #8566db; --note: #BCC4DB; --tcc: #cacdff;
+    --hw: #BCC4DB; --agent: #cbb3ff; --app: #C0A9B0;
   }
   body { background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, sans-serif;
          max-width: 1100px; margin: 2rem auto 6rem; padding: 0 1.25rem; }
@@ -21,22 +26,26 @@
   svg text.lbl { fill: var(--note); font-size: 10.5px; }
   svg text.warnt { fill: var(--warn); }
   svg text.tcct { fill: var(--tcc); font-size: 10px; font-weight: 700; }
-  .box { fill: var(--panel); stroke: var(--edge); rx: 6; }
-  .boxwarn { fill: var(--panel); stroke: var(--warn); stroke-dasharray: 4 3; rx: 6; }
-  .boxdim { fill: none; stroke: var(--edge); stroke-dasharray: 4 3; rx: 6; }
-  /* node strokes by entity type */
-  .n-hw { fill: var(--panel); stroke: #7ac7d8; stroke-width: 1.25; rx: 6; }
-  .n-agent { fill: var(--panel); stroke: #d87a8f; stroke-width: 1.25; rx: 6; }
-  .n-app { fill: var(--panel); stroke: #d8a97a; stroke-width: 1.25; rx: 6; }
-  .n-cli { fill: var(--panel); stroke: var(--edge); rx: 6; }
-  .n-fs { fill: var(--panel); stroke: var(--edge); stroke-dasharray: 4 3; rx: 6; }
-  .sw { display: inline-block; border: 1.5px solid var(--edge); border-radius: 4px;
-        padding: 0 .5em; margin-right: .45em; font-size: 11px; color: var(--note); }
-  .sw.dashed { border-style: dashed; }
-  .flow { stroke: var(--hl); fill: none; marker-end: url(#a); }
-  .flowwarn { stroke: var(--warn); fill: none; marker-end: url(#aw); }
+  svg text.plt { fill: var(--dim); font-size: 11px; letter-spacing: .14em; }
+  /* planes: the four stages of the input spine + the state/client lane */
+  .plane { fill: rgba(255,255,255,.018); }
+  .plane.alt { fill: rgba(255,255,255,.036); }
+  /* node geometry + fill by entity type */
+  .n-hw { fill: rgba(188,196,219,.09); stroke: var(--hw); stroke-width: 1.4; rx: 3; }
+  .n-agent { fill: rgba(203,179,255,.08); stroke: var(--agent); stroke-width: 1.4; rx: 9; }
+  .n-app { fill: rgba(192,169,176,.10); stroke: var(--app); stroke-width: 1.4; rx: 16; }
+  .n-cli { fill: var(--panel); stroke: var(--edge); rx: 22; }
+  .n-fs { fill: none; stroke: var(--edge); stroke-dasharray: 5 4; rx: 2; }
+  .boxwarn { fill: rgba(255,159,200,.07); stroke: var(--warn); stroke-width: 1.4; stroke-dasharray: 5 3; rx: 9; }
+  .boxdim { fill: none; stroke: var(--edge); stroke-dasharray: 4 3; rx: 4; }
+  /* flows: heavy = the live input spine; thin = control/RC; dashed = parked */
+  .spine { stroke: var(--hl); stroke-width: 2.2; fill: none; marker-end: url(#a); }
+  .spinewarn { stroke: var(--warn); stroke-width: 2.2; fill: none; marker-end: url(#aw); }
+  .flow { stroke: var(--hl); stroke-opacity: .55; fill: none; marker-end: url(#a); }
   .flowdim { stroke: var(--dim); stroke-dasharray: 4 3; fill: none; marker-end: url(#ad); }
   .flowacc { stroke: var(--accent); fill: none; marker-end: url(#ag); }
+  .sw { display: inline-block; border: 1.5px solid var(--edge);
+        padding: 0 .55em; margin-right: .45em; font-size: 11px; color: var(--note); }
   table { border-collapse: collapse; font-size: 13px; margin: .8rem 0; width: 100%; }
   td, th { border: 1px solid var(--edge); padding: .4rem .6rem; text-align: left; color: var(--note); vertical-align: top; }
   th { color: var(--fg); }
@@ -48,191 +57,195 @@
 <body>
 
 <h1>khudson architecture</h1>
-<p class="cap">as deployed 2026-07-15 (aw-chainguard). <span class="tag">IM</span>
-<span class="tag">AX</span> <span class="tag">SR</span> mark macOS TCC grants (Input Monitoring,
-Accessibility, Screen Recording); <span class="tag">ID</span> marks a binary signed with the
-persistent <code>shimmerjs</code> identity at a fixed out-of-store path -- the pair the grant keys on.</p>
-<p class="cap">node stroke = entity type:
-<span class="sw" style="border-color:#7ac7d8">hardware / peripheral</span>
-<span class="sw" style="border-color:#d87a8f">launchd KeepAlive agent</span>
-<span class="sw" style="border-color:#d8a97a">app instance</span>
-<span class="sw">cli client / one-shot</span>
-<span class="sw dashed">filesystem state</span>
-<span class="sw dashed" style="border-color:#e8b45a">third-party driver (conflicting)</span></p>
+<p class="cap">as deployed 2026-07-15 (aw-chainguard). Left to right is the input spine:
+hardware -&gt; input daemons -&gt; hub -&gt; glass; the bottom lane is session state and standalone
+clients. <span class="tag">IM</span> <span class="tag">AX</span> <span class="tag">SR</span> mark TCC
+grants (Input Monitoring, Accessibility, Screen Recording); <span class="tag">ID</span> = signed with
+the persistent <code>shimmerjs</code> identity at a fixed out-of-store path (the pair a grant keys on).</p>
+<p class="cap">
+<span class="sw" style="border-color:var(--hw); border-radius:3px; background:rgba(188,196,219,.09)">hardware</span>
+<span class="sw" style="border-color:var(--agent); border-radius:9px; background:rgba(203,179,255,.08)">launchd agent</span>
+<span class="sw" style="border-color:var(--app); border-radius:14px; background:rgba(192,169,176,.10)">app instance</span>
+<span class="sw" style="border-radius:999px">cli / one-shot</span>
+<span class="sw" style="border-style:dashed; border-radius:2px">fs state</span>
+<span class="sw" style="border-color:var(--warn); border-style:dashed; border-radius:9px">third-party (conflicting)</span>
+&nbsp; heavy line = live input spine; thin = control/RC; dashed = parked</p>
 
-<svg viewBox="0 0 1100 700">
+<svg viewBox="0 0 1100 675">
   <defs>
     <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 L8 4 L0 8 z" fill="#7aa7e8"/></marker>
+      <path d="M0 0 L8 4 L0 8 z" fill="#8566db"/></marker>
     <marker id="aw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 L8 4 L0 8 z" fill="#e8b45a"/></marker>
+      <path d="M0 0 L8 4 L0 8 z" fill="#ff9fc8"/></marker>
     <marker id="ad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 L8 4 L0 8 z" fill="#667082"/></marker>
+      <path d="M0 0 L8 4 L0 8 z" fill="#72668B"/></marker>
     <marker id="ag" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 L8 4 L0 8 z" fill="#6fd3a4"/></marker>
+      <path d="M0 0 L8 4 L0 8 z" fill="#D1E0CD"/></marker>
   </defs>
 
-  <!-- devices -->
-  <rect class="n-hw" x="10" y="60" width="160" height="66"/>
-  <text class="hd" x="20" y="80">Xeneon Edge</text>
-  <text class="dim" x="20" y="96">digitizer 27C0:0859</text>
-  <text class="dim" x="20" y="110">2560x720; DDC via m1ddc</text>
+  <!-- planes -->
+  <rect class="plane" x="8" y="24" width="182" height="432" rx="10"/>
+  <text class="plt" x="18" y="44">HARDWARE</text>
+  <rect class="plane alt" x="198" y="24" width="204" height="432" rx="10"/>
+  <text class="plt" x="208" y="44">INPUT DAEMONS</text>
+  <rect class="plane" x="462" y="24" width="244" height="432" rx="10"/>
+  <text class="plt" x="472" y="44">HUB</text>
+  <rect class="plane alt" x="744" y="24" width="352" height="432" rx="10"/>
+  <text class="plt" x="754" y="44">GLASS + SURFACES</text>
+  <rect class="plane" x="8" y="470" width="1088" height="190" rx="10"/>
+  <text class="plt" x="18" y="490">SESSION STATE + STANDALONE CLIENTS</text>
 
-  <rect class="n-hw" x="10" y="210" width="160" height="50"/>
-  <text class="hd" x="20" y="230">Moonlander</text>
-  <text class="dim" x="20" y="246">raw-HID key telemetry</text>
+  <!-- hardware -->
+  <rect class="n-hw" x="18" y="56" width="160" height="66"/>
+  <text class="hd" x="28" y="76">Xeneon Edge</text>
+  <text class="dim" x="28" y="92">digitizer 27C0:0859</text>
+  <text class="dim" x="28" y="106">2560x720; DDC via m1ddc</text>
 
-  <rect class="n-hw" x="10" y="290" width="160" height="50"/>
-  <text class="hd" x="20" y="310">MX Master 4</text>
-  <text class="dim" x="20" y="326">direct BLE HID++</text>
+  <rect class="n-hw" x="18" y="246" width="160" height="44"/>
+  <text class="hd" x="28" y="264">Moonlander</text>
+  <text class="dim" x="28" y="280">raw-HID key telemetry</text>
 
-  <!-- gestures driver (today) -->
-  <rect class="boxwarn" x="215" y="20" width="185" height="66"/>
-  <text class="hd warnt" x="225" y="40">Gestures driver (today)</text>
-  <text class="dim" x="225" y="56">seizes the digitizer;</text>
-  <text class="dim" x="225" y="70">touch -&gt; clicks, hold -&gt; right-click</text>
+  <rect class="n-hw" x="18" y="300" width="160" height="44"/>
+  <text class="hd" x="28" y="318">MX Master 4</text>
+  <text class="dim" x="28" y="334">direct BLE HID++</text>
 
-  <!-- magicbusd -->
-  <rect class="n-agent" x="215" y="130" width="185" height="230"/>
-  <text class="hd" x="225" y="150">magicbusd</text>
-  <text class="tcct" x="310" y="150">IM  ID</text>
-  <text class="dim" x="225" y="165">org.magicbus.daemon</text>
-  <text class="dim" x="225" y="179">-daemon -config (CUE-vetted JSON)</text>
-  <rect class="boxdim" x="225" y="190" width="165" height="44"/>
-  <text x="233" y="206">edge module</text>
-  <text class="dim" x="233" y="220">seized-backoff while driver runs</text>
-  <rect class="boxdim" x="225" y="242" width="165" height="30"/>
-  <text x="233" y="261">moonlander module</text>
-  <rect class="boxdim" x="225" y="280" width="165" height="44"/>
-  <text x="233" y="296">logiretch module</text>
-  <text class="dim" x="233" y="310">battery poll, config-apply, divert</text>
-  <text class="dim" x="225" y="348">arrival scanner; per-module sockets</text>
+  <!-- input daemons -->
+  <rect class="boxwarn" x="206" y="56" width="186" height="66"/>
+  <text class="hd warnt" x="216" y="76">Gestures driver</text>
+  <text class="dim" x="216" y="92">seizes the digitizer (today);</text>
+  <text class="dim" x="216" y="106">touch -&gt; clicks, hold -&gt; right-click</text>
 
-  <!-- bus -->
-  <rect class="n-agent" x="490" y="110" width="210" height="290"/>
-  <text class="hd" x="500" y="130">khudson bus</text>
-  <text class="tcct" x="640" y="130">AX  ID</text>
-  <text class="dim" x="500" y="145">org.khudson.bus</text>
-  <text x="500" y="168">gesture recognizer</text>
-  <text class="dim" x="500" y="182">tap / long-press / drag / wheel</text>
-  <text x="500" y="203">module registry (native widgets)</text>
-  <text class="dim" x="500" y="217">sysmon procs resources dockmirror</text>
-  <text class="dim" x="500" y="231">claudesessions githubprs media ...</text>
-  <text x="500" y="252">scrape scheduler + ANSI blit</text>
-  <text x="500" y="273">act exec (vetted argv)</text>
-  <text class="dim" x="500" y="287">open -a; khudson ax; claude verbs</text>
-  <text x="500" y="308">theme svc; caffeinate; load shed</text>
-  <text x="500" y="329">boot spool sweep</text>
-  <text class="dim" x="500" y="350">serves khudson.sock (ndjson)</text>
-  <text class="dim" x="500" y="364">dials the three input sockets</text>
-  <text class="dim" x="500" y="378">RC client to all three kitties</text>
+  <rect class="n-agent" x="206" y="150" width="186" height="240"/>
+  <text class="hd" x="216" y="170">magicbusd</text>
+  <text class="tcct" x="300" y="170">IM  ID</text>
+  <text class="dim" x="216" y="185">org.magicbus.daemon</text>
+  <text class="dim" x="216" y="199">-daemon -config (CUE-vetted JSON)</text>
+  <rect class="boxdim" x="216" y="206" width="166" height="44"/>
+  <text x="224" y="222">edge module</text>
+  <text class="dim" x="224" y="236">seized-backoff while driver runs</text>
+  <rect class="boxdim" x="216" y="258" width="166" height="30"/>
+  <text x="224" y="277">moonlander module</text>
+  <rect class="boxdim" x="216" y="296" width="166" height="44"/>
+  <text x="224" y="312">logiretch module</text>
+  <text class="dim" x="224" y="326">battery poll, config-apply, divert</text>
+  <text class="dim" x="216" y="366">arrival scanner; per-module sockets</text>
 
-  <!-- hud launcher + hud kitty -->
-  <rect class="n-agent" x="790" y="20" width="300" height="52"/>
-  <text class="hd" x="800" y="40">khudson hud-launcher</text>
-  <text class="dim" x="800" y="56">org.khudson.hud; display-gated (JXA NSScreen); pgid+flock+backoff</text>
+  <!-- hub -->
+  <rect class="n-agent" x="474" y="56" width="220" height="380"/>
+  <text class="hd" x="484" y="76">khudson bus</text>
+  <text class="tcct" x="640" y="76">AX  ID</text>
+  <text class="dim" x="484" y="91">org.khudson.bus</text>
+  <text x="484" y="114">gesture recognizer</text>
+  <text class="dim" x="484" y="128">tap / long-press / drag / wheel</text>
+  <text x="484" y="149">module registry (native widgets)</text>
+  <text class="dim" x="484" y="163">sysmon procs resources dockmirror</text>
+  <text class="dim" x="484" y="177">claudesessions githubprs media ...</text>
+  <text x="484" y="198">scrape scheduler + ANSI blit</text>
+  <text x="484" y="219">act exec (vetted argv)</text>
+  <text class="dim" x="484" y="233">open -a; khudson ax; claude verbs</text>
+  <text x="484" y="254">theme svc; caffeinate; load shed</text>
+  <text x="484" y="275">boot spool sweep</text>
+  <text class="dim" x="484" y="404">serves khudson.sock (ndjson)</text>
+  <text class="dim" x="484" y="418">RC client to all three kitties</text>
 
-  <rect class="n-app" x="790" y="96" width="300" height="110"/>
-  <text class="hd" x="800" y="116">HUD kitty (khudson.app)</text>
-  <text class="dim" x="800" y="131">fullscreen on the Edge; kitty-panel.sock</text>
-  <rect class="boxdim" x="800" y="140" width="280" height="56"/>
-  <text x="808" y="158">khudson dock (TUI)</text>
-  <text class="dim" x="808" y="172">home: rail / resources / claude panel / kb-live / strip</text>
-  <text class="dim" x="808" y="186">hit regions; overlay menus (long-press / right-click)</text>
+  <!-- glass -->
+  <rect class="n-agent" x="754" y="56" width="330" height="64"/>
+  <text class="hd" x="764" y="76">khudson hud-launcher</text>
+  <text class="dim" x="764" y="91">org.khudson.hud; display-gated (JXA NSScreen)</text>
+  <text class="dim" x="764" y="105">pgid + flock + persisted backoff</text>
 
-  <!-- substrate -->
-  <rect class="n-agent" x="790" y="230" width="300" height="66"/>
-  <text class="hd" x="800" y="250">substrate kitty</text>
-  <text class="dim" x="800" y="265">org.khudson.substrate; hidden, windowless; kitty.sock</text>
-  <text class="dim" x="800" y="279">hosts parked scrape windows (btop, spotatui); dormant on all-native home</text>
+  <rect class="n-app" x="754" y="140" width="330" height="106"/>
+  <text class="hd" x="764" y="160">HUD kitty (khudson.app)</text>
+  <text class="dim" x="764" y="175">fullscreen on the Edge; kitty-panel.sock</text>
+  <rect class="boxdim" x="764" y="184" width="310" height="52"/>
+  <text x="772" y="200">khudson dock (TUI)</text>
+  <text class="dim" x="772" y="214">home: rail / resources / claude panel / kb-live / strip</text>
+  <text class="dim" x="772" y="228">hit regions; overlay menus (long-press / right-click)</text>
 
-  <!-- main kitty -->
-  <rect class="n-app" x="790" y="320" width="300" height="62"/>
-  <text class="hd" x="800" y="340">daily kitty</text>
-  <text class="tcct" x="900" y="340">SR</text>
-  <text class="dim" x="800" y="355">LS-launched; main-kitty.sock (socket-only, passwordless)</text>
-  <text class="dim" x="800" y="369">kittysessions rows; claude focus target; krib F2/F3 lives here</text>
+  <rect class="n-agent" x="754" y="272" width="330" height="64"/>
+  <text class="hd" x="764" y="292">substrate kitty</text>
+  <text class="dim" x="764" y="307">org.khudson.substrate; hidden, windowless; kitty.sock</text>
+  <text class="dim" x="764" y="321">parked scrape windows (btop, spotatui); dormant on all-native home</text>
 
-  <!-- claude code lane -->
-  <rect class="n-app" x="10" y="470" width="160" height="50"/>
-  <text class="hd" x="20" y="490">Claude Code</text>
-  <text class="dim" x="20" y="506">lifecycle hooks</text>
+  <rect class="n-app" x="754" y="360" width="330" height="62"/>
+  <text class="hd" x="764" y="380">daily kitty</text>
+  <text class="tcct" x="850" y="380">SR</text>
+  <text class="dim" x="764" y="395">LS-launched; main-kitty.sock (socket-only, passwordless)</text>
+  <text class="dim" x="764" y="409">kittysessions rows; claude focus target; krib F2/F3 lives here</text>
 
-  <rect class="n-cli" x="215" y="470" width="150" height="50"/>
-  <text class="hd" x="225" y="490">khudson hook</text>
-  <text class="dim" x="225" y="506">stamps spool_version</text>
+  <!-- session lane -->
+  <rect class="n-app" x="18" y="510" width="160" height="50"/>
+  <text class="hd" x="28" y="530">Claude Code</text>
+  <text class="dim" x="28" y="546">lifecycle hooks</text>
 
-  <rect class="n-fs" x="410" y="470" width="230" height="64"/>
-  <text class="hd" x="420" y="490">session state (fs)</text>
-  <text class="dim" x="420" y="505">spool: App Support/khudson/claude/</text>
-  <text class="dim" x="420" y="519">registry: ~/.claude/sessions + projects</text>
+  <rect class="n-cli" x="206" y="510" width="186" height="50"/>
+  <text class="hd" x="222" y="530">khudson hook</text>
+  <text class="dim" x="222" y="546">stamps spool_version</text>
 
-  <!-- standalone clients -->
-  <rect class="n-cli" x="700" y="470" width="180" height="50"/>
-  <text class="hd" x="710" y="490">kuiboard</text>
-  <text class="dim" x="710" y="506">couch keyboard TUI</text>
+  <rect class="n-fs" x="474" y="506" width="220" height="62"/>
+  <text class="hd" x="484" y="526">session state (fs)</text>
+  <text class="dim" x="484" y="541">spool: App Support/khudson/claude/</text>
+  <text class="dim" x="484" y="555">registry: ~/.claude/sessions + projects</text>
 
-  <rect class="n-cli" x="920" y="470" width="170" height="50"/>
-  <text class="hd" x="930" y="490">khudson ctl</text>
-  <text class="dim" x="930" y="506">reload/layout/theme/...</text>
+  <rect class="n-cli" x="754" y="510" width="150" height="50"/>
+  <text class="hd" x="770" y="530">kuiboard</text>
+  <text class="dim" x="770" y="546">couch keyboard TUI</text>
 
-  <rect class="n-cli" x="700" y="560" width="390" height="50"/>
-  <text class="hd" x="710" y="580">krib (pkgs/krib, separate module)</text>
-  <text class="dim" x="710" y="596">cheatsheet/palette engine; kitty adapter + fzf palette in the daily kitty</text>
+  <rect class="n-cli" x="924" y="510" width="150" height="50"/>
+  <text class="hd" x="940" y="530">khudson ctl</text>
+  <text class="dim" x="940" y="546">reload / layout / theme</text>
 
-  <!-- flows: input -->
-  <path class="flowwarn" d="M170 78 L211 60"/>
-  <text class="lbl warnt" x="150" y="52">seize (today)</text>
-  <path class="flowwarn" d="M400 46 C 560 40, 700 60, 800 100"/>
-  <text class="lbl warnt" x="545" y="38">touch as mouse -&gt; dock pty (hold = right-click = menu)</text>
-  <path class="flowdim" d="M170 110 L211 180"/>
-  <text class="lbl" x="120" y="150">post-swap (parked)</text>
-  <path class="flow" d="M170 235 L211 250"/>
-  <path class="flow" d="M170 315 L211 305"/>
+  <rect class="n-cli" x="754" y="584" width="300" height="44"/>
+  <text class="hd" x="770" y="602">krib (pkgs/krib, separate module)</text>
+  <text class="dim" x="770" y="616">cheatsheets + fzf palette in the daily kitty</text>
 
-  <!-- magicbusd -> bus sockets -->
-  <path class="flow" d="M400 212 L486 200"/>
-  <text class="lbl" x="412" y="200">touch.sock</text>
-  <path class="flow" d="M400 257 L486 240"/>
-  <text class="lbl" x="412" y="246">keys.sock</text>
-  <path class="flow" d="M400 302 L486 280"/>
-  <text class="lbl" x="412" y="292">logiretch.sock</text>
+  <!-- SPINE: device -> daemon -> bus -> dock -->
+  <path class="spinewarn" d="M182 89 L202 89"/>
+  <path class="spinewarn" d="M392 76 C 560 34, 740 66, 862 136"/>
+  <text class="lbl warnt" x="470" y="46">touch TODAY: taps as clicks; hold = right-click -&gt; menus</text>
+  <path class="flowdim" d="M178 112 C 192 150, 192 190, 202 222"/>
+  <text class="lbl" x="118" y="164">post-swap (parked)</text>
 
-  <!-- keys.sock -> kuiboard -->
-  <path class="flow" d="M330 360 C 380 470, 560 500, 696 498"/>
-  <text class="lbl" x="470" y="463">keys.sock (Edge-independent)</text>
+  <path class="spine" d="M182 268 L212 271"/>
+  <path class="spine" d="M182 322 L212 318"/>
 
-  <!-- bus <-> dock -->
-  <path class="flowacc" d="M700 180 L786 168"/>
-  <path class="flowacc" d="M786 178 L700 192"/>
-  <text class="lbl" x="706" y="158">khudson.sock: hello/grid, widgetData,</text>
-  <text class="lbl" x="706" y="206">gestures, theme, logi, keys, row acts</text>
+  <path class="spine" d="M392 228 L470 210"/>
+  <text class="lbl" x="398" y="216">touch.sock</text>
+  <path class="spine" d="M392 273 L470 258"/>
+  <text class="lbl" x="398" y="262">keys.sock</text>
+  <path class="spine" d="M392 318 L470 300"/>
+  <text class="lbl" x="398" y="308">logiretch.sock</text>
 
-  <!-- bus RC -->
-  <path class="flow" d="M700 140 C 740 120, 760 116, 786 122"/>
-  <text class="lbl" x="712" y="112">RC kitty-panel.sock</text>
-  <path class="flow" d="M700 250 L786 258"/>
-  <text class="lbl" x="712" y="242">RC kitty.sock: launch, get-text, inject</text>
-  <path class="flow" d="M700 320 L786 342"/>
-  <text class="lbl" x="712" y="308">RC main-kitty.sock: ls, focus</text>
+  <path class="spine" d="M694 186 L750 192"/>
+  <path class="spine" d="M750 206 L694 200"/>
+  <text class="lbl" x="698" y="176">khudson.sock: widgetData,</text>
+  <text class="lbl" x="698" y="222">gestures, theme, acts</text>
 
-  <!-- launcher spawns hud kitty -->
-  <path class="flowacc" d="M940 72 L940 92"/>
-  <text class="lbl" x="950" y="86">spawn + supervise</text>
+  <!-- control / RC (thin) -->
+  <path class="flow" d="M694 120 C 720 128, 735 138, 750 150"/>
+  <text class="lbl" x="700" y="112">RC kitty-panel.sock</text>
+  <path class="flow" d="M694 296 L750 302"/>
+  <text class="lbl" x="700" y="288">RC kitty.sock: launch, get-text, inject</text>
+  <path class="flow" d="M694 356 C 720 366, 735 376, 750 386"/>
+  <text class="lbl" x="700" y="348">RC main-kitty.sock: ls, focus</text>
 
-  <!-- claude lane flows -->
-  <path class="flow" d="M170 495 L211 495"/>
-  <path class="flow" d="M365 495 L406 495"/>
-  <path class="flow" d="M525 470 L560 404"/>
-  <text class="lbl" x="540" y="440">claudesessions reads (mtime-gated)</text>
+  <path class="flowacc" d="M920 120 L920 136"/>
+  <text class="lbl" x="928" y="132">spawn + supervise</text>
 
-  <!-- ctl -> bus -->
-  <path class="flow" d="M1005 470 C 1005 430, 760 420, 690 400"/>
-  <text class="lbl" x="800" y="428">khudson.sock (ctl verbs)</text>
+  <!-- session lane flows -->
+  <path class="flow" d="M178 535 L202 535"/>
+  <path class="flow" d="M392 535 L470 537"/>
+  <path class="flow" d="M584 506 L584 440"/>
+  <text class="lbl" x="592" y="474">claudesessions reads (mtime-gated)</text>
 
-  <!-- krib -> daily kitty -->
-  <path class="flow" d="M900 560 C 920 540, 930 520, 940 386"/>
-  <text class="lbl" x="945" y="450">kitten @ scrape (F2/F3)</text>
+  <path class="flow" d="M300 390 C 330 560, 560 588, 750 540"/>
+  <text class="lbl" x="470" y="588">keys.sock (Edge-independent)</text>
+
+  <path class="flow" d="M999 510 C 940 448, 760 452, 698 424"/>
+  <text class="lbl" x="770" y="450">khudson.sock (ctl verbs)</text>
+
+  <path class="flow" d="M1054 584 C 1086 552, 1088 470, 1072 426"/>
+  <text class="lbl" x="962" y="466">kitten @ (F2/F3)</text>
 </svg>
 
 <h2>macOS security and privacy surface</h2>
