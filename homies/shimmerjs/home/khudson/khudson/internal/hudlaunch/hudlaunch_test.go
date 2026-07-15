@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -168,6 +170,205 @@ func TestRunChildRemovesStaleHudSocket(t *testing.T) {
 	}
 	if _, err := os.Stat(sock); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("stale socket not removed: stat = %v", err)
+	}
+}
+
+func TestNormalizeDefaults(t *testing.T) {
+	opts := normalize(Options{})
+	if opts.Poll != 15*time.Second || opts.HealthyPoll != time.Minute {
+		t.Fatalf("defaults = %s/%s, want 15s/1m", opts.Poll, opts.HealthyPoll)
+	}
+	if opts.Query == nil || opts.Logf == nil {
+		t.Fatal("query/logf defaults missing")
+	}
+	if opts = normalize(Options{Poll: 5 * time.Second}); opts.HealthyPoll != 20*time.Second {
+		t.Fatalf("HealthyPoll = %s, want 4x Poll", opts.HealthyPoll)
+	}
+	if opts = normalize(Options{Poll: time.Second, HealthyPoll: time.Hour}); opts.HealthyPoll != time.Hour {
+		t.Fatal("explicit HealthyPoll overridden")
+	}
+}
+
+// fakeChild writes an executable script the launcher spawns as its "kitty"
+// (kittyArgs appends the real argv; the script ignores it).
+func fakeChild(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "fake-kitty")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The healthy tick rides HealthyPoll, never the waiting Poll: with a hot
+// waiting poll and a cold healthy poll the display query must not run while
+// the child lives.
+func TestRunChildHealthyTickCadence(t *testing.T) {
+	sock := hudSockPath(t)
+	queries := 0
+	opts := Options{
+		KittyBin:    fakeChild(t, "sleep 0.2"),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        5 * time.Millisecond,
+		HealthyPoll: time.Hour,
+		Query: func(context.Context) ([]Screen, error) {
+			queries++
+			return liveScreens, nil
+		},
+		Logf: t.Logf,
+	}
+	if got := runChild(context.Background(), opts, 0, 0); got != childExited {
+		t.Fatalf("outcome = %v, want childExited", got)
+	}
+	if queries != 0 {
+		t.Fatalf("display query ran %d times on the waiting cadence; healthy ticks must ride HealthyPoll", queries)
+	}
+}
+
+// startRun drives Run in a goroutine; the returned stop cancels it and
+// waits for the loop to return (Logf must not fire after the test ends).
+func startRun(t *testing.T, opts Options) (stop func() error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, opts) }()
+	return func() error {
+		cancel()
+		return <-done
+	}
+}
+
+// TestRunDisplayGatedLaunch pins the Run loop's orchestration: no child
+// launches while the display is absent, the child launches once the display
+// appears, and cancellation returns cleanly.
+func TestRunDisplayGatedLaunch(t *testing.T) {
+	sock := hudSockPath(t)
+	mark := filepath.Join(filepath.Dir(sock), "mark")
+	t.Setenv("HUDLAUNCH_TEST_MARK", mark)
+	var present atomic.Bool
+	var queried atomic.Int32
+	opts := Options{
+		KittyBin:    fakeChild(t, `echo x >> "$HUDLAUNCH_TEST_MARK"; sleep 0.1`),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        10 * time.Millisecond,
+		HealthyPoll: time.Hour,
+		Query: func(context.Context) ([]Screen, error) {
+			queried.Add(1)
+			if present.Load() {
+				return liveScreens, nil
+			}
+			return nil, nil
+		},
+		Logf: t.Logf,
+	}
+	stop := startRun(t, opts)
+	deadline := time.Now().Add(2 * time.Second)
+	for queried.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(mark); !errors.Is(err, fs.ErrNotExist) {
+		stop()
+		t.Fatal("child launched while the display was absent")
+	}
+	present.Store(true)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(mark); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatal("child never launched after the display appeared")
+	}
+}
+
+// TestRunRelaunchesAfterExit pins the crash-relaunch leg: a child that
+// exits immediately relaunches after the backoff floor.
+func TestRunRelaunchesAfterExit(t *testing.T) {
+	sock := hudSockPath(t)
+	mark := filepath.Join(filepath.Dir(sock), "mark")
+	t.Setenv("HUDLAUNCH_TEST_MARK", mark)
+	opts := Options{
+		KittyBin:    fakeChild(t, `echo x >> "$HUDLAUNCH_TEST_MARK"`),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        10 * time.Millisecond,
+		HealthyPoll: time.Hour,
+		Query:       func(context.Context) ([]Screen, error) { return liveScreens, nil },
+		Logf:        t.Logf,
+	}
+	stop := startRun(t, opts)
+	launches := 0
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(mark); err == nil {
+			if launches = strings.Count(string(b), "x"); launches >= 2 {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	if launches < 2 {
+		t.Fatalf("launches = %d, want >= 2 (relaunch after exit)", launches)
+	}
+}
+
+// TestRunHonorsPersistedBackoff pins the resume leg: a fresh launcher under
+// a live persisted schedule waits it out instead of relaunching at full
+// speed (the launchd-respawn hole the persistence closed).
+func TestRunHonorsPersistedBackoff(t *testing.T) {
+	sock := hudSockPath(t)
+	sd := filepath.Dir(sock)
+	mark := filepath.Join(sd, "mark")
+	t.Setenv("HUDLAUNCH_TEST_MARK", mark)
+	saveBackoff(filepath.Join(sd, "hud-backoff.state"),
+		backoffState{LastLaunch: time.Now(), Backoff: backoffCap})
+	opts := Options{
+		KittyBin:    fakeChild(t, `echo x >> "$HUDLAUNCH_TEST_MARK"`),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        10 * time.Millisecond,
+		HealthyPoll: time.Hour,
+		Query:       func(context.Context) ([]Screen, error) { return liveScreens, nil },
+		Logf:        t.Logf,
+	}
+	stop := startRun(t, opts)
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(mark); err == nil {
+		stop()
+		t.Fatal("launched inside the persisted backoff window")
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+// Display loss on a healthy tick tears the child down and classifies as
+// childDisplayLost.
+func TestRunChildDisplayLost(t *testing.T) {
+	sock := hudSockPath(t)
+	opts := Options{
+		KittyBin:    fakeChild(t, "sleep 30"),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        time.Hour,
+		HealthyPoll: 20 * time.Millisecond,
+		Query: func(context.Context) ([]Screen, error) {
+			return nil, nil // no screens: the display is gone
+		},
+		Logf: t.Logf,
+	}
+	if got := runChild(context.Background(), opts, 0, 0); got != childDisplayLost {
+		t.Fatalf("outcome = %v, want childDisplayLost", got)
 	}
 }
 

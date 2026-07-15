@@ -295,7 +295,8 @@ func cmdHudLauncher(args []string) error {
 	configPath := fs.String("config", "", "dock config file (default: embedded example)")
 	display := fs.String("display", "XENEON EDGE", "display name the HUD pins to")
 	socket := fs.String("socket", "", "HUD kitty RC socket (default: state dir kitty-panel.sock)")
-	poll := fs.Duration("poll", 15*time.Second, "display presence poll interval")
+	poll := fs.Duration("poll", 15*time.Second, "display presence poll while waiting for the display")
+	healthyPoll := fs.Duration("healthy-poll", 0, "display presence poll while the HUD runs (default 4x -poll)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -321,6 +322,7 @@ func cmdHudLauncher(args []string) error {
 		DisplayName: *display,
 		Socket:      *socket,
 		Poll:        *poll,
+		HealthyPoll: *healthyPoll,
 	})
 }
 

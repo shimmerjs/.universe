@@ -33,7 +33,8 @@ type Options struct {
 	DisplayName string        // NSScreen localizedName the HUD pins to
 	Socket      string        // RC socket path, passed via --listen-on (verbatim)
 	StateDir    string        // lock/pidfile/backoff state ("" = dir of Socket)
-	Poll        time.Duration // display presence poll interval
+	Poll        time.Duration // presence poll while waiting for the display
+	HealthyPoll time.Duration // presence poll while the HUD runs (0 = 4x Poll)
 	Query       QueryFunc     // nil = osascript-backed default
 	Logf        func(format string, args ...any)
 }
@@ -67,10 +68,17 @@ const (
 	killGrace = 5 * time.Second
 )
 
-// Run blocks until ctx is done, supervising one HUD kitty at a time.
-func Run(ctx context.Context, opts Options) error {
+// normalize fills the Options defaults. The healthy-tick cadence defaults
+// to 4x the waiting poll: every tick execs osascript (the JXA screens
+// query), and while the HUD is healthy that exec is the loop's only cost --
+// the same cadence-cache seam as the modules, paid for with
+// disconnect-teardown latency up to the healthy cadence.
+func normalize(opts Options) Options {
 	if opts.Poll <= 0 {
 		opts.Poll = 15 * time.Second
+	}
+	if opts.HealthyPoll <= 0 {
+		opts.HealthyPoll = 4 * opts.Poll
 	}
 	if opts.Query == nil {
 		opts.Query = queryScreens
@@ -78,6 +86,12 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.Logf == nil {
 		opts.Logf = log.Printf
 	}
+	return opts
+}
+
+// Run blocks until ctx is done, supervising one HUD kitty at a time.
+func Run(ctx context.Context, opts Options) error {
+	opts = normalize(opts)
 	sd := stateDirOf(opts)
 	// Singleton: a second launcher (a dev run racing the agent, or overlap
 	// around a KeepAlive respawn) exits loudly instead of stacking HUDs. This
@@ -203,7 +217,7 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	tick := time.NewTicker(opts.Poll)
+	tick := time.NewTicker(opts.HealthyPoll)
 	defer tick.Stop()
 	for {
 		select {
