@@ -9,7 +9,7 @@ four requirements:
 1. moonlander/keyboard functionality on hosts without khudson (no Edge, HUD stack not enabled) -- without the touch surface overhead (no retry loops against an absent Edge, no touch code hot).
 2. one daemon; no N hid daemons to juggle.
 3. logitech is coming: HID++ is bidirectional request/response over the same handles that stream input, and a Unifying/Bolt receiver multiplexes several logical devices over one node pair.
-4. the Input Monitoring TCC grant keys on binary path + signing identity (nix/module.nix:37, :273-277; install-script.nix:60-73 re-signs the same identity on every rebuild without re-prompting). grant continuity is worth real design distortion.
+4. the Input Monitoring TCC grant keys on binary path + signing identity (nix/module.nix:37, :273-277; install-script.nix:60-73 re-signs the same identity on every rebuild without re-prompting). [RELAXED 2026-07-15: grant continuity was assumed worth real design distortion, but the user does not care about a one-time re-grant per machine (open questions 1-2 resolved) -- the in-place ARCHITECTURE still stands on its merits, but naming is no longer frozen for TCC reasons.]
 
 ## recommendation: magicbus-in-place
 
@@ -128,7 +128,7 @@ Direct BLE is a SINGLE vendor node, pure HID++ 2.0 -- so the receiver two-node m
 
 ## open questions (yours)
 
-1. naming: live with khudson-touchd/org.khudson.touchd on keyboard-only hosts forever, or pay one Input Monitoring prompt per machine to rebrand? (either way the khudson-touchd cert survives -- it signs the Accessibility client too.)
-2. is one TCC re-grant per machine acceptable at all? the design assumes no; a yes reopens the rename and parts of B's identity split.
+1. RESOLVED (2026-07-15): rebrand. The user does not care about a one-time re-grant per machine, so the binary/label/identity are free to move to magicbus naming on the next switch. (The single-sourced identity signs khudson's Accessibility client too, so both grants re-prompt once.)
+2. RESOLVED (2026-07-15): a per-machine TCC re-grant IS acceptable -- see requirement 4, whose "grant continuity worth distortion" premise is relaxed. The in-place module registry already shipped, so this only unfreezes naming; it does NOT reopen re-platforming to candidate B.
 3. RESOLVED: direct-Bluetooth first (MX Master 4), battery leads. See the logiretch section.
 4. phase-1 standalone consumer: kbtop the live TUI, a plain ndjson tail CLI, or a command surface (layer set / RGB via oryx protocol, which pulls phase 4 earlier)? one must ship in phase 1; pick, and name it.
