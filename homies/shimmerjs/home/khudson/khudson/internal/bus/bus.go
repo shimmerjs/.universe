@@ -447,6 +447,35 @@ func (b *Bus) handleCtl(m proto.Msg) proto.Msg {
 		}
 		return proto.Msg{Type: proto.TypeResp, OK: true, Data: data}
 
+	case "repoll":
+		// advisory nudge (the hook poke): due every widget whose module --
+		// or exact id -- matches the arg, on the scheduler's next tick.
+		// Non-blocking sends: a full channel means repolls are already
+		// queued, so dropping is correct.
+		if m.Arg == "" {
+			return proto.Msg{Type: proto.TypeResp, Error: "repoll: need a widget id or module name"}
+		}
+		b.mu.Lock()
+		reg := b.reg
+		b.mu.Unlock()
+		n := 0
+		for _, id := range reg.IDs() {
+			ws, ok := reg.Get(id)
+			if !ok || (id != m.Arg && ws.Widget.Render.Module != m.Arg) {
+				continue
+			}
+			select {
+			case b.repoll <- id:
+				n++
+			default:
+			}
+		}
+		data, err := json.Marshal(map[string]int{"repolled": n})
+		if err != nil {
+			return proto.Msg{Type: proto.TypeResp, Error: err.Error()}
+		}
+		return proto.Msg{Type: proto.TypeResp, OK: true, Data: data}
+
 	case "reload":
 		cfg, err := loadConfig(b.opts.ConfigPath)
 		if err != nil {

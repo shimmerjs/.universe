@@ -454,6 +454,55 @@ func TestHandleRowActDebouncesRetaps(t *testing.T) {
 	}
 }
 
+// The repoll ctl verb (the hook poke's bus half) dues every widget whose
+// module -- or exact id -- matches the arg, via non-blocking sends on the
+// scheduler's repoll channel; no match is OK with zero, empty arg errors.
+func TestCtlRepollResolvesWidgets(t *testing.T) {
+	cfg := &config.Config{
+		Widgets: map[string]config.Widget{
+			"panel": {ID: "panel", Render: config.Render{Kind: "native", Module: "claude-sessions", Poll: "3s"}},
+			"other": {ID: "other", Render: config.Render{Kind: "native", Module: "sysmon", Poll: "5s"}},
+		},
+		Layouts: map[string]config.Layout{"main": {Kind: "home"}},
+		Layout:  "main",
+	}
+	b := &Bus{cfg: cfg, reg: NewRegistry(cfg), repoll: make(chan string, 16)}
+
+	resp := b.handleCtl(proto.Msg{Type: proto.TypeCtl, Cmd: "repoll", Arg: "claude-sessions"})
+	if !resp.OK {
+		t.Fatalf("repoll resp = %+v", resp)
+	}
+	select {
+	case id := <-b.repoll:
+		if id != "panel" {
+			t.Fatalf("repolled %q, want panel", id)
+		}
+	default:
+		t.Fatal("no repoll queued for the matching module")
+	}
+	select {
+	case id := <-b.repoll:
+		t.Fatalf("extra repoll %q queued", id)
+	default:
+	}
+
+	// exact widget id matches too
+	if resp := b.handleCtl(proto.Msg{Type: proto.TypeCtl, Cmd: "repoll", Arg: "other"}); !resp.OK {
+		t.Fatalf("id repoll resp = %+v", resp)
+	}
+	if id := <-b.repoll; id != "other" {
+		t.Fatalf("repolled %q, want other", id)
+	}
+
+	// no match: OK, zero queued; empty arg: loud
+	if resp := b.handleCtl(proto.Msg{Type: proto.TypeCtl, Cmd: "repoll", Arg: "nope"}); !resp.OK {
+		t.Fatalf("no-match resp = %+v, want OK", resp)
+	}
+	if resp := b.handleCtl(proto.Msg{Type: proto.TypeCtl, Cmd: "repoll"}); resp.OK {
+		t.Fatal("empty repoll arg did not error")
+	}
+}
+
 // repollEntry dues the widget's poll now AND clears any failure backoff: a
 // user tap must not wait out a stale backoff window.
 func TestRepollEntryClearsSchedule(t *testing.T) {

@@ -220,7 +220,7 @@ func cmdCtl(args []string) error {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return fmt.Errorf("ctl: need a command: reload | layout <name> | theme <day|night> | caffeinate <on|off|toggle> | status")
+		return fmt.Errorf("ctl: need a command: reload | layout <name> | theme <day|night> | caffeinate <on|off|toggle> | repoll <widget|module> | status")
 	}
 	cmd, arg := rest[0], ""
 	switch cmd {
@@ -228,6 +228,11 @@ func cmdCtl(args []string) error {
 	case "layout":
 		if len(rest) < 2 {
 			return fmt.Errorf("ctl layout: need a layout name")
+		}
+		arg = rest[1]
+	case "repoll":
+		if len(rest) < 2 {
+			return fmt.Errorf("ctl repoll: need a widget id or module name")
 		}
 		arg = rest[1]
 	case "theme":
@@ -439,7 +444,32 @@ func cmdHook(args []string) error {
 	if *dir == "" || fs.NArg() != 1 {
 		return fmt.Errorf("usage: khudson hook -dir <spool> <prompt|start|stop|stopfail|notify|end>")
 	}
-	return hookspool.Run(fs.Arg(0), *dir, os.Stdin, os.Getenv, time.Now())
+	if err := hookspool.Run(fs.Arg(0), *dir, os.Stdin, os.Getenv, time.Now()); err != nil {
+		return err
+	}
+	// the spool just changed: nudge the bus so the claude panel repolls now
+	// instead of at its cadence (the event-driven layer's hook-poke leg)
+	if p, err := paths.Resolve(); err == nil {
+		pokeBus(p.BusSocket())
+	}
+	return nil
+}
+
+// pokeBus asks the bus to repoll the claude widgets, fire-and-forget under
+// a hard deadline: hook economics forbid blocking the Claude turn, and a
+// bus-less machine is a normal state, so every error is silently dropped.
+func pokeBus(socket string) {
+	conn, err := net.DialTimeout("unix", socket, 100*time.Millisecond)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(150 * time.Millisecond))
+	enc := json.NewEncoder(conn)
+	_ = enc.Encode(proto.Msg{Type: proto.TypeHello, Role: proto.RoleCtl})
+	_ = enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "repoll", Arg: "claude-sessions"})
+	var resp proto.Msg
+	_ = json.NewDecoder(conn).Decode(&resp)
 }
 
 func cmdConfig(args []string) error {

@@ -97,10 +97,14 @@ The 07-10 batch:
 
 ## Registered follow-ups (awaiting user go)
 
-- Event-driven data layer: panel is a 3s poll; the khudson hook
-  binary could poke the bus per session event for instant repolls
-  (ActHandler repoll precedent). FSEvents needs cgo; kqueue costs
-  an fd per dir -- the hook poke avoids both.
+- Event-driven data layer: CLOSED 07-15 via the hook-poke leg --
+  khudson hook nudges `repoll claude-sessions` over khudson.sock
+  after every spool write (fire-and-forget, 150ms hard deadline,
+  silent on a bus-less machine); the bus's repoll ctl verb resolves
+  widgets by module or id onto the scheduler's repoll channel. The
+  panel now updates on session events; the 3s poll is the backstop.
+  Per-site FSEvents/kqueue variants stay deliberately unbuilt (the
+  07-14 cadence caches cover those sites).
 - Strip error surfacing: CLOSED 07-15 (TypeActFail one-slot record
   + greeting replay; strip warn cell decays after 60s; act path
   untouched on the failure branch).

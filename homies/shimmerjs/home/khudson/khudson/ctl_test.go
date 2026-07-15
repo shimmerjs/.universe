@@ -11,6 +11,31 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
 
+// TestHookPokeWire pins the hook poke's wire contract: hello as RoleCtl,
+// then a repoll ctl for the claude-sessions module -- and the absent-bus
+// case returns without error or delay (the poke must never cost the hook).
+func TestHookPokeWire(t *testing.T) {
+	sock, got := startFakeBus(t, proto.Msg{Type: proto.TypeResp, OK: true})
+	pokeBus(sock)
+	select {
+	case pair := <-got:
+		if pair[0].Type != proto.TypeHello || pair[0].Role != proto.RoleCtl {
+			t.Fatalf("hello = %+v, want RoleCtl hello", pair[0])
+		}
+		if pair[1].Type != proto.TypeCtl || pair[1].Cmd != "repoll" || pair[1].Arg != "claude-sessions" {
+			t.Fatalf("ctl = %+v, want repoll claude-sessions", pair[1])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("poke never reached the bus")
+	}
+
+	start := time.Now()
+	pokeBus(filepath.Join(t.TempDir(), "absent.sock"))
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("absent-bus poke took %s, want fast silent drop", d)
+	}
+}
+
 // TestCtlGrammar pins the verb grammar: bad verbs error before any dial --
 // the socket flag points at a path nothing listens on, so a dial attempt
 // would surface as "bus not reachable" instead of the grammar error.
