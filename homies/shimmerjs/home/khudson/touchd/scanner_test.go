@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -285,6 +288,65 @@ func TestScannerAbsentDeliversEarly(t *testing.T) {
 	sc.tick(now.Add(-time.Millisecond))
 	if p := recvPath(t, ch); p != "p" {
 		t.Fatalf("delivered %q", p)
+	}
+}
+
+// captureStderr redirects os.Stderr around fn (tick logging is synchronous).
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	fn()
+	os.Stderr = old
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	return string(out)
+}
+
+// An enumerate failure logs on the transition into the failing state, stays
+// quiet within the interval, re-logs once the interval passes, and a success
+// resets the limiter so the next failure logs immediately.
+func TestScannerEnumerateErrorLogRateLimited(t *testing.T) {
+	enumErr := errors.New("hid_enumerate failed")
+	failing := true
+	old := hidEnumerate
+	hidEnumerate = func(vid, pid uint16, fn hid.EnumFunc) error {
+		if failing {
+			return enumErr
+		}
+		return nil
+	}
+	t.Cleanup(func() { hidEnumerate = old })
+
+	sc := newScanner()
+	park(t, sc, moonMatch)
+	waitParked(t, sc, 1)
+
+	now := time.Now()
+	if out := captureStderr(t, func() { sc.tick(now) }); !strings.Contains(out, "enumerate") {
+		t.Fatalf("first failure did not log: %q", out)
+	}
+	if out := captureStderr(t, func() { sc.tick(now.Add(time.Second)) }); out != "" {
+		t.Fatalf("failure inside the interval logged: %q", out)
+	}
+	if out := captureStderr(t, func() { sc.tick(now.Add(enumerateLogInterval + time.Second)) }); !strings.Contains(out, "enumerate") {
+		t.Fatalf("persistent failure did not re-log after the interval: %q", out)
+	}
+	failing = false
+	if out := captureStderr(t, func() { sc.tick(now.Add(enumerateLogInterval + 2*time.Second)) }); out != "" {
+		t.Fatalf("successful enumerate logged: %q", out)
+	}
+	failing = true
+	if out := captureStderr(t, func() { sc.tick(now.Add(enumerateLogInterval + 3*time.Second)) }); !strings.Contains(out, "enumerate") {
+		t.Fatalf("failure after a success did not log immediately: %q", out)
 	}
 }
 

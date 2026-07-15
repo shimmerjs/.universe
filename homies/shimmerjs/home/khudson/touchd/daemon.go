@@ -23,6 +23,15 @@ const (
 	absentCap = 30 * time.Second
 )
 
+// socket bind retry: a just-killed prior instance can hold a module socket
+// while its listener unwinds; the dial guard in newBroadcaster makes a
+// genuinely live daemon fail every attempt fast. Vars so squatter tests
+// shrink the wait.
+var (
+	bindAttempts  = 3
+	bindRetryWait = time.Second
+)
+
 // reopenBackoff schedules the wait between open attempts for a source that
 // will not open. Every attempt costs an IOKit enumeration (runningboardd
 // resolves the client each time), so a chronic failure -- a seize-holding
@@ -86,7 +95,7 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 		}
 		// a module socket failing to bind must not take down the others;
 		// that module just stays off (loud once, review posture)
-		b, err := newBroadcaster(s.socket)
+		b, err := bindBroadcaster(ctx, s.socket)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s socket unavailable, %s module disabled: %v\n", s.socket, s.mod.Name(), err)
 			continue
@@ -98,6 +107,23 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 		return errors.New("no modules running")
 	}
 	return runModules(ctx, sc, entries)
+}
+
+// bindBroadcaster wraps newBroadcaster in a bounded retry over the
+// transient-conflict window; the wait honors ctx so shutdown never hangs
+// inside a retry.
+func bindBroadcaster(ctx context.Context, path string) (*broadcaster, error) {
+	for attempt := 1; ; attempt++ {
+		b, err := newBroadcaster(path)
+		if err == nil || attempt >= bindAttempts {
+			return b, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(bindRetryWait):
+		}
+	}
 }
 
 // runStream is spike mode: open the collection and print parsed frames (and

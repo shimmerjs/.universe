@@ -75,6 +75,9 @@ func run(ctx context.Context, opts options) error {
 	if opts.daemon && opts.mouse {
 		return errors.New("-daemon reads the digitizer collection; -mouse is a spike-mode flag")
 	}
+	if opts.config != "" && !opts.daemon {
+		return errors.New("-config is a daemon flag; use -daemon")
+	}
 
 	// resolve the module set first: a config problem must exit nonzero
 	// before any socket binds or HID work

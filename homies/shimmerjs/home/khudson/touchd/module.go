@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -64,21 +65,43 @@ type moduleEntry struct {
 }
 
 // runModules is the registry runner: one goroutine per enabled module plus
-// the shared scanner, fan-in-waited until every module returns.
+// the shared scanner, fan-in-waited until every module returns. A non-nil,
+// non-cancel module error is logged AND returned so the daemon exits nonzero
+// instead of idling under KeepAlive with a dead module. The scanner is
+// joined before returning: it may be inside hidEnumerate under openMu, and
+// main's deferred hid.Exit must not free the manager under an in-flight
+// enumerate.
 func runModules(ctx context.Context, sc *scanner, entries []moduleEntry) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go sc.run(ctx)
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		sc.run(ctx)
+	}()
+	errs := make(chan error, len(entries))
 	var wg sync.WaitGroup
 	for _, e := range entries {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := e.mod.Run(ctx, e.env); err != nil {
-				fmt.Fprintf(os.Stderr, "%s module exited: %v\n", e.mod.Name(), err)
+			if err := e.mod.Run(ctx, e.env); err != nil && !errors.Is(err, context.Canceled) {
+				fmt.Fprintf(os.Stderr, "%s module failed: %v\n", e.mod.Name(), err)
+				errs <- fmt.Errorf("%s module: %w", e.mod.Name(), err)
+				// tear the siblings down so the daemon exits (and launchd
+				// relaunches) instead of idling on a dead module -- the
+				// others park on ctx and wg.Wait would never return
+				cancel()
 			}
 		}()
 	}
 	wg.Wait()
-	return nil
+	cancel()
+	<-scanDone
+	close(errs)
+	var failed error
+	for err := range errs {
+		failed = errors.Join(failed, err)
+	}
+	return failed
 }

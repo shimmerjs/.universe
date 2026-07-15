@@ -88,6 +88,14 @@ func TestParseTouchReport(t *testing.T) {
 	}
 }
 
+// -config without -daemon would silently ignore the file (modules are only
+// resolved on the daemon path); it errors like the other combo guards.
+func TestRunConfigRequiresDaemon(t *testing.T) {
+	if err := run(context.Background(), options{config: "f"}); err == nil {
+		t.Fatal("-config without -daemon did not error")
+	}
+}
+
 func TestRecordingRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cap.txt")
 	rec, err := newRecorder(path)
