@@ -93,10 +93,8 @@ func openPath(path string, exclusive bool) (*hid.Device, error) {
 	return hid.OpenPath(path)
 }
 
-// openCollection finds and opens the wanted collection and, for the digitizer
-// with mode switching enabled, asserts multi-input mode. Mode must be asserted
-// on EVERY open: the controller reverts to mouse emulation on re-enumeration
-// (unplug, sleep). Returns whether multi-input mode was asserted.
+// openCollection finds and opens the wanted collection for spike mode
+// (runStream); the daemon path goes through the scanner + Env instead.
 func openCollection(mouse, noMode, verbose bool) (*hid.Device, bool, error) {
 	wantPage, wantUsage := uint16(usagePageDigitizer), uint16(usageTouchScreen)
 	if mouse {
@@ -115,29 +113,35 @@ func openCollection(mouse, noMode, verbose bool) (*hid.Device, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("open (Input Monitoring granted?): %w", err)
 	}
-	if mouse {
-		return dev, false, nil
-	}
+	return dev, assertEdgeMode(dev, mouse, noMode, verbose), nil
+}
 
+// assertEdgeMode asserts multi-input mode on a freshly opened digitizer (a
+// nop for the mouse collection or under -nomode). Mode must be asserted on
+// EVERY open: the controller reverts to mouse emulation on re-enumeration
+// (unplug, sleep). Returns whether multi-input mode was asserted.
+func assertEdgeMode(dev *hid.Device, mouse, noMode, verbose bool) bool {
+	if mouse {
+		return false
+	}
 	if verbose {
 		reportContactCountMax(dev)
 	}
 	if noMode {
-		return dev, false, nil
+		return false
 	}
-
 	if verbose {
 		dumpMode(dev, "device mode before")
 	}
 	if err := setMode(dev, modeMultiTouch); err != nil {
 		fmt.Fprintf(os.Stderr, "MODE SWITCH REJECTED: %v -- streaming whatever the device sends\n", err)
-		return dev, false, nil
+		return false
 	}
 	if verbose {
 		fmt.Println("mode switch sent: device mode = multi-input")
 		dumpMode(dev, "device mode after")
 	}
-	return dev, true, nil
+	return true
 }
 
 // setMode writes the device-mode feature report: usage 0x52 device mode =

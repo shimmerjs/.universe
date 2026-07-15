@@ -11,7 +11,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -94,15 +93,20 @@ func moonInitReport() []byte {
 	return b
 }
 
-// openMoonlander finds and opens the vendor channel SHARED and writes the
-// pairing init; without the init the firmware never streams, so a failed
-// write closes the device and reports an error (the caller retries).
-func openMoonlander() (*hid.Device, error) {
-	path, err := findCollection(moonVID, moonPID, usagePageVendor, usageRawHID)
-	if err != nil {
-		return nil, err
-	}
-	dev, err := openPath(path, false)
+// moonMatch selects the raw-HID vendor channel (interface 1).
+var moonMatch = Match{VID: moonVID, PID: moonPID, UsagePage: usagePageVendor, Usage: usageRawHID}
+
+// moonModule streams decoded Moonlander key events on the keys socket.
+type moonModule struct{}
+
+func (moonModule) Name() string { return "moonlander" }
+
+// openMoonlander opens the vendor channel SHARED and writes the pairing
+// init; without the init the firmware never streams, so a failed write
+// closes the device and reports an error (the caller re-awaits, and the
+// rapid re-entry lands the failure in the seized backoff class).
+func openMoonlander(env Env, path string) (*hid.Device, error) {
+	dev, err := env.OpenShared(path)
 	if err != nil {
 		return nil, fmt.Errorf("open (Input Monitoring granted?): %w", err)
 	}
@@ -113,49 +117,42 @@ func openMoonlander() (*hid.Device, error) {
 	return dev, nil
 }
 
-// moonLoop opens the Moonlander and pumps decoded events into emit,
-// reopening with backoff on device loss. Absence is QUIET: the board being
-// unplugged is a normal state, so only the first failure of an absence
-// episode and each (re)connect are logged -- never a retry-spam crash loop.
-// A parked absence backs off to reconnectCap (each attempt enumerates via
-// IOKit); a replug flips the failure class and resets the ramp.
-func moonLoop(ctx context.Context, emit func(KeyEvent)) {
-	var bo reopenBackoff
-	loggedAbsent := false
+// Run pumps decoded events into the keys socket, reopening via the shared
+// scanner on device loss. Absence is QUIET: the board being unplugged is a
+// normal state, so it parks silently in AwaitDevice; only the first open or
+// init failure of an episode and each (re)connect are logged -- never a
+// retry-spam crash loop.
+func (moonModule) Run(ctx context.Context, env Env) error {
+	loggedFail := false
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-		dev, err := openMoonlander()
+		path, err := env.AwaitDevice(ctx, moonMatch)
 		if err != nil {
-			if !loggedAbsent {
-				fmt.Fprintf(os.Stderr, "moonlander absent: %v (quiet retry, backoff caps at %s)\n", err, reconnectCap)
-				loggedAbsent = true
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(bo.fail(errors.Is(err, errAbsent))):
+			return nil
+		}
+		dev, err := openMoonlander(env, path)
+		if err != nil {
+			if !loggedFail {
+				fmt.Fprintf(os.Stderr, "moonlander open: %v (quiet retry, backoff caps at %s)\n", err, reconnectCap)
+				loggedFail = true
 			}
 			continue
 		}
-		bo.reset()
-		loggedAbsent = false
+		loggedFail = false
 		fmt.Println("moonlander open (shared), pairing init sent")
 
 		err = readLoop(ctx, dev, func(t int64, raw []byte) {
 			if ev, ok := parseMoonReport(t, raw); ok {
-				emit(ev)
+				env.Publish(ev)
 			}
 		})
 		dev.Close()
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		// device loss with keys still down would latch held highlights on
 		// every dock: synthesize the clear here -- the bus's clear-on-
 		// disconnect only fires when keys.sock itself dies
-		emit(KeyEvent{T: time.Now().UnixNano(), Kind: "clear"})
+		env.Publish(KeyEvent{T: time.Now().UnixNano(), Kind: "clear"})
 		fmt.Fprintf(os.Stderr, "moonlander gone, reopening: %v\n", err)
 	}
 }

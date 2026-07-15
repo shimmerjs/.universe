@@ -7,6 +7,7 @@
 // Usage:
 //
 //	khudson-touchd -daemon             serve frames on touch.sock; reconnect on device loss
+//	khudson-touchd -daemon -config f   enable modules per JSON config (default: edge+moonlander)
 //	khudson-touchd -daemon -record f   also append raw reports to f
 //	khudson-touchd -replay f           serve frames from a recording instead of hardware
 //	khudson-touchd                     spike mode: open digitizer, switch mode, print frames
@@ -38,6 +39,7 @@ type options struct {
 	mouse      bool
 	noMode     bool
 	daemon     bool
+	config     string
 	record     string
 	replay     string
 	socket     string
@@ -50,6 +52,7 @@ func main() {
 	flag.BoolVar(&opts.mouse, "mouse", false, "open the mouse collection instead of the digitizer")
 	flag.BoolVar(&opts.noMode, "nomode", false, "skip the device-mode feature report")
 	flag.BoolVar(&opts.daemon, "daemon", false, "serve frames on the touch socket; reconnect on device loss")
+	flag.StringVar(&opts.config, "config", "", "daemon module config JSON `file` (default: edge and moonlander enabled)")
 	flag.StringVar(&opts.record, "record", "", "append raw report hex + timestamps to this `file`")
 	flag.StringVar(&opts.replay, "replay", "", "serve frames from a recorded `file` instead of hardware")
 	flag.StringVar(&opts.socket, "socket", "", "unix socket path (default ~/Library/Application Support/khudson/touch.sock)")
@@ -66,11 +69,21 @@ func main() {
 }
 
 func run(ctx context.Context, opts options) error {
-	if opts.replay != "" && (opts.daemon || opts.list || opts.mouse || opts.noMode || opts.record != "") {
+	if opts.replay != "" && (opts.daemon || opts.list || opts.mouse || opts.noMode || opts.record != "" || opts.config != "") {
 		return errors.New("-replay replaces hardware; combine only with -socket")
 	}
 	if opts.daemon && opts.mouse {
 		return errors.New("-daemon reads the digitizer collection; -mouse is a spike-mode flag")
+	}
+
+	// resolve the module set first: a config problem must exit nonzero
+	// before any socket binds or HID work
+	var enabled map[string]bool
+	if opts.daemon {
+		var err error
+		if enabled, err = loadModuleConfig(opts.config); err != nil {
+			return err
+		}
 	}
 
 	if opts.socket == "" {
@@ -121,21 +134,7 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	if opts.daemon {
-		b, err := newBroadcaster(opts.socket)
-		if err != nil {
-			return err
-		}
-		defer b.close()
-		// the keys socket failing to bind must not take down touch input;
-		// the Moonlander source just stays off (loud once, review posture)
-		kb, err := newBroadcaster(opts.keysSocket)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "keys socket unavailable, moonlander source disabled: %v\n", err)
-			kb = nil
-		} else {
-			defer kb.close()
-		}
-		return runDaemon(ctx, b, kb, rec, opts.noMode)
+		return runDaemon(ctx, opts, enabled, rec)
 	}
 
 	return runStream(ctx, rec, opts.mouse, opts.noMode)

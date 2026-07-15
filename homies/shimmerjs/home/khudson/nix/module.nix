@@ -1,9 +1,10 @@
 # khudson home-manager module, imported host-scoped by
 # hosts/aw-chainguard/default.nix (the Edge host is the only consumer)
 # behind universe.home.khudson.enable; needs the one-time signing cert
-# bootstrap below. khudson/touchd deps fetch via vendorHash (no committed
-# vendor tree); dev lifecycle runs in nix-shell from the khudson dir
-# (shell.nix -> nix/devshell.nix).
+# bootstrap (hidbus.nix, which owns the shared signing identity and the
+# touchd daemon -- khudson requires it with both sources enabled). khudson
+# deps fetch via vendorHash (no committed vendor tree); dev lifecycle runs
+# in nix-shell from the khudson dir (shell.nix -> nix/devshell.nix).
 {
   pkgs,
   lib,
@@ -12,6 +13,7 @@
 }:
 let
   cfg = config.universe.home.khudson;
+  hidbus = config.universe.home.hidbus;
 
   # Runtime state root: macOS reaps /private/tmp entries idle
   # >~3 days, so no sockets or spools live there. Layout (three-process
@@ -31,23 +33,15 @@ let
   #   log/             agent stdout/stderr
   appSupport = "${config.home.homeDirectory}/Library/Application Support/khudson";
 
-  # Fixed out-of-store install path: the Input Monitoring grant
-  # keys on the binary's path + signature, so the granted binary must never
-  # move with the store generation.
-  touchdInstall = "${appSupport}/bin/khudson-touchd";
-
-  # Joins the install stamp beside the store path; bump the version whenever
-  # the codesign invocation in khudsonTouchdInstall changes so existing
-  # installs get re-signed on the next switch.
-  touchdSignRecipe = "sign-v2:${cfg.signingIdentity}";
-
-  # Same M1 treatment for khudson itself: dockmirror's direct AX walk and
+  # M1 treatment for khudson itself: dockmirror's direct AX walk and
   # the `ax unminimize` row verb (internal/ax) make the bus the
   # Accessibility TCC client, and a store-path client re-prompts on every
   # rebuild. hud-launcher execs this path too so the dock (spawned via
-  # os.Executable) shares the stable identity.
+  # os.Executable) shares the stable identity. The identity string is
+  # single-sourced in hidbus (it signs touchd too); referenced, never
+  # duplicated.
   khudsonInstall = "${appSupport}/bin/khudson";
-  khudsonSignRecipe = "sign-v1:${cfg.signingIdentity}";
+  khudsonSignRecipe = "sign-v1:${hidbus.signingIdentity}";
 
   # The verify+reinstall logic for both out-of-store installs, extracted so
   # the khudson-bininstall flake check (install-check.nix) exercises the
@@ -70,26 +64,6 @@ let
     # sandbox-off; if nix sandboxing is ever enabled here, this derivation
     # needs __darwinAllowLocalNetworking = true.
     doCheck = true;
-  };
-
-  # touchd: separate module + derivation so the TCC-granted binary stays small
-  # and rarely rebuilt. When wired, pass a package set from a
-  # frozen nixpkgs flake input via cfg.touchdPkgs (nixpkgs-qemu /
-  # nixpkgs-claude precedent in flake.nix) so dep bumps on the main input
-  # never touch this build. go-hid is cgo (IOKit); the apple SDK in stdenv
-  # covers it.
-  khudson-touchd = cfg.touchdPkgs.buildGoModule {
-    pname = "khudson-touchd";
-    version = "0.1.0";
-    src = ../touchd;
-    vendorHash = "sha256-UR7Ojpb3zNJS2UKgBFFJLJt24s9yEBOa6Y56xbc6RuQ=";
-    # touchd's test suite is hermetic (cgo via the stdenv clang), so it runs
-    # in the build like khudson's.
-    doCheck = true;
-    # go names the binary after the import path tail ("touchd")
-    postInstall = ''
-      mv $out/bin/touchd $out/bin/khudson-touchd
-    '';
   };
 
   # Rebranded kitty.app copy (khudson.app + generated icns) so the HUD's
@@ -197,14 +171,10 @@ let
       )
     );
 
+  # The input daemon (touchd) is hidbus's agent now (hidbus.nix); it owns
+  # the Input Monitoring TCC grant and emits contact frames on touch.sock
+  # and Moonlander key events on keys.sock.
   agentCommands = {
-    # Input: owns the Input Monitoring TCC grant, opens the digitizer HID,
-    # asserts device mode, emits contact frames on touch.sock and Moonlander
-    # key events on keys.sock. -daemon is LOAD-BEARING: the bare binary is
-    # spike mode, which dies one-shot on the gestures-driver digitizer seize
-    # and crash-loops under KeepAlive.
-    touchd = ''/bin/wait4path "${touchdInstall}" && exec "${touchdInstall}" -daemon'';
-
     # The HUD kitty, display-gated: khudson hud-launcher launches the plain
     # fullscreen window (--position + --start-as fullscreen) ONLY while the
     # Edge is connected -- a blind launch clamps a junk non-fullscreen
@@ -250,38 +220,13 @@ let
   };
 in
 {
+  imports = [ ./hidbus.nix ];
+
   options.universe.home.khudson = {
     enable = lib.mkEnableOption "khudson Edge HUD";
 
-    # touchd is signed with a persistent identity from the login
-    # keychain, NOT ad-hoc (`--sign -`), because ad-hoc = per-build cdhash =
-    # every rebuild silently kills the Input Monitoring grant and KeepAlive
-    # relaunches a touch-dead daemon.
-    #
-    # One-time per-machine bootstrap (imperative, accepted cost -- nix cannot
-    # mint login-keychain identities):
-    #   1. Keychain Access > Certificate Assistant > Create a Certificate...
-    #      Name: khudson-touchd, Identity Type: Self-Signed Root,
-    #      Certificate Type: Code Signing; store in the login keychain.
-    #      (No supported `security` one-liner creates a code-signing identity;
-    #      the GUI assistant is the documented path.)
-    #   2. If codesign later reports the cert untrusted, export it as .cer and:
-    #        security add-trusted-cert -p codeSign \
-    #          -k "$HOME/Library/Keychains/login.keychain-db" khudson-touchd.cer
-    #   3. Verify it resolves:
-    #        security find-identity -p codesigning -v | grep khudson-touchd
-    signingIdentity = lib.mkOption {
-      type = lib.types.str;
-      default = "khudson-touchd";
-      description = "Login-keychain code-signing identity used for the out-of-store khudson and touchd installs.";
-    };
-
-    touchdPkgs = lib.mkOption {
-      type = lib.types.pkgs;
-      default = pkgs;
-      defaultText = lib.literalExpression "pkgs";
-      description = "Package set for the touchd build; point at a frozen nixpkgs input when wiring.";
-    };
+    # The signing identity + touchd daemon options moved to hidbus.nix
+    # (universe.home.hidbus), the single source for both.
 
     # The claude-sessions spool is the only khudson piece that touches the
     # clod config (it contributes claude-code hooks). Split behind its own
@@ -305,6 +250,22 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
+    # The HUD needs both HID sources feeding the bus: touch.sock (edge) and
+    # keys.sock (moonlander) come from hidbus's daemon. mkDefault so a host
+    # could still override explicitly, with the assertion catching a cut
+    # that would silently starve the bus.
+    universe.home.hidbus = {
+      enable = lib.mkDefault true;
+      modules.edge = lib.mkDefault true;
+      modules.moonlander = lib.mkDefault true;
+    };
+    assertions = [
+      {
+        assertion = hidbus.enable && hidbus.modules.edge && hidbus.modules.moonlander;
+        message = "universe.home.khudson.enable requires universe.home.hidbus with modules.edge and modules.moonlander enabled: the bus consumes touch.sock and keys.sock.";
+      }
+    ];
+
     home.packages = [ khudson ];
 
     # hud kitty instance config; khudson-scoped so the daily kitty config is
@@ -352,13 +313,16 @@ in
 
     # --- ordered activation pipeline, DAG-encoded ---
     # config flip (linkGeneration, implicit)
-    #   -> khudsonRuntimeDirs
-    #   -> khudsonBinInstall + khudsonTouchdInstall
+    #   -> khudsonRuntimeDirs (+ hidbusRuntimeDirs, hidbus.nix)
+    #   -> khudsonBinInstall + khudsonTouchdInstall (hidbus.nix)
     #                             (explicitly before setupLaunchAgents, M1d)
     #   -> setupLaunchAgents      (home-manager: retires the old
     #                              org.nix-community.home.* agents)
-    #   -> khudsonAgents          (module-owned: launchers + plists + bootstrap)
-    #   -> khudsonRestart         (substrate -> bus -> hud-launcher, liveness-gated)
+    #   -> khudsonAgents          (module-owned: launchers + plists + bootstrap;
+    #                              hidbusAgents owns the touchd agent)
+    #   -> khudsonRestart         (substrate -> bus -> hud-launcher, liveness-
+    #                              gated; touchd's kickstart is hidbusKickstart,
+    #                              ordered before this)
     # Accepted cost: any switch touching khudson restarts the whole HUD,
     # including keepAlive scraped panes.
 
@@ -372,9 +336,10 @@ in
       run install -m 644 "${btopConf}" "${btopCfgDir}/btop/btop.conf"
     '';
 
-    # khudson gets the same copy-out-and-sign as touchd below (see that block
-    # for the staging discipline and the no-hardened-runtime rationale, which
-    # applies verbatim: khudson links nix-store dylibs too). No .updated
+    # khudson gets the same copy-out-and-sign as touchd (see hidbus.nix's
+    # khudsonTouchdInstall for the staging discipline and the
+    # no-hardened-runtime rationale, which applies verbatim: khudson links
+    # nix-store dylibs too). No .updated
     # marker: khudsonRestart kickstarts bus + hud unconditionally. The script
     # (install-script.nix) stages + signs BESIDE the granted binary and swaps
     # atomically only after codesign succeeds (M1c), verifies the installed
@@ -388,40 +353,7 @@ in
             "${khudsonInstall}" \
             "${appSupport}/bin/.khudson.store-path" \
             "${khudson} ${khudsonSignRecipe}" \
-            ${lib.escapeShellArg cfg.signingIdentity}
-        '';
-
-    # Copy touchd out of the store to a fixed path and sign it
-    # with the persistent identity when the store source changed OR the
-    # installed signature no longer verifies (install-script.nix; the verify
-    # runs on every activation). The .touchd-updated marker tells
-    # khudsonRestart whether a kickstart is owed, so the script only touches
-    # it on the reinstall branch.
-    #
-    # stamp = store path + signing recipe: a changed codesign invocation
-    # must re-sign even when the store build is unchanged.
-    #
-    # The script stages + signs BESIDE the granted binary and replaces
-    # atomically only after codesign succeeds (M1c): signing the install
-    # path in place means a codesign failure (identity missing on a fresh
-    # host, expired cert) leaves an unsigned copy where the TCC-granted
-    # binary was, and KeepAlive relaunches it with the grant dead.
-    #
-    # NO --options runtime: hardened runtime enforces library
-    # validation, and touchd links a nix-store dylib (libresolv)
-    # whose ad-hoc store signature fails it ("different Team IDs") --
-    # the daemon died in dyld before main.
-    # TCC grants key on the signing identity, not hardened runtime.
-    home.activation.khudsonTouchdInstall =
-      lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "khudsonRuntimeDirs" ]
-        ''
-          run ${binInstallScript}/bin/khudson-bin-install \
-            "${khudson-touchd}/bin/khudson-touchd" \
-            "${touchdInstall}" \
-            "${appSupport}/bin/.khudson-touchd.store-path" \
-            "${khudson-touchd} ${touchdSignRecipe}" \
-            ${lib.escapeShellArg cfg.signingIdentity} \
-            "${appSupport}/.touchd-updated"
+            ${lib.escapeShellArg hidbus.signingIdentity}
         '';
 
     # One ordered restart pipeline, each step gated on liveness of
@@ -443,30 +375,25 @@ in
       }
       khudsonUid=$(id -u)
 
-      # 1. touchd, only if the install step replaced the binary. Its TCC
-      #    grant survives the restart because path + signing identity are
-      #    stable (M1).
-      if [ -e "${appSupport}/.touchd-updated" ]; then
-        run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "touchd"}" || true
-        run rm -f "${appSupport}/.touchd-updated"
-      fi
+      # (touchd's conditional kickstart moved to hidbusKickstart, hidbus.nix,
+      # ordered before this step.)
 
-      # 2. scrape substrate. The agent clears its own stale socket pre-exec;
+      # 1. scrape substrate. The agent clears its own stale socket pre-exec;
       #    the wait gates the bus on a live substrate to adopt against.
       run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "substrate"}" || true
       khudsonWaitSock "${appSupport}/kitty.sock" || true
 
-      # 3. bus, only after the substrate is up.
+      # 2. bus, only after the substrate is up.
       run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "bus"}" || true
       khudsonWaitSock "${appSupport}/khudson.sock" || true
 
-      # 4. hud-launcher. NO socket wait: the launcher only creates the HUD
+      # 3. hud-launcher. NO socket wait: the launcher only creates the HUD
       #    (and its kitty-panel.sock) while the Edge is connected, so a wait
       #    here would stall every switch on an unplugged display. The dock
       #    reconnects to the bus whenever it does come up.
       run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "hud"}" || true
 
-      # 5. dock-adopt: dock re-handshakes with the bus (reports grid +
+      # 4. dock-adopt: dock re-handshakes with the bus (reports grid +
       #    per-slot view state). Stub until `khudson ctl adopt`
       #    exists; the dock itself was already restarted with its kitty.
       run "${khudson}/bin/khudson" ctl adopt 2>/dev/null || true

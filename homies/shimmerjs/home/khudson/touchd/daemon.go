@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/sstallion/go-hid"
@@ -57,95 +56,48 @@ func (b *reopenBackoff) fail(absent bool) time.Duration {
 // reset marks a successful open; the next failure starts a fresh episode.
 func (b *reopenBackoff) reset() { b.next = 0 }
 
-// runDaemon serves parsed frames on the touch socket from BOTH Edge input
-// collections concurrently: the digitizer (tier 1 -- silent until the vendor
-// mode switch is cracked, kept open so a future unlock streams immediately)
-// and the mouse collection (tier 2 -- the proven single-touch path).
-// A third source, the Moonlander raw-HID vendor channel, serves decoded key
-// events on the keys socket (kb; nil when the keys broadcaster could not
-// start). Each source reopens with backoff on device loss; the digitizer
-// reasserts device mode on every reopen and de-asserts on shutdown.
-// -record captures Edge reports only.
-func runDaemon(ctx context.Context, b, kb *broadcaster, rec *recorder, noMode bool) error {
-	var mu sync.Mutex
-	emit := func(t int64, raw []byte) {
-		mu.Lock()
-		defer mu.Unlock()
-		if rec != nil {
-			rec.write(t, raw)
-		}
-		if f, ok := parseReport(t, raw); ok {
-			b.publishJSON(f)
-		}
-	}
-	var wg sync.WaitGroup
-	for _, mouse := range []bool{false, true} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			collectionLoop(ctx, mouse, noMode, emit)
-		}()
-	}
-	if kb != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			moonLoop(ctx, func(ev KeyEvent) { kb.publishJSON(ev) })
-		}()
-	}
-	wg.Wait()
-	return nil
+// runDaemon assembles the enabled modules and runs them under the registry:
+// the edge module serves parsed frames on the touch socket, the moonlander
+// module serves decoded key events on the keys socket, and every module
+// reopens its device via the shared arrival scanner. A module whose socket
+// cannot bind is disabled loudly while the others run (config problems fail
+// fast in run instead). -record captures Edge reports only.
+func runDaemon(ctx context.Context, opts options, enabled map[string]bool, rec *recorder) error {
+	return runDaemonScanner(ctx, newScanner(), opts, enabled, rec)
 }
 
-// collectionLoop opens one collection and pumps it into emit, reopening with
-// backoff on device loss or open failure (a missing Input Monitoring grant or
-// a seize-holding driver surfaces here as repeated open errors).
-func collectionLoop(ctx context.Context, mouse, noMode bool, emit func(int64, []byte)) {
-	name := "digitizer"
-	if mouse {
-		name = "mouse"
+func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled map[string]bool, rec *recorder) error {
+	var tap func(int64, []byte)
+	if rec != nil {
+		tap = rec.write
 	}
-	// a permanently seized collection (gestures driver holding the
-	// digitizer, a user-parked state) retries forever -- the wait backs
-	// off to reconnectCap so an all-day failure goes quiet, and logs only
-	// when the error changes or hourly, not per attempt
-	var bo reopenBackoff
-	var lastErr string
-	var lastLog time.Time
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		dev, asserted, err := openCollection(mouse, noMode, false)
-		if err != nil {
-			wait := bo.fail(errors.Is(err, errAbsent))
-			if err.Error() != lastErr || time.Since(lastLog) >= time.Hour {
-				fmt.Fprintf(os.Stderr, "%s open: %v (retrying in %s, backoff caps at %s, logging on change or hourly)\n", name, err, wait, reconnectCap)
-				lastErr = err.Error()
-				lastLog = time.Now()
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(wait):
-			}
+	specs := []struct {
+		mod    Module
+		socket string
+		tap    func(int64, []byte)
+	}{
+		{mod: &edgeModule{noMode: opts.noMode}, socket: opts.socket, tap: tap},
+		{mod: moonModule{}, socket: opts.keysSocket},
+	}
+	var entries []moduleEntry
+	for _, s := range specs {
+		if !enabled[s.mod.Name()] {
 			continue
 		}
-		bo.reset()
-		lastErr = ""
-		fmt.Printf("%s open (mode asserted: %v)\n", name, asserted)
-
-		err = readLoop(ctx, dev, emit)
-		if ctx.Err() != nil {
-			if asserted {
-				deassertMode(dev)
-			}
-			dev.Close()
-			return
+		// a module socket failing to bind must not take down the others;
+		// that module just stays off (loud once, review posture)
+		b, err := newBroadcaster(s.socket)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s socket unavailable, %s module disabled: %v\n", s.socket, s.mod.Name(), err)
+			continue
 		}
-		dev.Close()
-		fmt.Fprintf(os.Stderr, "%s gone, reopening: %v\n", name, err)
+		defer b.close()
+		entries = append(entries, moduleEntry{mod: s.mod, env: Env{publish: b.publishJSON, recordTap: s.tap, scan: sc}})
 	}
+	if len(entries) == 0 {
+		return errors.New("no modules running")
+	}
+	return runModules(ctx, sc, entries)
 }
 
 // runStream is spike mode: open the collection and print parsed frames (and
