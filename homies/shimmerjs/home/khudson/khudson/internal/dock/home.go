@@ -583,6 +583,10 @@ const (
 	cupOffGlyph = "\U000F06CA" // nf-md-coffee_outline
 )
 
+// mouseGlyph marks the strip battery readout as the MX mouse's charge --
+// a bare battery glyph reads as the machine's.
+const mouseGlyph = "\U000F037D" // nf-md-mouse
+
 // Battery glyphs (nerd font material design icons, the cup-glyph
 // convention): the strip battery readout picks one by state-of-charge bucket,
 // swapping to the charging glyph while wired. batUnknownGlyph is the

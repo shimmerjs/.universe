@@ -119,7 +119,7 @@ func TestStripHitTable(t *testing.T) {
 		{13, 22, 5, 2},  // tab: sys
 		{18, 22, 3, 2},  // flip chevron glyph
 		{22, 22, 3, 2},  // caffeinate cup glyph (after the 1-col gap)
-		{25, 22, 8, 2},  // battery readout cell (always-present chrome)
+		{25, 22, 10, 2}, // battery readout cell (always-present chrome)
 		{0, 22, 196, 2}, // whole-strip consume rect, last
 	}
 	if len(m.hits) < len(want) {
@@ -495,8 +495,8 @@ func TestStripBatteryReadout(t *testing.T) {
 	m.logi = &proto.LogiState{TimeNS: m.now.UnixNano(), Kind: "mx", SoC: 50, Charging: false}
 	_, bot := stripLines(t, m)
 	plain := ansi.Strip(bot)
-	if !strings.Contains(plain, batHalfGlyph) {
-		t.Error("fresh battery frame missing the half glyph")
+	if !strings.Contains(plain, mouseGlyph+" "+batHalfGlyph) {
+		t.Error("fresh battery frame missing the mouse marker + half glyph")
 	}
 	if !strings.Contains(plain, "50%") {
 		t.Error("fresh battery frame missing the pct")
@@ -507,15 +507,15 @@ func TestStripBatteryReadout(t *testing.T) {
 	if !strings.Contains(ansi.Strip(bot), "50%") {
 		t.Error("stale battery frame dropped the last-known pct")
 	}
-	if !strings.Contains(bot, chromeDim.Render(batHalfGlyph+" 50%")) {
+	if !strings.Contains(bot, chromeDim.Render(mouseGlyph+" "+batHalfGlyph+" 50%")) {
 		t.Error("stale battery frame not rendered dim")
 	}
 
 	m.logi = nil
 	_, bot = stripLines(t, m)
 	plain = ansi.Strip(bot)
-	if !strings.Contains(plain, batUnknownGlyph) {
-		t.Error("no-data battery cell missing the placeholder glyph")
+	if !strings.Contains(plain, mouseGlyph+" "+batUnknownGlyph) {
+		t.Error("no-data battery cell missing the mouse marker + placeholder glyph")
 	}
 	if strings.Contains(plain, "%") {
 		t.Error("no-data battery cell rendered a pct")
@@ -547,11 +547,12 @@ func TestStripActFailWarnCell(t *testing.T) {
 	}
 }
 
-// The kitty_mod cell renders the configured chord as modifier glyphs, and
-// renders nothing at all when the chord is empty.
+// The kitty_mod cell renders a "kitty_mod" text label ahead of the chord's
+// modifier glyphs (bare glyphs read as floating keys), and renders nothing
+// at all when the chord is empty.
 func TestStripKittyModNote(t *testing.T) {
-	want := kittyModLabel("ctrl+opt+shift")
-	if want == "" {
+	want := "kitty_mod " + kittyModLabel("ctrl+opt+shift")
+	if want == "kitty_mod " {
 		t.Fatal("kittyModLabel produced no glyphs for a known chord")
 	}
 

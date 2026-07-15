@@ -298,10 +298,11 @@ const (
 	stripExpandGlyph   = "\U000F0143" // nf-md-chevron_up
 )
 
-// batteryCellW is the strip battery readout's fixed width in cells: a
-// nerd-font battery glyph plus the integer pct, budgeted so the largest
-// reading ("100%") fits and the always-present cell never shifts the layout.
-const batteryCellW = 8
+// batteryCellW is the strip battery readout's fixed width in cells: the
+// mouse marker, a nerd-font battery glyph, and the integer pct, budgeted so
+// the largest reading ("100%") fits and the always-present cell never
+// shifts the layout.
+const batteryCellW = 10
 
 // logiStale is how long a battery frame stays trusted; past it the readout
 // dims to its last-known value. Computed against m.now, which the 1 s tick
@@ -913,15 +914,17 @@ func (m *model) renderStrip() string {
 				m.sendCaffeinateToggle()
 			})
 		}
-		// kitty_mod chord note: the configured kitty_mod rendered as compact
-		// modifier glyphs, a readout (consumeTap). Empty renders nothing --
-		// no cell, no hit. Budgeted like a tab (lipgloss.Width + 2) so the
-		// ambiguous-width glyphs never desync the row from the hit rect.
+		// kitty_mod chord note: a "kitty_mod" text label ahead of the compact
+		// modifier glyphs (bare glyphs read as keys floating in the strip),
+		// a readout (consumeTap). Empty renders nothing -- no cell, no hit.
+		// Budgeted like a tab (lipgloss.Width + 2) so the ambiguous-width
+		// glyphs never desync the row from the hit rect.
 		if km := kittyModLabel(m.cfg.Strip.KittyMod); km != "" {
-			w := lipgloss.Width(km) + 2
+			label := "kitty_mod " + km
+			w := lipgloss.Width(label) + 2
 			if x+w <= m.width {
 				top.WriteString(strings.Repeat(" ", w))
-				bot.WriteString(fitCellPad(" "+chromeDim.Render(km)+" ", w))
+				bot.WriteString(fitCellPad(" "+chromeDim.Render(label)+" ", w))
 				m.hits = append(m.hits, hitRegion{area: rect{x, yTop, w, stripH}, do: consumeTap})
 				x += w
 			}
@@ -934,15 +937,17 @@ func (m *model) renderStrip() string {
 	// bucket glyph + pct otherwise, dimmed once the frame ages past logiStale.
 	// A readout: consumeTap owns the hit.
 	if x+batteryCellW <= m.width {
+		// mouseGlyph prefixes every state: a bare battery glyph reads as
+		// the machine's charge, and this cell is the MX mouse's.
 		glyph, tone := batUnknownGlyph, chromeDim
-		label := glyph
+		label := mouseGlyph + " " + glyph
 		if m.logi != nil {
 			glyph = batteryGlyph(m.logi.SoC, m.logi.Charging)
 			tone = chromeFG
 			if m.now.Sub(time.Unix(0, m.logi.TimeNS)) > logiStale {
 				tone = chromeDim
 			}
-			label = glyph + " " + strconv.Itoa(m.logi.SoC) + "%"
+			label = mouseGlyph + " " + glyph + " " + strconv.Itoa(m.logi.SoC) + "%"
 		}
 		top.WriteString(strings.Repeat(" ", batteryCellW))
 		bot.WriteString(fitCellPad(" "+tone.Render(label)+" ", batteryCellW))
