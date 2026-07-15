@@ -43,6 +43,9 @@ type Strip struct {
 	// Flip is the collapse/expand chevron between the tabs and the toggles;
 	// nil renders no chevron.
 	Flip *StripFlip `json:"flip,omitempty"`
+	// KittyMod is the configured kitty_mod chord ("ctrl+opt+shift"), rendered
+	// as a compact modifier-glyph note on the strip; empty renders nothing.
+	KittyMod string `json:"kittyMod,omitempty"`
 }
 
 // StripFlip is the flip chevron's layout pair: the chevron renders only

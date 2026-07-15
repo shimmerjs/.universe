@@ -88,6 +88,10 @@ let
     m1ddc = "${pkgs.m1ddc}/bin/m1ddc";
     spotatui = "/etc/profiles/per-user/${config.home.username}/bin/spotatui";
     claudeSpool = claudeSpool;
+    # strip kitty_mod note single-sourced from the daily kitty config, so the
+    # readout and the real chord can never drift. Tolerate a host that enables
+    # khudson without setting kitty_mod ("" renders no note per the schema).
+    kittyMod = config.programs.kitty.settings.kitty_mod or "";
   };
   # Vet the rendered config against the schema embedded in this same khudson
   # build, so config/schema drift fails the closure at build time instead of

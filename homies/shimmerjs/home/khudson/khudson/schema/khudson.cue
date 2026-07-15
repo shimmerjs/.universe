@@ -45,6 +45,9 @@ import "time"
 	entries: [...{label: string, target: string}] | *[]
 	toggles: [...{kind: string, on?: string, off?: string}] | *[]
 	flip?: {expanded: string, collapsed: string}
+	// configured kitty_mod chord, rendered as a compact modifier-glyph note;
+	// unset renders nothing
+	kittyMod?: string
 }
 
 #ExecRender: {

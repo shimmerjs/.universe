@@ -88,6 +88,9 @@ func TestStripGeometry(t *testing.T) {
 	if !strings.Contains(ansi.Strip(bot), cupOffGlyph) {
 		t.Error("bottom row missing the cup glyph")
 	}
+	if !strings.Contains(ansi.Strip(bot), batUnknownGlyph) {
+		t.Error("bottom row missing the battery placeholder glyph (no logi frame yet)")
+	}
 	if !strings.Contains(ansi.Strip(bot), stripCollapseGlyph) {
 		t.Error("bottom row missing the flip chevron (home is the expanded layout)")
 	}
@@ -103,8 +106,9 @@ func TestStripGeometry(t *testing.T) {
 }
 
 // Strip hit zones ride the body table's tail: icon, the three tabs spanning
-// both rows, the flip chevron, the cup, then the whole-strip consume rect
-// last -- no overlap among the specific rects.
+// both rows, the flip chevron, the cup, the always-present battery readout,
+// then the whole-strip consume rect last -- no overlap among the specific
+// rects. (No kitty_mod cell here: stripModel leaves Strip.KittyMod empty.)
 func TestStripHitTable(t *testing.T) {
 	m := stripModel()
 	m.View()
@@ -115,6 +119,7 @@ func TestStripHitTable(t *testing.T) {
 		{13, 22, 5, 2},  // tab: sys
 		{18, 22, 3, 2},  // flip chevron glyph
 		{22, 22, 3, 2},  // caffeinate cup glyph (after the 1-col gap)
+		{25, 22, 8, 2},  // battery readout cell (always-present chrome)
 		{0, 22, 196, 2}, // whole-strip consume rect, last
 	}
 	if len(m.hits) < len(want) {
@@ -131,8 +136,9 @@ func TestStripHitTable(t *testing.T) {
 			t.Errorf("body hit %d (%+v) reaches into the strip", i, h.area)
 		}
 	}
-	for i := range 6 {
-		for j := i + 1; j < 6; j++ {
+	specific := len(want) - 1 // every rect but the whole-strip consume tail
+	for i := range specific {
+		for j := i + 1; j < specific; j++ {
 			a, b := got[i].area, got[j].area
 			if a.x < b.x+b.w && b.x < a.x+a.w {
 				t.Errorf("strip hits %d and %d overlap: %+v %+v", i, j, a, b)
@@ -454,5 +460,87 @@ func TestStripTapFlashPaletteLift(t *testing.T) {
 	m.now = time.Now().Add(tapFlashFor + time.Second)
 	if v := m.View(); strings.Contains(v.Content, flashed) {
 		t.Error("bg-lift flash did not revert after expiry")
+	}
+}
+
+// The battery glyph tracks the state-of-charge bucket, and charging outranks
+// the bucket at every level.
+func TestStripBatteryGlyphBuckets(t *testing.T) {
+	cases := []struct {
+		soc  int
+		want string
+	}{
+		{0, batEmptyGlyph},
+		{25, batQuarterGlyph},
+		{50, batHalfGlyph},
+		{75, batThreeQuarterGlyph},
+		{100, batFullGlyph},
+	}
+	for _, c := range cases {
+		if g := batteryGlyph(c.soc, false); g != c.want {
+			t.Errorf("batteryGlyph(%d, false) = %q, want %q", c.soc, g, c.want)
+		}
+		if g := batteryGlyph(c.soc, true); g != batChargingGlyph {
+			t.Errorf("batteryGlyph(%d, true) = %q, want the charging glyph", c.soc, g)
+		}
+	}
+}
+
+// A fresh battery frame renders its bucket glyph + pct in the live tone; a
+// stale frame keeps the last-known SoC but dims it (bold-vs-faint liveness);
+// no-data renders the neutral placeholder with no pct -- never blank, and the
+// cell width never shifts across these states.
+func TestStripBatteryReadout(t *testing.T) {
+	m := stripModel()
+	m.logi = &proto.LogiState{TimeNS: m.now.UnixNano(), Kind: "mx", SoC: 50, Charging: false}
+	_, bot := stripLines(t, m)
+	plain := ansi.Strip(bot)
+	if !strings.Contains(plain, batHalfGlyph) {
+		t.Error("fresh battery frame missing the half glyph")
+	}
+	if !strings.Contains(plain, "50%") {
+		t.Error("fresh battery frame missing the pct")
+	}
+
+	m.logi = &proto.LogiState{TimeNS: m.now.Add(-2 * logiStale).UnixNano(), Kind: "mx", SoC: 50}
+	_, bot = stripLines(t, m)
+	if !strings.Contains(ansi.Strip(bot), "50%") {
+		t.Error("stale battery frame dropped the last-known pct")
+	}
+	if !strings.Contains(bot, chromeDim.Render(batHalfGlyph+" 50%")) {
+		t.Error("stale battery frame not rendered dim")
+	}
+
+	m.logi = nil
+	_, bot = stripLines(t, m)
+	plain = ansi.Strip(bot)
+	if !strings.Contains(plain, batUnknownGlyph) {
+		t.Error("no-data battery cell missing the placeholder glyph")
+	}
+	if strings.Contains(plain, "%") {
+		t.Error("no-data battery cell rendered a pct")
+	}
+}
+
+// The kitty_mod cell renders the configured chord as modifier glyphs, and
+// renders nothing at all when the chord is empty.
+func TestStripKittyModNote(t *testing.T) {
+	want := kittyModLabel("ctrl+opt+shift")
+	if want == "" {
+		t.Fatal("kittyModLabel produced no glyphs for a known chord")
+	}
+
+	m := stripModel()
+	m.cfg.Strip.KittyMod = "ctrl+opt+shift"
+	_, bot := stripLines(t, m)
+	if !strings.Contains(ansi.Strip(bot), want) {
+		t.Errorf("kitty_mod note %q not rendered in %q", want, ansi.Strip(bot))
+	}
+
+	m2 := stripModel()
+	m2.cfg.Strip.KittyMod = ""
+	_, bot2 := stripLines(t, m2)
+	if strings.Contains(ansi.Strip(bot2), want) {
+		t.Error("empty kitty_mod still rendered the chord glyphs")
 	}
 }

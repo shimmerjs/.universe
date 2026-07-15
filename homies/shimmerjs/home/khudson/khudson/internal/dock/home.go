@@ -583,6 +583,20 @@ const (
 	cupOffGlyph = "\U000F06CA" // nf-md-coffee_outline
 )
 
+// Battery glyphs (nerd font material design icons, the cup-glyph
+// convention): the strip battery readout picks one by state-of-charge bucket,
+// swapping to the charging glyph while wired. batUnknownGlyph is the
+// no-data placeholder so the always-present cell never renders blank.
+const (
+	batEmptyGlyph        = "\U000F008E" // nf-md-battery_outline
+	batQuarterGlyph      = "\U000F007B" // nf-md-battery_20
+	batHalfGlyph         = "\U000F007E" // nf-md-battery_50
+	batThreeQuarterGlyph = "\U000F0080" // nf-md-battery_70
+	batFullGlyph         = "\U000F0079" // nf-md-battery
+	batChargingGlyph     = "\U000F0084" // nf-md-battery_charging
+	batUnknownGlyph      = "\U000F0091" // nf-md-battery_unknown
+)
+
 // trayToggle is one state-toggle button from nav-tray params.toggles; kind
 // names the bus state it reflects ("caffeinate" is the only kind).
 type trayToggle struct {

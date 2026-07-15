@@ -188,6 +188,11 @@ type model struct {
 	// only a bus-absent dock stays unknown -- the cup renders that as off).
 	caffeinate string
 
+	// logi is the latest MX-device battery frame as broadcast (TypeLogiState);
+	// nil until the first frame lands. The strip battery cell reads it at
+	// render, dimming once it ages past the staleness horizon.
+	logi *proto.LogiState
+
 	// skew marks a bus TypeLayout naming a layout this config lacks; the
 	// next successful switch clears it. Chrome (the strip cup) renders it
 	// as a warn state.
@@ -287,6 +292,16 @@ const (
 	stripCollapseGlyph = "\U000F0140" // nf-md-chevron_down
 	stripExpandGlyph   = "\U000F0143" // nf-md-chevron_up
 )
+
+// batteryCellW is the strip battery readout's fixed width in cells: a
+// nerd-font battery glyph plus the integer pct, budgeted so the largest
+// reading ("100%") fits and the always-present cell never shifts the layout.
+const batteryCellW = 8
+
+// logiStale is how long a battery frame stays trusted; past it the readout
+// dims to its last-known value. Computed against m.now, which the 1 s tick
+// advances -- no new timer.
+const logiStale = 5 * time.Minute
 
 // panelRegion is the home content area in cells (the whole body -- the base
 // HUD draws no outer frame); the bus receives it via hello/grid so the
@@ -589,6 +604,11 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 		}
 	case proto.TypeKey:
 		m.handleKeyMsg(msg)
+	case proto.TypeLogiState:
+		// the battery readout lives in the strip chrome, which View rebuilds
+		// every frame (never part of homeCache), so storing the frame is
+		// enough -- the next View picks it up without dropping the body cache
+		m.logi = msg.Logi
 	case proto.TypeGesture:
 		if msg.Gesture == nil {
 			return
@@ -745,11 +765,12 @@ func (m *model) renderSkewStub(bodyH int) string {
 // of the status content: the drawn home icon, config tab labels (active
 // target accented, stub targets flashing "soon"), the flip chevron (only
 // while the active layout is one of the strip.flip pair), drawn toggle cups,
-// then layout, bus state, and gesture tally, the clock flush right. Icons
-// occupy both rows as real cells (see the strip art block for why escapes
-// cannot); 1x text sits on the BOTTOM row with blank cells above it.
-// Registers the strip hits as it places the band: icon, tabs, chevron, cups,
-// then a whole-strip consume rect so strip taps never leak into the body
+// the kitty_mod chord note, the always-present battery readout, then layout,
+// bus state, and gesture tally, the clock flush right. Icons occupy both rows
+// as real cells (see the strip art block for why escapes cannot); 1x text
+// sits on the BOTTOM row with blank cells above it. Registers the strip hits
+// as it places the band: icon, tabs, chevron, cups, kitty_mod, battery, then
+// a whole-strip consume rect so strip taps never leak into the body
 // (first-match table).
 func (m *model) renderStrip() string {
 	yTop := m.height - stripH
@@ -868,6 +889,41 @@ func (m *model) renderStrip() string {
 				m.sendCaffeinateToggle()
 			})
 		}
+		// kitty_mod chord note: the configured kitty_mod rendered as compact
+		// modifier glyphs, a readout (consumeTap). Empty renders nothing --
+		// no cell, no hit. Budgeted like a tab (lipgloss.Width + 2) so the
+		// ambiguous-width glyphs never desync the row from the hit rect.
+		if km := kittyModLabel(m.cfg.Strip.KittyMod); km != "" {
+			w := lipgloss.Width(km) + 2
+			if x+w <= m.width {
+				top.WriteString(strings.Repeat(" ", w))
+				bot.WriteString(fitCellPad(" "+chromeDim.Render(km)+" ", w))
+				m.hits = append(m.hits, hitRegion{area: rect{x, yTop, w, stripH}, do: consumeTap})
+				x += w
+			}
+		}
+	}
+
+	// battery readout: always-present chrome (outside the strip guard above).
+	// A fixed-width multi-col cell -- glyph + integer pct exceed stripIconW --
+	// so the layout never shifts: a neutral placeholder with no data, the SoC
+	// bucket glyph + pct otherwise, dimmed once the frame ages past logiStale.
+	// A readout: consumeTap owns the hit.
+	if x+batteryCellW <= m.width {
+		glyph, tone := batUnknownGlyph, chromeDim
+		label := glyph
+		if m.logi != nil {
+			glyph = batteryGlyph(m.logi.SoC, m.logi.Charging)
+			tone = chromeFG
+			if m.now.Sub(time.Unix(0, m.logi.TimeNS)) > logiStale {
+				tone = chromeDim
+			}
+			label = glyph + " " + strconv.Itoa(m.logi.SoC) + "%"
+		}
+		top.WriteString(strings.Repeat(" ", batteryCellW))
+		bot.WriteString(fitCellPad(" "+tone.Render(label)+" ", batteryCellW))
+		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, batteryCellW, stripH}, do: consumeTap})
+		x += batteryCellW
 	}
 
 	// status remainder, width-fitted; everything left of it is exact-width
@@ -894,6 +950,62 @@ func (m *model) renderStrip() string {
 
 	m.hits = append(m.hits, hitRegion{area: rect{0, yTop, m.width, stripH}, do: consumeTap})
 	return top.String() + "\n" + bot.String()
+}
+
+// batteryGlyph picks the readout glyph by state-of-charge bucket
+// (empty/quarter/half/three-quarter/full), or the charging glyph while wired.
+func batteryGlyph(soc int, charging bool) string {
+	if charging {
+		return batChargingGlyph
+	}
+	switch {
+	case soc < 13:
+		return batEmptyGlyph
+	case soc < 38:
+		return batQuarterGlyph
+	case soc < 63:
+		return batHalfGlyph
+	case soc < 88:
+		return batThreeQuarterGlyph
+	default:
+		return batFullGlyph
+	}
+}
+
+// kittyModGlyph maps a kitty_mod chord token to a compact modifier glyph
+// (escaped so the source stays ASCII). Unknown tokens fall through to their
+// raw text in kittyModLabel.
+var kittyModGlyph = map[string]string{
+	"ctrl":    "\u2303", // up arrowhead
+	"control": "\u2303",
+	"opt":     "\u2325", // option key
+	"option":  "\u2325",
+	"alt":     "\u2325",
+	"shift":   "\u21E7", // upwards white arrow
+	"cmd":     "\u2318", // place of interest sign
+	"command": "\u2318",
+	"super":   "\u2318",
+}
+
+// kittyModLabel renders a "+"-joined kitty_mod chord as its modifier glyphs
+// (unknown tokens kept as short text); empty in, empty out.
+func kittyModLabel(chord string) string {
+	if chord == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, tok := range strings.Split(chord, "+") {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok == "" {
+			continue
+		}
+		if g, ok := kittyModGlyph[tok]; ok {
+			b.WriteString(g)
+		} else {
+			b.WriteString(tok)
+		}
+	}
+	return b.String()
 }
 
 // layoutKind is the active layout's engine kind; home is the only shipped

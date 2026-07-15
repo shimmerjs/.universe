@@ -156,10 +156,11 @@ func TestNonHomeLayoutFullWidth(t *testing.T) {
 		}
 	}
 
-	// full hit-table lock: only the status strip's chrome (home icon +
-	// whole-strip consume; no strip config here)
+	// full hit-table lock: only the status strip's chrome (home icon, the
+	// always-present battery readout, whole-strip consume; no strip config here)
 	want := []rect{
 		{0, 18, 3, 2},   // strip: home icon glyph
+		{3, 18, 8, 2},   // strip: battery readout (always-present chrome)
 		{0, 18, 120, 2}, // strip: whole-strip consume rect
 	}
 	if len(m.hits) != len(want) {

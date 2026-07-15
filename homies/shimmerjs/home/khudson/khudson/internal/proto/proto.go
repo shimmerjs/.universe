@@ -39,6 +39,11 @@ const (
 	// other dock->bus traffic is event-driven, and the bus reaps a dock
 	// silent past its read grace.
 	TypePing = "ping"
+	// TypeLogiState carries the latest MX-device battery frame (Msg.Logi) to
+	// docks. The bus caches the last one and replays it in the dock greeting
+	// (the TypeCaffeinate pattern); a distinct type because the battery
+	// cadence is unrelated to the theme channel it would otherwise ride.
+	TypeLogiState = "logi"
 )
 
 // HeartbeatEvery is the dock's TypePing cadence while connected; the bus
@@ -97,6 +102,9 @@ type Msg struct {
 
 	// key: one live Moonlander event
 	Key *KeyEvent `json:"key,omitempty"`
+
+	// logi: the latest MX-device battery state (bus -> dock)
+	Logi *LogiState `json:"logi,omitempty"`
 
 	// snapshot: one get-text --ansi capture of Widget's window; Cols/Rows
 	// carry the scraped grid size. Stale marks a frame older than 3x the
@@ -174,6 +182,19 @@ type KeyEvent struct {
 	Col     int    `json:"col,omitempty"`
 	Pressed bool   `json:"pressed,omitempty"`
 	Layer   int    `json:"layer,omitempty"`
+}
+
+// LogiState is one line on logiretch.sock and the payload of a TypeLogiState
+// broadcast: an MX-device battery reading. Kind names the device, SoC is
+// state-of-charge percent (0..100), Charging is the wired/charging flag, and
+// State is the raw HID++ battery-status code. TimeNS is the read wall clock
+// (unix nanoseconds); the dock dims the readout once it goes stale against it.
+type LogiState struct {
+	TimeNS   int64  `json:"t"`
+	Kind     string `json:"kind"`
+	SoC      int    `json:"soc"`
+	Charging bool   `json:"charging"`
+	State    int    `json:"state"`
 }
 
 // Status is the resp payload for `khudson ctl status`.

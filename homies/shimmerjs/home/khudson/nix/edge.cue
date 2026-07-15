@@ -195,6 +195,9 @@ strip: {
 		{kind: "caffeinate", on: "\U000F0176", off: "\U000F06CA"},
 	]
 	flip: {expanded: "home", collapsed: "home-no-kb"}
+	// kitty_mod chord note, templated from programs.kitty.settings.kitty_mod
+	// (module.nix replaceVars) so the strip and the daily kitty never drift.
+	kittyMod: "@kittyMod@"
 }
 
 layouts: {

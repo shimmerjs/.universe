@@ -58,6 +58,10 @@ type Bus struct {
 	// the dock's active-panel content region; scraped windows get sized
 	// to it (zero until a dock reports in)
 	panelCols, panelRows int
+	// lastLogi is the most recent MX-device battery frame (logiLoop); the
+	// greeting replays it so a reconnecting dock renders the readout at once.
+	// nil until the first frame lands (or while logiretch is absent).
+	lastLogi *proto.LogiState
 
 	// themeMu serializes whole theme switches (set-colors + m1ddc +
 	// re-fetch) so concurrent ctl calls cannot interleave RC ops; never
@@ -164,6 +168,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	go b.touchLoop(ctx)
 	go b.keyLoop(ctx)
+	go b.logiLoop(ctx)
 	go b.mainKittyLoop(ctx, mainKittyProbeInterval)
 	go b.inputWorker()
 	caffDone := make(chan struct{})
@@ -293,6 +298,9 @@ func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hel
 	theme := b.themeLocked()
 	_ = enc.Encode(proto.Msg{Type: proto.TypeTheme, Theme: theme, Palette: b.palette})
 	_ = enc.Encode(proto.Msg{Type: proto.TypeCaffeinate, Caffeinate: b.caff.wire()})
+	if b.lastLogi != nil {
+		_ = enc.Encode(proto.Msg{Type: proto.TypeLogiState, Logi: b.lastLogi})
+	}
 	for _, id := range b.reg.IDs() {
 		st, _ := b.reg.Get(id)
 		snap, native, cols, rows, polledAt := st.cached()
