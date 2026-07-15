@@ -111,9 +111,9 @@ the persistent <code>shimmerjs</code> identity at a fixed out-of-store path (the
 
   <!-- input daemons -->
   <rect class="boxwarn" x="206" y="56" width="186" height="66"/>
-  <text class="hd warnt" x="216" y="76">Gestures driver</text>
-  <text class="dim" x="216" y="92">seizes the digitizer (today);</text>
-  <text class="dim" x="216" y="106">touch -&gt; clicks, hold -&gt; right-click</text>
+  <text class="hd warnt" x="216" y="76">Touchscreen Gestures.app</text>
+  <text class="dim" x="216" y="92">com.touchscreen.gestures (launchd)</text>
+  <text class="dim" x="216" y="106">seizes both Edge HID collections</text>
 
   <rect class="n-agent" x="206" y="150" width="186" height="240"/>
   <text class="hd" x="216" y="170">magicbusd</text>
@@ -202,7 +202,8 @@ the persistent <code>shimmerjs</code> identity at a fixed out-of-store path (the
   <!-- SPINE: device -> daemon -> bus -> dock -->
   <path class="spinewarn" d="M182 89 L202 89"/>
   <path class="spinewarn" d="M392 76 C 560 34, 740 66, 862 136"/>
-  <text class="lbl warnt" x="470" y="46">touch TODAY: taps as clicks; hold = right-click -&gt; menus</text>
+  <text class="lbl warnt" x="500" y="30">touch TODAY: synthesized pointer events via the macOS window server</text>
+  <text class="lbl warnt" x="500" y="42">(not a direct pipe) -- taps as clicks; hold = right-click -&gt; menus</text>
   <path class="flowdim" d="M178 112 C 192 150, 192 190, 202 222"/>
   <text class="lbl" x="118" y="164">post-swap (parked)</text>
 
