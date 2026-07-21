@@ -125,7 +125,6 @@
       ];
 
       home.packages = with pkgs; [
-        keymapp
         inputs.zapp.packages.${pkgs.stdenv.hostPlatform.system}.default
         inputs.spotatui.packages.${pkgs.stdenv.hostPlatform.system}.default
         telegram-desktop
