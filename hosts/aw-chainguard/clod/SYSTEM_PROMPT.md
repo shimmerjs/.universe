@@ -38,3 +38,4 @@ Keep task list up to date.
 
 ## EFFORT
 - I run high-effort (ultracode/workflows) deliberately. For research, review, and design: thorough and adversarially-verified over fast. For a small mechanical ask: just do it.
+- Workflow fanouts (aw-review/aw-audit/aw-design-review) fire at ARC END over the accumulated range, not after each milestone. Mid-arc, lean gates only (build, tests, /verify); note milestone boundaries so the arc-end run has its range.

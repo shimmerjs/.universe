@@ -1,7 +1,7 @@
 export const meta = {
   name: 'aw-review',
   description: '[scope=diff lang=auto lenses=correctness,error-handling,concurrency,security votes=3 passes=2 severity-floor=med codex=on intensity=5 subagents=custom|stock] Adversarial review: fan out over lenses plus a cross-model codex finder leg, refute-verify every finding, loop until a pass finds nothing new, synthesize one severity-ranked verdict. Informal word=value flags (long or short, anywhere in the prompt).',
-  whenToUse: 'Reviewing a diff or path; tune scope, lang, lenses, votes, passes, severity-floor',
+  whenToUse: 'Arc-end review of the accumulated diff (scope=range) or a path; tune scope, lang, lenses, votes, passes, severity-floor. Not a per-milestone gate -- batch the milestones, review the arc once',
   phases: [{ title: 'Scope' }, { title: 'Review' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
 
@@ -184,6 +184,27 @@ const VERDICT = { type: 'object', required: ['real'], properties: { real: { type
 
 // severity floor: below-floor findings are carried but tagged UNVERIFIED, never verified, never in the confirmed tally.
 const order = { low: 0, med: 1, high: 2, critical: 3 }
+// capOrder ranks findings for the verify cap: severity tiers first (a critical
+// never falls over the cap while a low gets verified), then round-robin across
+// sources within a tier so no single leg -- codex included -- can monopolize
+// the verify budget (the 2026-07-22 design-review run: one chatty codex leg
+// filled the whole cap and starved every lens). Quiet sources leave more turns.
+function capOrder(findings) {
+  const tiers = [[], [], [], []]
+  for (const f of findings) tiers[3 - (order[f.severity] != null ? order[f.severity] : 0)].push(f)
+  const out = []
+  for (const tier of tiers) {
+    const queues = new Map()
+    for (const f of tier) {
+      const s = f.lens || 'lens'
+      if (!queues.has(s)) queues.set(s, [])
+      queues.get(s).push(f)
+    }
+    const qs = [...queues.values()]
+    while (qs.some(q => q.length)) for (const q of qs) if (q.length) out.push(q.shift())
+  }
+  return out
+}
 const floor = order[flags['severity-floor']] != null ? order[flags['severity-floor']] : 1
 const seen = new Set()                       // dedup across ALL rounds: never verify the same defect twice
 const confirmed = [], unverified = [], belowFloor = [], allJudged = []
@@ -259,7 +280,7 @@ for (let round = 0; round < flags.passes; round++) {
   // budget-derived ceiling: a low budget cuts this round's verify cap to 0 (loud, -> UNVERIFIED).
   const vcap = budgetLow(budget, BUDGET_RESERVE) ? 0 : VERIFY_CAP
   if (vcap < VERIFY_CAP) log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left -- verify cap cut to 0 this round')
-  const { take, over } = capClaims(toVerify, vcap)
+  const { take, over } = capClaims(capOrder(toVerify), vcap)
   if (over.length) {
     log('verify cap: verified ' + take.length + '/' + toVerify.length + ', ' + over.length + ' over cap -> UNVERIFIED')
     unverified.push(...over.map(f => ({ ...f, verdict: 'UNVERIFIED' })))

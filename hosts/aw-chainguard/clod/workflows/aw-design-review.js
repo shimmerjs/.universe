@@ -1,7 +1,7 @@
 export const meta = {
   name: 'aw-design-review',
   description: '[design= code-root=. lenses=feasibility,semantics,scale,hermeticity,ordering locked= votes=3 codex=on intensity=5 subagents=custom|stock] Stress-test a design through heterogeneous lenses (plus a cross-model codex dissent leg) with a refute-default verifier; design= is a path to the doc under review, unset means the prompt is the design problem and a candidate is proposed; reconcile confirmed flaws into a prioritized change list. word=value flags (long or short, anywhere in the prompt).',
-  whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked',
+  whenToUse: 'Reviewing a design doc or a design problem; tune design, code-root, lenses, locked. Once per design revision arc -- not after every editing pass on the doc',
   phases: [{ title: 'Frame' }, { title: 'Critique' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
 
@@ -88,6 +88,28 @@ const VERIFY_CAP = fromIntensity(set.has('intensity') ? flags.intensity : DEFAUL
 // loud cap split: callers log take/over and tag over UNVERIFIED -- never a silent slice.
 function capClaims(list, cap) {
   return { take: list.slice(0, cap), over: list.slice(cap) }
+}
+// capOrder ranks flaws for the verify cap: severity tiers first (a fatal never
+// falls over the cap while a minor gets verified), then round-robin across
+// sources within a tier so no single leg -- codex included -- can monopolize
+// the verify budget (the 2026-07-22 run: 24 codex flaws at cap 24 starved all
+// five lenses of verification). Quiet sources just leave more turns for the rest.
+const SEV_RANK = { fatal: 0, major: 1, minor: 2 }
+function capOrder(flaws) {
+  const tiers = [[], [], []]
+  for (const f of flaws) tiers[SEV_RANK[f.severity] != null ? SEV_RANK[f.severity] : 2].push(f)
+  const out = []
+  for (const tier of tiers) {
+    const queues = new Map()
+    for (const f of tier) {
+      const s = f.lens || 'lens'
+      if (!queues.has(s)) queues.set(s, [])
+      queues.get(s).push(f)
+    }
+    const qs = [...queues.values()]
+    while (qs.some(q => q.length)) for (const q of qs) if (q.length) out.push(q.shift())
+  }
+  return out
 }
 // sub-quorum (verifiers crashed) -> UNVERIFIED, never laundered into a verdict;
 // majority is over the requested total, so missing votes count against confirmation.
@@ -234,8 +256,8 @@ if (flags.codex === 'on') {
     if (codexDropped) log('codex dissent: ' + codexFlaws.length + ' flaw(s) relayed, ' + codexDropped + ' ungroundable dropped')
   }
 }
-// codex flaws concat at the HEAD so the run's only cross-model findings cannot
-// silently fall over the verify cap.
+// codex flaws join the pool tagged codex-dissent; verify priority is decided
+// by capOrder (severity tiers, per-source interleave), never concat position.
 const lensResults = flags.codex === 'on' ? legResults.slice(1) : legResults
 const found = codexFlaws.concat(lensResults.filter(Boolean).flatMap(r => r.flaws || []))
 const seen = new Set()
@@ -249,7 +271,7 @@ phase('Verify')
 // budget-derived ceiling: a low budget cuts the verify cap to 0 (loud, -> UNVERIFIED).
 const vcap = budgetLow(budget, BUDGET_RESERVE) ? 0 : VERIFY_CAP
 if (vcap < VERIFY_CAP) log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left -- verify cap cut to 0')
-const { take, over } = capClaims(fresh, vcap)
+const { take, over } = capClaims(capOrder(fresh), vcap)
 if (over.length) log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
 const judged = (await parallel(take.map(f => () =>
   parallel(Array.from({ length: flags.votes }, (_, v) => () =>

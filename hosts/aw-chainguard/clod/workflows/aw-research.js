@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-research',
-  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs codex=on intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes, a cross-model codex search leg, and adversarial verification; informal word=value flags (long or short, anywhere in the prompt)',
+  description: '[fanout=6 passes=2 verify=3 breadth=web,code,docs codex=off intensity=5 subagents=custom|stock] Fan-out research with loop-until-dry passes and adversarial verification; codex=on adds a cross-model search leg to round 1. informal word=value flags (long or short, anywhere in the prompt)',
   whenToUse: 'Deep multi-source research; tune fanout, passes, verify, breadth',
   phases: [{ title: 'Search' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -14,7 +14,7 @@ const FLAGS = {
   passes:    { short: 'p', type: 'int',  default: 2, min: 1, max: 6,  help: 'loop-until-dry rounds' },
   verify:    { short: 'v', type: 'int',  default: 3, min: 0, max: 5,  help: 'skeptics per claim (0 disables verification)' },
   breadth:   { short: 'b', type: 'list', default: ['web', 'code', 'docs'], help: 'search angles' },
-  codex:     { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex search leg in round 1 (live web search proven on 0.144.1)' },
+  codex:     { short: 'x', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'cross-model codex search leg in round 1 (live web search proven on 0.144.1; default off: claude searchers already fan the space -- flip on when recall matters more than spend)' },
   intensity: { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset fanout/verify/passes' },
   subagents: { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }

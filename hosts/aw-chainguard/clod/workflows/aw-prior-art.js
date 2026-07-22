@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-prior-art',
-  description: '[areas=5 verify-scope=load-bearing votes=3 codex=on intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web) plus a cross-model codex search leg, refute-verify in-scope claims with a skeptic quorum, synthesize a cited report that labels verified vs unverified claims plus a corrections section. word=value flags (long or short, anywhere in the prompt); the prompt is the question.',
+  description: '[areas=5 verify-scope=load-bearing votes=3 codex=off intensity=5 subagents=custom|stock] Fan out deep-dives over prior-art sources (local/dep/web), refute-verify in-scope claims with a skeptic quorum, synthesize a cited report that labels verified vs unverified claims plus a corrections section. codex=on adds a cross-model search leg. word=value flags (long or short, anywhere in the prompt); the prompt is the question.',
   whenToUse: 'Researching how others solve X; tune areas, verify-scope',
   phases: [{ title: 'Plan' }, { title: 'Dig' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
@@ -13,7 +13,7 @@ const FLAGS = {
   areas:          { short: 'a', type: 'axes', default: { count: 5 }, help: 'investigation areas, or N to auto-derive' },
   'verify-scope': { short: 'c', type: 'str',  default: 'load-bearing', choices: ['all', 'load-bearing', 'none'], help: 'which claims get refuted' },
   votes:          { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per in-scope claim' },
-  codex:          { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex search leg in the dig fan-out (live web search)' },
+  codex:          { short: 'x', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'cross-model codex search leg in the dig fan-out (default off: the claude dig legs already fan the search space and the 2026-07-22 run delivered with this leg dead; flip on when recall matters more than spend)' },
   intensity:      { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling the unset area count' },
   subagents:      { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }

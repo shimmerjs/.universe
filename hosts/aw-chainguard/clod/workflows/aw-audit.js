@@ -1,7 +1,7 @@
 export const meta = {
   name: 'aw-audit',
-  description: '[repo=. lang=go lenses=bug,test-gap,perf votes=3 codex=on intensity=5 subagents=custom|stock] Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf, with a cross-model codex finder leg; refute-verify each; emit a p0/p1/p2 fix list. word=value flags (long or short, anywhere in the prompt).',
-  whenToUse: 'Auditing a rebuilt component; tune repo, lang, lenses, votes',
+  description: '[repo=. lang=go lenses=bug,test-gap,perf votes=3 codex=off intensity=5 subagents=custom|stock] Adversarially audit an existing implementation across discovered packages for bugs/test-gaps/perf; refute-verify each; emit a p0/p1/p2 fix list. codex=on adds the cross-model finder leg. word=value flags (long or short, anywhere in the prompt).',
+  whenToUse: 'Auditing a rebuilt component once its arc lands -- not per milestone; tune repo, lang, lenses, votes; codex=on for the cross-model leg on high-stakes audits',
   phases: [{ title: 'Map' }, { title: 'Audit' }, { title: 'Verify' }, { title: 'Synthesize' }],
 }
 
@@ -14,7 +14,7 @@ const FLAGS = {
   lang:   { short: 'g', type: 'str',  default: 'go', help: 'primary language' },
   lenses: { short: 'l', type: 'axes', default: { list: ['bug', 'test-gap', 'perf'] }, help: 'audit dimensions; a single N auto-derives N lenses' },
   votes:  { short: 'v', type: 'int',  default: 3, min: 1, max: 5, help: 'skeptics per finding' },
-  codex:  { short: 'x', type: 'str',  default: 'on', choices: ['on', 'off'], help: 'cross-model codex finder leg in the audit fan-out' },
+  codex:  { short: 'x', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'cross-model codex finder leg in the audit fan-out (default off: reserve codex spend for aw-review/aw-design-review, the proven finder harnesses; flip on for high-stakes audits)' },
   intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling unset votes/lens-count' },
   subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
@@ -217,11 +217,34 @@ const fresh = found.filter(f => {
 })
 log('audit: ' + found.length + ' found, ' + fresh.length + ' fresh')
 
+// capOrder ranks findings for the verify cap: severity tiers first (a p0
+// never falls over the cap while a p2 gets verified), then round-robin across
+// sources within a tier so no single leg -- codex included -- can monopolize
+// the verify budget (the 2026-07-22 design-review run: one chatty codex leg
+// filled the whole cap and starved every lens). Quiet sources leave more turns.
+const SEV_RANK = { p0: 0, p1: 1, p2: 2 }
+function capOrder(findings) {
+  const tiers = [[], [], []]
+  for (const f of findings) tiers[SEV_RANK[f.severity] != null ? SEV_RANK[f.severity] : 2].push(f)
+  const out = []
+  for (const tier of tiers) {
+    const queues = new Map()
+    for (const f of tier) {
+      const s = f.lens || 'lens'
+      if (!queues.has(s)) queues.set(s, [])
+      queues.get(s).push(f)
+    }
+    const qs = [...queues.values()]
+    while (qs.some(q => q.length)) for (const q of qs) if (q.length) out.push(q.shift())
+  }
+  return out
+}
+
 phase('Verify')
 // budget-derived ceiling: a low budget cuts the verify cap to 0 (loud, -> UNVERIFIED).
 const vcap = budgetLow(budget, BUDGET_RESERVE) ? 0 : VERIFY_CAP
 if (vcap < VERIFY_CAP) log('budget guard: ' + budget.remaining() + ' of ' + budget.total + ' left -- verify cap cut to 0')
-const { take, over } = capClaims(fresh, vcap)
+const { take, over } = capClaims(capOrder(fresh), vcap)
 if (over.length) log('verify cap: verified ' + take.length + '/' + fresh.length + ', ' + over.length + ' over cap -> UNVERIFIED')
 const judged = (await parallel(take.map(f => () =>
   parallel(Array.from({ length: flags.votes }, (_, v) => () =>

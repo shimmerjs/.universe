@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-implement',
-  description: '[spec= verify=3 review=on codex=on isolation=inplace intensity=5 subagents=custom|stock] Spec-driven execution: lock a written spec, implement it in a fresh subagent seeded ONLY by the spec, build/verify, then adversarially review the diff with a cross-model codex finder leg. Informal word=value flags (long or short, anywhere in the prompt).',
+  description: '[spec= verify=3 review=on codex=off isolation=inplace intensity=5 subagents=custom|stock] Spec-driven execution: lock a written spec, implement it in a fresh subagent seeded ONLY by the spec, build/verify, then adversarially review the diff. codex=on adds the cross-model finder leg to the review phase. Informal word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Executing a well-scoped change end-to-end; tune spec, verify, review, isolation',
   phases: [{ title: 'Spec' }, { title: 'Execute' }, { title: 'Verify' }, { title: 'Review' }],
 }
@@ -13,7 +13,7 @@ const FLAGS = {
   spec:      { short: 'e', type: 'path', default: '', help: 'path to a written spec/design doc; else the prompt is the task' },
   verify:    { short: 'v', type: 'int', default: 3, min: 1, max: 5, help: 'skeptics judging the diff against the spec' },
   review:    { short: 'r', type: 'str', default: 'on', choices: ['on', 'off'], help: 'adversarial correctness review of the diff' },
-  codex:     { short: 'x', type: 'str', default: 'on', choices: ['on', 'off'], help: 'cross-model codex finder leg in the review phase (never the write path)' },
+  codex:     { short: 'x', type: 'str', default: 'off', choices: ['on', 'off'], help: 'cross-model codex finder leg in the review phase, never the write path (default off: the arc-end aw-review carries the codex leg; flip on when this run IS the arc gate)' },
   isolation: { short: 'n', type: 'str', default: 'inplace', choices: ['inplace', 'worktree'], help: 'where execution writes' },
   intensity: { short: 'i', type: 'int', default: 5, min: 0, max: 10, help: 'one knob scaling the unset verify quorum' },
   subagents: { short: 's', type: 'str', default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },

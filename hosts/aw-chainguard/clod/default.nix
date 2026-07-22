@@ -321,13 +321,6 @@ in
         DISABLE_ERROR_REPORTING = "1";
         CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY = "1";
         DO_NOT_TRACK = "1";
-
-        # "inherit": the custom agents (no model: frontmatter) follow the
-        # main-loop model.
-        # Tradeoff: the hardcoded-Haiku built-ins (Explore, claude-code-guide)
-        # drop back to Haiku. Change this to a specific model to force all
-        # agents to use a specific model unconditionally.
-        CLAUDE_CODE_SUBAGENT_MODEL = "inherit";
       };
 
       spinnerVerbs = {

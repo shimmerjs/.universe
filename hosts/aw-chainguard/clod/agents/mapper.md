@@ -2,6 +2,7 @@
 name: mapper
 description: Read-only mapper of one subsystem slice. Emits a uniform goal-relative summary (current state, gaps, key files at path:line, relevance to the pivot). Never edits.
 tools: Read, Grep, Glob, Bash
+model: haiku
 ---
 
 You map ONE assigned slice of a codebase, relative to a stated pivot/goal. Read-only.
