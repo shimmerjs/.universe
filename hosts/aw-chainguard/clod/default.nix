@@ -17,11 +17,15 @@ let
   # (HM > 2026-07-09 with CC >= 2.1.157) would otherwise leave it dangling
   # and the two skills vanish. Same flake input as the wt binary so hooks
   # and CLI never skew.
+  # The plugin lives in a named subdir: home-manager keys the installed
+  # plugin (and its ~/.claude/skills/<name> link) off the path BASENAME,
+  # and a bare $out would leak the hash-prefixed store name.
   worktrunkPlugin = pkgs.runCommand "worktrunk-claude-plugin" { } ''
-    cp -RL ${inputs.worktrunk}/plugins/worktrunk $out
-    chmod -R u+w $out
-    mkdir $out/.claude-plugin
-    mv $out/plugin.json $out/.claude-plugin/plugin.json
+    mkdir $out
+    cp -RL ${inputs.worktrunk}/plugins/worktrunk $out/worktrunk
+    chmod -R u+w $out/worktrunk
+    mkdir $out/worktrunk/.claude-plugin
+    mv $out/worktrunk/plugin.json $out/worktrunk/.claude-plugin/plugin.json
   '';
   # Agent-panel row renderer (settings.subagentStatusLine). Go: one process per
   # refresh tick regardless of task count; unit tests run in the check phase.
@@ -127,7 +131,7 @@ in
     plugins = [
       # sideloaded from the nix input, no marketplace / mutable plugin cache;
       # see worktrunkPlugin above for the manifest/skills re-seating
-      worktrunkPlugin
+      "${worktrunkPlugin}/worktrunk"
     ];
 
     settings = {
