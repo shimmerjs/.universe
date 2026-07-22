@@ -13,6 +13,12 @@
 #                             khudson artifacts, same gate.
 #   - krib-sheets-<host>:     CUE-export drift guard for the committed
 #                             pkgs/krib/sheets JSON artifacts.
+#   - clod-plugins-<host>:    claude-code plugin-estate integrity on the
+#                             rendered ~/.claude/skills (manifests seated,
+#                             pointers resolve, no dangling symlinks).
+#   - zshrc-<host>:           zsh rc posture pins (single compinit, cached
+#                             -C, instant-prompt-first, no omz residue) +
+#                             isolated runtime init smoke.
 { inputs }:
 
 let
@@ -161,7 +167,45 @@ let
            value = import ./krib-sheets-check.nix { inherit pkgs; }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck ];
+  # Rendered claude-code plugin estate must load under CC's discovery rules
+  # (manifests seated at .claude-plugin/plugin.json, pointers resolving, no
+  # dangling symlinks, no store-hash entry names): the 2026-07 home-manager
+  # personal-plugin rewire broke this class silently. Gated on the host's
+  # user enabling programs.claude-code.
+  mkClaudePluginsCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+  in if hmUserCfg.programs.claude-code.enable or false
+    then { inherit system; name = "clod-plugins-${hostname}";
+           value = import ./claude-plugins-check.nix {
+             inherit pkgs;
+             homeFiles = hmUserCfg.home-files;
+           }; }
+    else null;
+
+  # zsh rc posture pins + isolated init smoke on the rendered rc files.
+  # shimmerjs-gated rather than zsh-gated: building it needs the user's
+  # rendered .zshrc, and forcing scott's home config trips kraken's
+  # pre-existing rectangle eval failure.
+  mkZshrcCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+  in if host.user == "shimmerjs" && (hmUserCfg.programs.zsh.enable or false)
+    then { inherit system; name = "zshrc-${hostname}";
+           value = import ./zshrc-check.nix {
+             inherit pkgs;
+             # from the rendered home tree, not home.file internals: the
+             # zsh module's file attr key changes with dotDir handling
+             zshrc = "${hmUserCfg.home-files}/.zshrc";
+             etcZshrc = config.environment.etc."zshrc".text;
+           }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
