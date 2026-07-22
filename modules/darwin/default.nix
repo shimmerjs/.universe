@@ -1,6 +1,13 @@
 # Default macOS system configuration applied to all macOS hosts. Additional
 # modules are then layered on top or defined as part of the host definition.
-{ user, hostname, config, inputs, pkgs, ... }:
+{
+  user,
+  hostname,
+  config,
+  inputs,
+  pkgs,
+  ...
+}:
 {
   imports = [
     ../nix.nix
@@ -80,6 +87,13 @@
   };
 
   programs.zsh.enable = true;
+  # No system-level compinit: every user's home-manager zshrc runs its own
+  # against the full fpath (plugins included), and a second compinit with a
+  # different fpath fights over the same .zcompdump, forcing full rebuilds
+  # per shell. enableCompletion stays on (it carries nix-zsh-completions);
+  # bashcompinit stays on default -- it is a cheap guarantee for any
+  # bash-style completer, not ours to trade away.
+  programs.zsh.enableGlobalCompInit = false;
 
   users.users.${user} = {
     name = user;

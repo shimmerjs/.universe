@@ -1,30 +1,59 @@
 # TODO: move more stuff out into dev.nix
-{ pkgs, inputs, ... }:
 {
-  programs.zsh = with pkgs; {
+  inputs,
+  lib,
+  ...
+}:
+{
+  programs.zsh = {
     enable = true;
     autosuggestion.enable = true;
     enableCompletion = true;
-    syntaxHighlighting.enable = true;
-    initContent = ''
-      # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
-      [[ ! -f $HOME/.config/p10k.zsh ]] || source $HOME/.config/p10k.zsh
-
-      # smart-case tab completion: exact matches first, then typed lowercase
-      # matches uppercase candidates (doc<TAB> -> Documents); typed uppercase
-      # stays exact. Explicit because bare compinit is case-sensitive.
-      zstyle ':completion:*' matcher-list "" 'm:{a-z}={A-Za-z}'
-
-      # only put cwd on tab/window title
-      export DISABLE_AUTO_TITLE="true"
-      precmd () {print -Pn "\e]0;%~\a"}
-
-      # Configure keybindings to allow incremental history search
-      # while using zsh-autosuggestions.
-      bindkey "^[[A" history-beginning-search-backward
-      bindkey "^[[B" history-beginning-search-forward
+    # Full compinit (fpath scan + compaudit) at most daily; -C trusts the
+    # existing dump otherwise. The system-level compinit is disabled in
+    # modules/darwin so this is the only one and the dump stays stable.
+    completionInit = ''
+      autoload -U compinit
+      if [[ -n $(find "''${ZDOTDIR:-$HOME}/.zcompdump" -mtime -1 2>/dev/null) ]]; then
+        compinit -C
+      else
+        compinit
+      fi
     '';
-    shellGlobalAliases = {
+    syntaxHighlighting.enable = true;
+    # zsh keys off $EDITOR containing "vi" otherwise; pin against an editor
+    # change silently flipping the shell to vi bindings.
+    defaultKeymap = "emacs";
+    initContent = lib.mkMerge [
+      # p10k instant prompt paints the last-known prompt immediately while
+      # the rest of init runs behind it; it must precede anything that can
+      # print, so it rides order 500 (before compinit and plugins).
+      (lib.mkOrder 500 ''
+        if [[ -r "''${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-''${(%):-%n}.zsh" ]]; then
+          source "''${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-''${(%):-%n}.zsh"
+        fi
+      '')
+      ''
+        # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
+        [[ ! -f $HOME/.config/p10k.zsh ]] || source $HOME/.config/p10k.zsh
+
+        # smart-case tab completion: exact matches first, then typed lowercase
+        # matches uppercase candidates (doc<TAB> -> Documents); typed uppercase
+        # stays exact. Explicit because bare compinit is case-sensitive.
+        zstyle ':completion:*' matcher-list "" 'm:{a-z}={A-Za-z}'
+
+        # only put cwd on tab/window title
+        precmd () {print -Pn "\e]0;%~\a"}
+
+        # Configure keybindings to allow incremental history search
+        # while using zsh-autosuggestions.
+        bindkey "^[[A" history-beginning-search-backward
+        bindkey "^[[B" history-beginning-search-forward
+      ''
+    ];
+    shellAliases = {
+      ls = "ls -A --color=auto";
+      clod = "claude";
       k = "kubectl";
       ksh = "kitty +kitten ssh";
       kcopy = "kitty +kitten clipboard";
@@ -44,10 +73,6 @@
       # User-specific universe aliases
       uedit = "code $UNIVERSE_PATH";
     };
-    shellAliases = {
-      ls = "ls -A --color=auto";
-      clod = "claude";
-    };
     history = {
       save = 1000000000;
       size = 1000000000;
@@ -58,10 +83,9 @@
       expireDuplicatesFirst = true;
     };
     sessionVariables = {
-      COMPLETION_WAITING_DOTS = "false";
       BAT_THEME = "OneHalfLight";
     };
-    plugins = with sources; [
+    plugins = [
       {
         name = "powerlevel10k";
         file = "powerlevel10k.zsh-theme";
