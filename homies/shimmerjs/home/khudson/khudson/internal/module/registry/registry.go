@@ -16,6 +16,7 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/module/kittysessions"
 	"github.com/shimmerjs/khudson/khudson/internal/module/media"
 	"github.com/shimmerjs/khudson/khudson/internal/module/procs"
+	"github.com/shimmerjs/khudson/khudson/internal/module/reno"
 	"github.com/shimmerjs/khudson/khudson/internal/module/resources"
 	"github.com/shimmerjs/khudson/khudson/internal/module/sysmon"
 )
@@ -45,6 +46,7 @@ func All() map[string]module.Module {
 		kittysessions.Mod{},
 		media.Mod{},
 		pr,
+		reno.New(),
 		resources.New(cm, dk, pr),
 		sysmon.New(),
 	}

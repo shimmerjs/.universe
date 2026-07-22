@@ -255,6 +255,7 @@ var chromeRenderers = map[string]func(*model, config.Widget, rect) string{
 	"nav-tray":    (*model).renderTray,
 	"resources":   (*model).renderResources,
 	"kb-live":     (*model).renderKBLive,
+	"reno":        (*model).renderReno,
 }
 
 // renderRegion draws one region at rr. A module with a registered dock-side
@@ -1164,6 +1165,12 @@ func (m *model) sendRowAct(widget string, argv []string) {
 		return
 	}
 	enc := json.NewEncoder(m.busConn)
-	_ = enc.Encode(proto.Msg{Type: proto.TypeRowAct, Widget: widget, Argv: argv})
+	if err := enc.Encode(proto.Msg{Type: proto.TypeRowAct, Widget: widget, Argv: argv}); err != nil {
+		// a swallowed write is a tap that silently did nothing -- for a
+		// stateful surface (the reno cursor) that is a mid-demo hazard,
+		// so the failure lands on the status line, loudly
+		m.lastGst = "row: send FAILED: " + err.Error()
+		return
+	}
 	m.lastGst = "row: " + strings.Join(argv, " ")
 }

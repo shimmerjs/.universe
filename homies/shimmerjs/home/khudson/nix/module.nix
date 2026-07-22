@@ -56,7 +56,7 @@ let
     pname = "khudson";
     version = "0.1.0";
     src = ../khudson;
-    vendorHash = "sha256-hSVOdtjBWfU3UvU29PnUWyrAArrUujFoIT30HVc2f/g=";
+    vendorHash = "sha256-Tr63rsJ66kbe2Ha7BROnqIo5JPSW7V5W0zmiFTi/2JU=";
     # Unit tests run in the build, not as flake checks. Tests that exec host
     # tools (top/vm_stat/m1ddc/gh/kitten) skip-on-missing; env-gated live
     # tests self-skip. The oryx
@@ -334,7 +334,7 @@ in
       # -m 700 every time: BSD install -d chmods a pre-existing directory to
       # its default 0755, so omitting the mode RE-OPENS the state root (and
       # its sockets) to world-read on every switch
-      run install -d -m 700 "${appSupport}" "${appSupport}/bin" "${appSupport}/claude" "${appSupport}/log" "${btopCfgDir}/btop"
+      run install -d -m 700 "${appSupport}" "${appSupport}/bin" "${appSupport}/claude" "${appSupport}/log" "${appSupport}/reno" "${appSupport}/reno/runs" "${appSupport}/reno/log" "${appSupport}/reno/workspace" "${btopCfgDir}/btop"
       # re-seed every switch: btop rewrites its config on exit, so activation
       # restores the declared baseline rather than letting it drift
       run install -m 644 "${btopConf}" "${btopCfgDir}/btop/btop.conf"

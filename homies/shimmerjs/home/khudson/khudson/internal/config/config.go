@@ -58,9 +58,15 @@ type StripFlip struct {
 
 // StripEntry is one strip tab: label on glass, target layout on tap.
 // Unknown targets are allowed -- the "soon" flash is the stub affordance.
+// Alt is an optional second target: while the active layout is Target or
+// Alt the tab reads active, and its tap flips to the other side (the
+// reno presenter<->recorder pair). Unlike Target, Alt must be a defined
+// layout: it is only reachable through the flip, so a stub alt would be
+// a dead control, not an affordance.
 type StripEntry struct {
 	Label  string `json:"label"`
 	Target string `json:"target"`
+	Alt    string `json:"alt,omitempty"`
 }
 
 // StripToggle is one strip state toggle; Kind names the bus state it
@@ -353,6 +359,14 @@ func (c *Config) checkStrip() error {
 		if e.Target == "" {
 			return fmt.Errorf("strip: entry %d (%q) needs a target", i, e.Label)
 		}
+		if e.Alt != "" {
+			if _, ok := c.Layouts[e.Alt]; !ok {
+				return fmt.Errorf("strip: entry %q alt layout %q is not defined in layouts", e.Label, e.Alt)
+			}
+			if e.Alt == e.Target {
+				return fmt.Errorf("strip: entry %q alt and target name the same layout %q", e.Label, e.Target)
+			}
+		}
 	}
 	for i, tg := range c.Strip.Toggles {
 		if tg.Kind == "" {
@@ -404,6 +418,12 @@ func (c *Config) checkWidgetParams(id string, w Widget) error {
 			}
 			if n < 1 {
 				return fmt.Errorf("widget %q: param \"max\" must be positive, got %d", id, n)
+			}
+		}
+	case "reno":
+		if v, ok := w.Render.Params["view"]; ok {
+			if s, isStr := v.(string); !isStr || (s != "presenter" && s != "recorder") {
+				return fmt.Errorf("widget %q: param \"view\" must be \"presenter\" or \"recorder\", got %v", id, v)
 			}
 		}
 	}

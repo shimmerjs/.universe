@@ -968,7 +968,14 @@ func (m *model) renderStrip() string {
 		// notch, minus the frame). No walls, no border welds: the
 		// band-vs-bare contrast draws the tabs.
 		for _, e := range m.cfg.Strip.Entries {
-			active := e.Target == m.layout
+			// an alt-carrying tab is active on either side of its pair and
+			// its tap flips to the other side (the reno presenter<->recorder
+			// pair); plain tabs keep the one-target exact match
+			active := e.Target == m.layout || (e.Alt != "" && e.Alt == m.layout)
+			target := e.Target
+			if e.Alt != "" && m.layout == e.Target {
+				target = e.Alt
+			}
 			label, style := e.Label, srf.label(chromeFG)
 			if active {
 				style = chromeAccent.Bold(true)
@@ -993,7 +1000,7 @@ func (m *model) renderStrip() string {
 				area: rect{x, yTop, lw, stripH},
 				do: func(int, int) {
 					m.flash("tab:" + e.Label)
-					m.trayActivate(e.Target, e.Label)
+					m.trayActivate(target, e.Label)
 				},
 				pressKey: "tab:" + e.Label,
 			})

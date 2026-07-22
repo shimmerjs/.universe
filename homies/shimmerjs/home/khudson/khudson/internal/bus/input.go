@@ -54,13 +54,24 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 	if len(m.Argv) == 0 {
 		return
 	}
-	allowed, handler := b.vetRowAct(m)
+	allowed, handler, effector := b.vetRowAct(m)
 	if !allowed {
 		log.Printf("khudson bus: row act %s: argv %v not published by the bus; refused", m.Widget, m.Argv)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("row act %s: argv refused (not published by the bus)", m.Widget)})
 		b.actFailed(m.Argv, errors.New("refused (not published by the bus)"))
 		return
+	}
+	if effector != nil {
+		if handled, effects := effector.HandleActEffects(m.Argv); handled {
+			// effectful transitions: cursor moved in-process (repoll like
+			// any handled act, never argv-debounced), machine actions exec
+			// through the effect runner under their own keyed debounce
+			log.Printf("khudson bus: row act %s handled with %d effects: %v", m.Widget, len(effects), m.Argv)
+			b.pokePoll(m.Widget)
+			b.dispatchEffects(m.Widget, effects)
+			return
+		}
 	}
 	if handler != nil && handler.HandleAct(m.Argv) {
 		// in-process acts are cheap view flips and NEVER debounced: the
@@ -141,32 +152,33 @@ func (b *Bus) pokePoll(widget string) {
 // vetRowAct reports whether m.Argv matches a row act from the widget's
 // last successful poll or a "run" gesture in its config -- the two argv
 // sources the bus itself vetted -- and resolves the widget module's
-// ActHandler capability under the SAME config snapshot, so a reload
-// swapping b.cfg between the vet and the dispatch cannot route a
-// stale-config act into a new-config module.
-func (b *Bus) vetRowAct(m proto.Msg) (allowed bool, handler module.ActHandler) {
+// ActHandler/EffectHandler capabilities under the SAME config snapshot,
+// so a reload swapping b.cfg between the vet and the dispatch cannot
+// route a stale-config act into a new-config module.
+func (b *Bus) vetRowAct(m proto.Msg) (allowed bool, handler module.ActHandler, effector module.EffectHandler) {
 	b.mu.Lock()
 	reg := b.reg
 	w, cfgOK := b.cfg.Widgets[m.Widget]
 	b.mu.Unlock()
 	if cfgOK && w.Render.Kind == "native" {
 		handler, _ = b.mods[w.Render.Module].(module.ActHandler)
+		effector, _ = b.mods[w.Render.Module].(module.EffectHandler)
 	}
 	if st, ok := reg.Get(m.Widget); ok {
 		for _, act := range st.acts() {
 			if slices.Equal(act, m.Argv) {
-				return true, handler
+				return true, handler, effector
 			}
 		}
 	}
 	if cfgOK {
 		for _, a := range w.Gestures {
 			if a.Verb == "run" && slices.Equal(a.Argv, m.Argv) {
-				return true, handler
+				return true, handler, effector
 			}
 		}
 	}
-	return false, nil
+	return false, nil, nil
 }
 
 // startArgv starts argv through the exec seam; the returned wait reaps it.

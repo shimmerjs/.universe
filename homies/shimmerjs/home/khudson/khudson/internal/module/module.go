@@ -134,6 +134,26 @@ type ActHandler interface {
 	HandleAct(argv []string) bool
 }
 
+// Effect is one exec side effect of an in-process act: argv plus the
+// debounce key the bus records it under. Consecutive demo steps legally
+// repeat identical argvs, so the key (run id + step + visit + action
+// index for reno), not the argv, is the retap identity.
+type Effect struct {
+	Key  string
+	Argv []string
+}
+
+// EffectHandler is the effectful sibling of ActHandler: one act both
+// moves in-process state AND fires exec effects. Handled acts repoll
+// like ActHandler's; effects exec bus-side under process-group tracking
+// with cancel-on-shutdown. Effect argvs are the module's own trust
+// surface -- the bus execs them unvetted, so they must come only from
+// vetted sources (reno: the loaded script's closed command registry).
+// Implementations must be safe to call concurrently with Poll.
+type EffectHandler interface {
+	HandleActEffects(argv []string) (handled bool, effects []Effect)
+}
+
 // IntParam reads an int-valued param, tolerating the numeric types config
 // decoding produces (CUE ints decode as int64). Missing or non-numeric
 // means def.

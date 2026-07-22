@@ -27,7 +27,7 @@ import "time"
 // native modules compiled into khudson
 #Module: "github-prs" | "claude-sessions" | "claude-panel" | "kitty-sessions" |
 	"cheatsheets" | "demo-mode" | "brightness" | "sysmon" | "dock-mirror" |
-	"media" | "cpumem" | "disk" | "procs" | "resources"
+	"media" | "cpumem" | "disk" | "procs" | "resources" | "reno"
 
 // chrome modules: no bus module; the dock renders them purely from config
 // params
@@ -42,7 +42,10 @@ import "time"
 // it flips between -- both required together (a half pair fails vet here;
 // Go checks the names against layouts).
 #Strip: {
-	entries: [...{label: string, target: string}] | *[]
+	// alt is an optional second target: while the active layout is target
+	// or alt, the tab reads active and its tap flips to the other (the
+	// reno presenter<->recorder pair); Go checks alt against layouts.
+	entries: [...{label: string, target: string, alt?: string}] | *[]
 	toggles: [...{kind: string, on?: string, off?: string}] | *[]
 	flip?: {expanded: string, collapsed: string}
 	// configured kitty_mod chord, rendered as a compact modifier-glyph note;

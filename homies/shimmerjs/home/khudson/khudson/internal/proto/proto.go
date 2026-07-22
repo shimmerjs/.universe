@@ -74,9 +74,11 @@ type Msg struct {
 	PanelCols int    `json:"panelCols,omitempty"`
 	PanelRows int    `json:"panelRows,omitempty"`
 
-	// ctl
-	Cmd string `json:"cmd,omitempty"`
-	Arg string `json:"arg,omitempty"`
+	// ctl; Args carries verb families whose subcommands outgrow one
+	// string (reno load/start/goto ...) -- Arg stays for the flat verbs
+	Cmd  string   `json:"cmd,omitempty"`
+	Arg  string   `json:"arg,omitempty"`
+	Args []string `json:"args,omitempty"`
 
 	// resp; Error doubles as the failure surface on snapshot
 	OK    bool            `json:"ok,omitempty"`

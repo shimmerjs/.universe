@@ -49,6 +49,8 @@ func main() {
 		err = cmdClaude(args[1:])
 	case "ax":
 		err = cmdAx(args[1:])
+	case "reno":
+		err = cmdReno(args[1:])
 	case "config":
 		err = cmdConfig(args[1:])
 	case "hook":
@@ -88,6 +90,17 @@ func usage() {
                       kill -9 an app's pids, re-validated against the bundle
                       right before the kill
   ax status           print whether khudson holds the Accessibility grant
+  reno vet <script>   validate a demo script (txtar) against the command registry
+  reno load [--replace] <script>
+                      vet + stage a demo script on the bus
+  reno start|stop|status|next|prev
+                      drive the staged demo run (goto <step-id> jumps)
+  reno focus-session <handle> | launch-session <handle> [--cwd <dir>]
+                      [--keep-focus] [-- <argv>...] | open-url <url> |
+                      focus-app <bundle-id>
+                      demo machine actions (exec'd as step effects; also
+                      hand-runnable); all take --run/--step/--act
+                      correlation flags for the events journal
   config vet <file>   validate a config against the embedded schema
   hook -dir <spool> <event>
                       claude-code hook handler (payload on stdin); events:

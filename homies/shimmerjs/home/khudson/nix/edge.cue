@@ -156,6 +156,34 @@ widgets: {
 			poll:   "5s"
 		}
 	}
+	// reno demo presenter/recorder: two widgets, one module, discriminated
+	// by params.view; each fills its own layout behind the strip's "reno"
+	// tab (tap flips presenter<->recorder via the entry's alt). 1s poll =
+	// 1Hz timer chips while a reno layout is active; zero polls otherwise
+	// (visibility-gated) -- the run itself lives in module state driven by
+	// `khudson reno` ctl verbs and glass taps.
+	"reno-presenter": {
+		title:  "reno"
+		glyph:  ""
+		chrome: true
+		render: {
+			kind:   "native"
+			module: "reno"
+			poll:   "1s"
+			params: {view: "presenter"}
+		}
+	}
+	"reno-recorder": {
+		title:  "reno rec"
+		glyph:  ""
+		chrome: true
+		render: {
+			kind:   "native"
+			module: "reno"
+			poll:   "1s"
+			params: {view: "recorder"}
+		}
+	}
 }
 
 // bus-owned theme service: `khudson ctl theme night` re-colors the HUD kitty
@@ -199,6 +227,9 @@ strip: {
 		{label: "kb", target: "keyboard"},
 		{label: "clod", target: "claude"},
 		{label: "sys", target: "monitor"},
+		// alt makes the tab a pair: active on either reno layout, tap
+		// flips to the other side (presenter <-> recorder).
+		{label: "reno", target: "reno-presenter", alt: "reno-recorder"},
 	]
 	toggles: [
 		{kind: "caffeinate", on: "\U000F0176", off: "\U000F06CA"},
@@ -266,6 +297,20 @@ layouts: {
 	monitor: {
 		kind:  "full-panel"
 		panel: "btop"
+	}
+	// reno demo views: home-kind single-fill (the claude-layout precedent,
+	// zero new dock engine), one per view, paired at the strip tab.
+	"reno-presenter": {
+		kind: "home"
+		regions: [
+			{widget: "reno-presenter", edge: "fill"},
+		]
+	}
+	"reno-recorder": {
+		kind: "home"
+		regions: [
+			{widget: "reno-recorder", edge: "fill"},
+		]
 	}
 }
 

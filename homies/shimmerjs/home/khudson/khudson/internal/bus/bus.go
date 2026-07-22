@@ -101,6 +101,10 @@ type Bus struct {
 	// -- so tests cross the window without sleeping.
 	lastRowAct map[string]time.Time
 	actNow     func() time.Time
+	// effects owns module-effect children (effects.go): keyed debounce,
+	// process-group tracking, cancel-on-shutdown. Nil on bare test buses
+	// (dispatch drops loudly).
+	effects *effectRunner
 	// readGrace overrides dockReadGrace (tests); zero uses the constant.
 	readGrace time.Duration
 
@@ -152,6 +156,7 @@ func Run(ctx context.Context, opts Options) error {
 		natives:     make(chan nativeResult, 16),
 		input:       make(chan proto.Msg, 32),
 		repoll:      make(chan string, 16),
+		effects:     newEffectRunner(),
 	}
 	b.caff = newCaffeinator(cfg.CaffeinateOn(), opts.Paths)
 	b.setGrid(0, 0)
@@ -183,6 +188,7 @@ func Run(ctx context.Context, opts Options) error {
 	go b.logiLoop(ctx)
 	go b.mainKittyLoop(ctx, mainKittyProbeInterval)
 	go b.inputWorker()
+	go b.runEffects()
 	caffDone := make(chan struct{})
 	go func() {
 		defer close(caffDone)
@@ -205,9 +211,12 @@ func Run(ctx context.Context, opts Options) error {
 			if ctx.Err() != nil {
 				// clean shutdown: wait for the scheduler to release the
 				// scrape windows and the caffeinate supervisor to kill its
-				// child before reporting done
+				// child before reporting done, then terminate any live
+				// effect groups (a hung demo wrapper must not survive to
+				// act against the next run)
 				<-schedDone
 				<-caffDone
+				b.effects.shutdown()
 				return nil
 			}
 			return fmt.Errorf("accept: %w", err)
@@ -450,31 +459,39 @@ func (b *Bus) handleCtl(m proto.Msg) proto.Msg {
 	case "repoll":
 		// advisory nudge (the hook poke): due every widget whose module --
 		// or exact id -- matches the arg, on the scheduler's next tick.
-		// Non-blocking sends: a full channel means repolls are already
-		// queued, so dropping is correct.
 		if m.Arg == "" {
 			return proto.Msg{Type: proto.TypeResp, Error: "repoll: need a widget id or module name"}
 		}
-		b.mu.Lock()
-		reg := b.reg
-		b.mu.Unlock()
-		n := 0
-		for _, id := range reg.IDs() {
-			ws, ok := reg.Get(id)
-			if !ok || (id != m.Arg && ws.Widget.Render.Module != m.Arg) {
-				continue
-			}
-			select {
-			case b.repoll <- id:
-				n++
-			default:
-			}
-		}
+		n := b.repollMatching(m.Arg)
 		data, err := json.Marshal(map[string]int{"repolled": n})
 		if err != nil {
 			return proto.Msg{Type: proto.TypeResp, Error: err.Error()}
 		}
 		return proto.Msg{Type: proto.TypeResp, OK: true, Data: data}
+
+	case "reno":
+		// run-lifecycle control seam: the module owns the semantics; the
+		// bus execs whatever effects a CLI-driven transition returns
+		// through the same executor as tapped acts -- one dispatch site.
+		h, ok := b.mods["reno"].(renoCtl)
+		if !ok {
+			return proto.Msg{Type: proto.TypeResp, Error: "reno module not registered"}
+		}
+		data, effects, err := h.HandleCtl(m.Args)
+		if err != nil {
+			return proto.Msg{Type: proto.TypeResp, Error: err.Error()}
+		}
+		b.dispatchEffects("reno", effects)
+		b.repollMatching("reno")
+		resp := proto.Msg{Type: proto.TypeResp, OK: true}
+		if data != nil {
+			raw, err := json.Marshal(data)
+			if err != nil {
+				return proto.Msg{Type: proto.TypeResp, Error: err.Error()}
+			}
+			resp.Data = raw
+		}
+		return resp
 
 	case "reload":
 		cfg, err := loadConfig(b.opts.ConfigPath)
@@ -517,6 +534,35 @@ func (b *Bus) handleCtl(m proto.Msg) proto.Msg {
 	default:
 		return proto.Msg{Type: proto.TypeResp, Error: fmt.Sprintf("unknown ctl command %q", m.Cmd)}
 	}
+}
+
+// renoCtl is the reno module's control seam, matched structurally (the
+// essential-marker pattern): `khudson reno load|start|...` lands here
+// via handleCtl.
+type renoCtl interface {
+	HandleCtl(args []string) (data any, effects []module.Effect, err error)
+}
+
+// repollMatching pokes every widget whose exact id -- or module name --
+// matches arg onto the scheduler's repoll lane. Non-blocking sends: a
+// full channel means repolls are already queued, so dropping is correct.
+func (b *Bus) repollMatching(arg string) int {
+	b.mu.Lock()
+	reg := b.reg
+	b.mu.Unlock()
+	n := 0
+	for _, id := range reg.IDs() {
+		ws, ok := reg.Get(id)
+		if !ok || (id != arg && ws.Widget.Render.Module != arg) {
+			continue
+		}
+		select {
+		case b.repoll <- id:
+			n++
+		default:
+		}
+	}
+	return n
 }
 
 // setLayout switches the active layout and broadcasts TypeLayout to every

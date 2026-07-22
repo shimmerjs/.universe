@@ -1,0 +1,33 @@
+## example reno script: the P0 vocabulary end to end. `khudson reno vet`
+## keeps this honest via TestExampleScriptVets inside the closure build.
+demo example-tour
+budget 15m
+
+step intro
+note intro.md
+budget 90s
+
+step editor
+note editor.md
+budget 4m
+launch-session tour-editor --cwd /tmp --keep-focus -- nvim
+focus-session tour-editor
+
+step slides
+budget 2m
+open-url https://example.com/deck
+focus-app com.google.Chrome
+
+step wrap
+note wrap.md
+
+-- intro.md --
+# intro
+who i am, what this shows, why it matters.
+
+-- editor.md --
+open with the failing test, fix it live.
+land the punchline before switching away.
+
+-- wrap.md --
+recap the three beats. questions.
