@@ -10,6 +10,11 @@
       # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
       [[ ! -f $HOME/.config/p10k.zsh ]] || source $HOME/.config/p10k.zsh
 
+      # smart-case tab completion: exact matches first, then typed lowercase
+      # matches uppercase candidates (doc<TAB> -> Documents); typed uppercase
+      # stays exact. Explicit because bare compinit is case-sensitive.
+      zstyle ':completion:*' matcher-list "" 'm:{a-z}={A-Za-z}'
+
       # only put cwd on tab/window title
       export DISABLE_AUTO_TITLE="true"
       precmd () {print -Pn "\e]0;%~\a"}
