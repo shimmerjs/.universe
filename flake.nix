@@ -35,6 +35,16 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Lock-graph unification only: nothing consumes these two directly.
+    # Transitive deps of other inputs follow them so the lock holds one
+    # node per repo instead of one per consumer (the situation selsun's
+    # pin-unification automates away).
+    systems.url = "github:nix-systems/default";
+    flake-utils = {
+      url = "github:numtide/flake-utils";
+      inputs.systems.follows = "systems";
+    };
+
     raspberry-pi-nix.url = "github:nix-community/raspberry-pi-nix";
 
     # Manage disk configuration with Nix
@@ -48,21 +58,28 @@
       url = "github:ryantm/agenix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.darwin.follows = "darwin";
+      # its homeManagerModules are unused here; follows kills the stale
+      # duplicate home-manager lock node
+      inputs.home-manager.follows = "home-manager";
+      inputs.systems.follows = "systems";
     };
     spotatui = {
       url = "github:shimmerjs/spotatui";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
     };
     # Git worktree manager; upstream flake because nixpkgs lags its
     # weekly release cadence
     worktrunk = {
       url = "github:max-sixty/worktrunk";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
     };
     # Utility to switch tabs in kitty terminal using fzf
     kitty-tab-switcher = {
       url = "github:OsiPog/kitty-tab-switcher";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
     };
     # ZSA keyboard flasher CLI; upstream flake, not in nixpkgs. kuiboard
     # execs this binary for the flash loop (khudson docs:
