@@ -158,8 +158,7 @@ func (m *Mod) HandleActEffects(argv []string) (bool, []module.Effect) {
 		if len(argv) != 1 {
 			return false, nil
 		}
-		m.stopLocked()
-		return true, nil
+		return true, m.stopLocked()
 	}
 	return false, nil
 }
@@ -221,15 +220,13 @@ func (m *Mod) transition(to int) []module.Effect {
 }
 
 // commandArgv maps one registered script command onto its `khudson reno`
-// verb argv with correlation flags. Only focus-app carries the
-// os.Executable argv[0]: it is the AX/TCC-touching verb (dockmirror
-// pattern); socket/open verbs PATH-resolve fine.
+// verb argv with correlation flags. EVERY head is os.Executable(): the
+// bus runs the fixed TCC-granted install while launchd PATH's first
+// entry is the live profile symlink, which flips mid-switch BEFORE the
+// bus restarts -- bare `khudson` would splice a new-binary verb into an
+// old-binary run (the re-review's two-binary skew finding).
 func (m *Mod) commandArgv(c renocore.Command, step, act int) []string {
-	head := "khudson"
-	if c.Name == "focus-app" {
-		head = m.exe
-	}
-	argv := []string{head, "reno", c.Name}
+	argv := []string{m.exe, "reno", c.Name}
 	corr := []string{"--run", m.run.ID, "--step", strconv.Itoa(step), "--act", strconv.Itoa(act)}
 	switch c.Name {
 	case "launch-session":
@@ -258,9 +255,12 @@ func (m *Mod) journal() {
 	m.journalErr = ""
 }
 
-func (m *Mod) stopLocked() {
+// stopLocked finalizes the live run and returns the effect-stream
+// boundary the bus executor needs: a stopped run's queued step actions
+// must not execute into the next run.
+func (m *Mod) stopLocked() []module.Effect {
 	if m.run == nil || !m.run.Live() {
-		return
+		return nil
 	}
 	now := m.now()
 	if cur := m.run.Cursor; cur >= 0 && cur < len(m.run.Steps) {
@@ -273,6 +273,7 @@ func (m *Mod) stopLocked() {
 	m.run.StoppedAt = now
 	m.stale = ""
 	m.journal()
+	return []module.Effect{module.Boundary()}
 }
 
 // HandleCtl is the run-lifecycle control seam behind `khudson reno
@@ -287,15 +288,16 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 	defer m.mu.Unlock()
 	switch args[0] {
 	case "load":
-		return nil, nil, m.loadLocked(args[1:])
+		effects, err := m.loadLocked(args[1:])
+		return nil, effects, err
 	case "start":
-		return nil, nil, m.startLocked()
+		effects, err := m.startLocked()
+		return nil, effects, err
 	case "stop":
 		if m.run == nil || !m.run.Live() {
 			return nil, nil, errors.New("reno stop: no live run")
 		}
-		m.stopLocked()
-		return nil, nil, nil
+		return nil, m.stopLocked(), nil
 	case "status":
 		return m.statusLocked(), nil, nil
 	case "next":
@@ -315,7 +317,7 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 	return nil, nil, fmt.Errorf("reno: unknown subverb %q", args[0])
 }
 
-func (m *Mod) loadLocked(args []string) error {
+func (m *Mod) loadLocked(args []string) ([]module.Effect, error) {
 	replace := false
 	path := ""
 	for _, a := range args {
@@ -324,36 +326,37 @@ func (m *Mod) loadLocked(args []string) error {
 			continue
 		}
 		if path != "" {
-			return errors.New("reno load: one script path")
+			return nil, errors.New("reno load: one script path")
 		}
 		path = a
 	}
 	if path == "" {
-		return errors.New("reno load: need a script path")
+		return nil, errors.New("reno load: need a script path")
 	}
+	var effects []module.Effect
 	if m.run != nil && m.run.Live() {
 		if !replace {
-			return fmt.Errorf("reno load: run %s is live; stop it or load --replace", m.run.ID)
+			return nil, fmt.Errorf("reno load: run %s is live; stop it or load --replace", m.run.ID)
 		}
-		m.stopLocked()
+		effects = m.stopLocked()
 	}
 	s, err := renocore.Load(path)
 	if err != nil {
-		return err
+		return effects, err
 	}
 	// staging is atomic: nothing above mutated until the script vetted
 	m.staged = s
 	m.stale = ""
 	m.gotoOff = 0
-	return nil
+	return effects, nil
 }
 
-func (m *Mod) startLocked() error {
+func (m *Mod) startLocked() ([]module.Effect, error) {
 	if m.staged == nil {
-		return errors.New("reno start: no script loaded")
+		return nil, errors.New("reno start: no script loaded")
 	}
 	if m.run != nil && m.run.Live() {
-		return fmt.Errorf("reno start: run %s already live; stop it first", m.run.ID)
+		return nil, fmt.Errorf("reno start: run %s already live; stop it first", m.run.ID)
 	}
 	now := m.now()
 	m.run = &renocore.Run{
@@ -373,9 +376,11 @@ func (m *Mod) startLocked() error {
 		// arming must be honest: a run that cannot journal is refused,
 		// because recovery after a crash would silently lose it
 		m.run = nil
-		return fmt.Errorf("reno start: journal: %s", m.journalErr)
+		return nil, fmt.Errorf("reno start: journal: %s", m.journalErr)
 	}
-	return nil
+	// a fresh run opens with a boundary: anything still queued from a
+	// previous run dies before this run's first step can fire
+	return []module.Effect{module.Boundary()}, nil
 }
 
 // Status is the reno ctl status payload.

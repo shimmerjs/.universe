@@ -131,6 +131,18 @@ Strip tab-flip is NEW vocabulary (map: the shipped flip is one global pair, occu
 - (10, major) module lifecycle manager: P1 precondition text extended in reno-design.
 - (merged 6b) TCC identity enforcement: the gate admits bare `khudson` (socket verbs) and absolute khudson paths (AX verbs); the module builds focus-app argvs on os.Executable().
 
+Round 2 (rekicked feasibility/scale legs reviewed the implementation; 2 fatal re-raises + 7 majors):
+
+- (F1 re-raise) multi-dock double-fire: disposition stands (transitionGap); the general gesture-token rework remains out of scope.
+- (F2 re-raise) SIGKILL orphan reaping: disposition stands (bounded self-terminating verbs); pidfile reaping still deliberately not built.
+- (M1, crash-loop) recovered scriptless/stale journal nil-derefs the presenter view and crash-loops the bus: FIXED -- explicit live-without-usable-script branch in both views + regression test.
+- (M2, shutdown panic) closing the multi-producer effect queue: FIXED -- the queue never closes; worker exits via stopCh, late dispatches refused on the closed flag.
+- (M3, run boundaries) queued chains from a stopped run executing into the next: FIXED -- module.Boundary() effects from stop/start/load--replace bump the runner epoch (queued chains drop loud) and SIGTERM the live child; doubles as the mid-run abort.
+- (M4, revisit semantics) prev/goto into a launch step failed on "already planted": FIXED -- launch-session is ensure-semantics (one existing match = ok; >1 = ambiguous). Goto-forward stays a JUMP -- skipped steps' effects do NOT replay (divergence from the review's catch-up recommendation: a mid-show effect burst is worse than a loud focus miss the presenter can goto back from).
+- (M5, two-binary skew) bare `khudson` effect heads resolve the live profile mid-switch: FIXED -- every effect head is os.Executable() (the bus's fixed install).
+- (M6, runtime pin preflight) P1: `reno vet --live` grows kitty version + socket + handle preflight beside the OBS referent pass.
+- (M7, workspace GC) P1: SweepRuns extends to workspace dirs of finalized runs past the horizon, with an explicit keep-mark; boot-only work.
+
 ## P0 milestones
 
 1. script package: txtar parse, registry, vet + `khudson reno vet` + testdata example script.

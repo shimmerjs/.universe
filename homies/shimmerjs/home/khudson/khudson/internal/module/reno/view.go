@@ -37,13 +37,26 @@ func (m *Mod) presenterData() module.Data {
 			module.Row{Kind: module.RowText, Text: "no script loaded", Style: module.StyleDim},
 			module.Row{Kind: module.RowText, Text: "khudson reno load <script.txtar>", Style: module.StyleDim})
 	case m.run == nil || !m.run.Live():
-		d.Title = "reno: " + m.staged.Name
-		d.Rows = append(d.Rows, module.Row{Kind: module.RowKV, Key: "loaded",
-			Value: fmt.Sprintf("%s (%d steps)", m.staged.Name, len(m.staged.Steps))})
+		if m.staged != nil {
+			d.Title = "reno: " + m.staged.Name
+			d.Rows = append(d.Rows, module.Row{Kind: module.RowKV, Key: "loaded",
+				Value: fmt.Sprintf("%s (%d steps)", m.staged.Name, len(m.staged.Steps))})
+		}
 		if m.run != nil && !m.run.Live() {
 			d.Rows = append(d.Rows, m.summaryRows()...)
 		}
-		d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "khudson reno start to arm", Style: module.StyleDim})
+		if m.staged != nil {
+			d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "khudson reno start to arm", Style: module.StyleDim})
+		}
+	case m.staged == nil || m.stale != "":
+		// a live run with no usable script: a recovered ad hoc journal, or
+		// a script that changed under the run. Every recovery branch must
+		// render -- a panic here crash-loops the bus straight back into
+		// the same journal.
+		d.Title = "reno: " + m.run.Demo
+		d.Rows = append(d.Rows,
+			module.Row{Kind: module.RowKV, Key: "run", Value: m.run.ID, Style: module.StyleAccent},
+			module.Row{Kind: module.RowText, Text: "live run without a usable script; khudson reno stop to close it", Style: module.StyleDim})
 	default:
 		d.Title = "reno: " + m.run.Demo
 		d.Rows = append(d.Rows, m.liveRows()...)

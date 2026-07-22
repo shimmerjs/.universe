@@ -132,14 +132,27 @@ func TestFocusSessionUnconfirmed(t *testing.T) {
 }
 
 func TestLaunchSession(t *testing.T) {
-	// duplicate handle pre-flight
+	// ensure-semantics: one already-planted window is success (prev/goto
+	// re-enter launch steps), never a mid-show failure
 	v, calls := renoTestVerbs(t, renoLSFixture([3]any{12, "aux", false}))
-	err := v.LaunchSession(context.Background(), "aux", "", false, nil, RenoCorr{})
-	if err == nil || !strings.Contains(err.Error(), "already planted") {
-		t.Fatalf("dup: %v", err)
+	if err := v.LaunchSession(context.Background(), "aux", "", false, nil, RenoCorr{}); err != nil {
+		t.Fatalf("ensure: %v", err)
 	}
 	if len(*calls) != 1 {
-		t.Fatalf("dup must not launch: %v", *calls)
+		t.Fatalf("ensure must not launch again: %v", *calls)
+	}
+	if ev := readEvents(t, v); ev[0].Outcome != "ok" || !strings.Contains(ev[0].Detail, "already planted") {
+		t.Fatalf("ensure event = %+v", ev)
+	}
+
+	// two planted windows is the ambiguity every later focus trips on
+	v1, calls1 := renoTestVerbs(t, renoLSFixture([3]any{12, "aux", false}, [3]any{13, "aux", false}))
+	err := v1.LaunchSession(context.Background(), "aux", "", false, nil, RenoCorr{})
+	if err == nil || !strings.Contains(err.Error(), "already planted 2 times") {
+		t.Fatalf("dup: %v", err)
+	}
+	if len(*calls1) != 1 {
+		t.Fatalf("dup must not launch: %v", *calls1)
 	}
 
 	// happy path: launch argv shape + post-ls confirmation

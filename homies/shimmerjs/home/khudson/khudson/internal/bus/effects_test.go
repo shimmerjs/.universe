@@ -255,3 +255,46 @@ func TestHandleCtlReno(t *testing.T) {
 		t.Fatalf("absent module resp = %+v", resp)
 	}
 }
+
+// A boundary invalidates chains queued before it: run A's staged step
+// actions must not execute into run B.
+func TestEffectBoundaryInvalidatesQueued(t *testing.T) {
+	b, _ := inputTestBus()
+	b.effects = newEffectRunner()
+	rec := &execRecorder{}
+	b.execStart = rec.start
+
+	// enqueue BEFORE the worker starts so ordering is deterministic
+	b.dispatchEffects("reno", []module.Effect{
+		{Key: "runA/0/1/0", Argv: []string{"khudson", "reno", "focus-session", "a"}},
+	})
+	b.dispatchEffects("reno", []module.Effect{module.Boundary()})
+	b.dispatchEffects("reno", []module.Effect{
+		{Key: "runB/0/1/0", Argv: []string{"khudson", "reno", "focus-session", "b"}},
+	})
+	go b.runEffects()
+	t.Cleanup(b.effects.shutdown)
+	b.effects.flush()
+	starts := rec.all()
+	if len(starts) != 1 || starts[0][3] != "b" {
+		t.Fatalf("run A's chain must die at the boundary: %v", starts)
+	}
+}
+
+// Late dispatches after shutdown are refused without touching the queue
+// channel: producers are never quiesced, so the channel must never
+// close (a send on a closed channel panics the bus).
+func TestDispatchAfterShutdownDoesNotPanic(t *testing.T) {
+	b, _ := inputTestBus()
+	b.effects = newEffectRunner()
+	rec := &execRecorder{}
+	b.execStart = rec.start
+	go b.runEffects()
+	b.effects.shutdown()
+	b.dispatchEffects("reno", []module.Effect{
+		{Key: "late/0/1/0", Argv: []string{"khudson", "reno", "focus-session", "x"}},
+	})
+	if len(rec.all()) != 0 {
+		t.Fatalf("post-shutdown dispatch must be refused: %v", rec.all())
+	}
+}

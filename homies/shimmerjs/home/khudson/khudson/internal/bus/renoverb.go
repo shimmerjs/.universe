@@ -203,17 +203,23 @@ func windowFocused(tree []rc.OSWindow, id int) bool {
 	return false
 }
 
-// LaunchSession launches a new main-kitty tab planting the handle.
-// Pre-flight rejects an already-planted handle (launching a duplicate
-// would make every later focus ambiguous); post-flight confirms exactly
-// one window now carries it.
+// LaunchSession ENSURES a main-kitty tab carrying the handle: exactly
+// one already-planted window is success (prev/goto legally re-enter a
+// launch step -- ensure-semantics keep the revisit from failing the
+// show), two or more is the ambiguity every later focus would trip on,
+// zero launches fresh. Post-flight confirms exactly one window carries
+// the handle.
 func (v *RenoVerbs) LaunchSession(ctx context.Context, handle, cwd string, keepFocus bool, argv []string, corr RenoCorr) error {
 	tree, err := v.freshLS(ctx)
 	if err != nil {
 		return v.Act(corr, "launch-session", handle, "error", err.Error(), err)
 	}
-	if wins := handleMatches(tree, handle); len(wins) > 0 {
-		err := fmt.Errorf("handle %s already planted: %s (focus it or pick another handle)", handle, describeWins(wins))
+	switch wins := handleMatches(tree, handle); {
+	case len(wins) == 1:
+		return v.Act(corr, "launch-session", handle, "ok",
+			fmt.Sprintf("already planted: window %d", wins[0].ID), nil)
+	case len(wins) > 1:
+		err := fmt.Errorf("handle %s already planted %d times: %s", handle, len(wins), describeWins(wins))
 		return v.Act(corr, "launch-session", handle, "ambiguous", err.Error(), err)
 	}
 	args := []string{"launch", "--type", "tab", "--var", renoHandleVar + "=" + handle}

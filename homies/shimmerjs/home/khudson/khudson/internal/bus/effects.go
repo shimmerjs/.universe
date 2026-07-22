@@ -21,34 +21,42 @@ import (
 // into a second wire-reachable exec route. Unlike row-act children,
 // effect children mutate the machine mid-demo (kitty/OBS/filesystem),
 // so they run ORDERED (one worker, FIFO chains: a step's launch must
-// finish before its focus resolves) under process-group tracking and
-// die at shutdown -- a hung demo wrapper surviving a restart would act
-// against the next run. The orphan window after a SIGKILL (kickstart -k)
-// is accepted and bounded instead of pidfile-reaped: every reno verb
-// self-terminates on its own deadline (runKitten 10s, renoVerbDeadline
-// in the CLI), so nothing long-lived can leak.
+// finish before its focus resolves) under process-group tracking, die
+// at clean shutdown, and are cut at run boundaries (module.BoundaryKey:
+// run A's queued chains must not execute into run B). The orphan window
+// after a SIGKILL (kickstart -k) is accepted and bounded instead of
+// pidfile-reaped: every reno verb self-terminates on its own deadline
+// (runKitten 10s, renoVerbDeadline in the CLI), so nothing long-lived
+// can leak.
 
 // effectKillGrace is how long shutdown waits between the group SIGTERM
 // and the SIGKILL sweep.
 const effectKillGrace = 2 * time.Second
 
-// effectChain is one transition's ordered effects.
+// effectChain is one transition's ordered effects, stamped with the
+// boundary epoch it was enqueued under.
 type effectChain struct {
 	source  string
 	effects []module.Effect
+	epoch   int
 	// ack is the flush marker's rendezvous; nil on real chains.
 	ack chan struct{}
 }
 
 // effectRunner owns effect execution: one worker goroutine draining a
-// FIFO of chains (order is the contract), the per-key debounce, and the
-// live child's process group for shutdown kill.
+// FIFO of chains (order is the contract), the per-key debounce, the
+// boundary epoch, and the live child's process group. The queue is
+// NEVER closed -- producers live on both the input worker and ctl
+// connections, and shutdown cannot quiesce them; the worker exits via
+// stopCh and late dispatches are refused on the closed flag.
 type effectRunner struct {
-	queue chan effectChain
+	queue  chan effectChain
+	stopCh chan struct{}
 
 	mu     sync.Mutex
 	last   map[string]time.Time // Effect.Key -> dispatch time
 	group  int                  // live child pgid; 0 = none
+	epoch  int                  // bumped at run boundaries
 	closed bool
 	done   chan struct{}
 	now    func() time.Time
@@ -56,17 +64,21 @@ type effectRunner struct {
 
 func newEffectRunner() *effectRunner {
 	return &effectRunner{
-		queue: make(chan effectChain, 16),
-		last:  make(map[string]time.Time),
-		done:  make(chan struct{}),
-		now:   time.Now,
+		queue:  make(chan effectChain, 16),
+		stopCh: make(chan struct{}),
+		last:   make(map[string]time.Time),
+		done:   make(chan struct{}),
+		now:    time.Now,
 	}
 }
 
 // dispatchEffects hands a transition's effects to the ordered worker.
-// Non-blocking: a full queue drops the CHAIN loudly (the input worker
-// must never stall behind a wedged effect), and drops surface exactly
-// like refused acts so the stage sees them.
+// A leading module.BoundaryKey effect cuts the stream FIRST: queued
+// chains from before the boundary are invalidated (epoch bump) and the
+// live child group gets SIGTERM -- stop/start/load must not let run A's
+// staged actions execute into run B. Non-blocking enqueue: a full queue
+// drops the chain loudly (the input worker must never stall behind a
+// wedged effect).
 func (b *Bus) dispatchEffects(source string, effects []module.Effect) {
 	if len(effects) == 0 {
 		return
@@ -75,7 +87,12 @@ func (b *Bus) dispatchEffects(source string, effects []module.Effect) {
 		log.Printf("khudson bus: %s: no effect runner; dropped %d effects", source, len(effects))
 		return
 	}
+	rest := make([]module.Effect, 0, len(effects))
 	for _, e := range effects {
+		if e.Key == module.BoundaryKey && len(e.Argv) == 0 {
+			b.effects.boundary(source)
+			continue
+		}
 		if !effectArgvAllowed(e.Argv) {
 			log.Printf("khudson bus: %s: effect argv refused (not a reno verb shape): %v", source, e.Argv)
 			b.broadcast(proto.Msg{Type: proto.TypeNotice,
@@ -83,13 +100,38 @@ func (b *Bus) dispatchEffects(source string, effects []module.Effect) {
 			b.actFailed(e.Argv, fmt.Errorf("refused (not a reno verb shape)"))
 			return
 		}
+		rest = append(rest, e)
+	}
+	if len(rest) == 0 {
+		return
+	}
+	r := b.effects
+	r.mu.Lock()
+	closed, epoch := r.closed, r.epoch
+	r.mu.Unlock()
+	if closed {
+		log.Printf("khudson bus: %s: shutting down; dropped %d effects", source, len(rest))
+		return
 	}
 	select {
-	case b.effects.queue <- effectChain{source: source, effects: effects}:
+	case r.queue <- effectChain{source: source, effects: rest, epoch: epoch}:
 	default:
-		log.Printf("khudson bus: %s: effect queue full; dropped %d effects", source, len(effects))
+		log.Printf("khudson bus: %s: effect queue full; dropped %d effects", source, len(rest))
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("%s: effect queue full, step actions dropped", source)})
+	}
+}
+
+// boundary invalidates every queued chain and interrupts the live
+// child: the run that enqueued them is over.
+func (r *effectRunner) boundary(source string) {
+	r.mu.Lock()
+	r.epoch++
+	group := r.group
+	r.mu.Unlock()
+	log.Printf("khudson bus: %s: effect boundary (queued chains invalidated)", source)
+	if group != 0 {
+		_ = syscall.Kill(-group, syscall.SIGTERM)
 	}
 }
 
@@ -112,18 +154,32 @@ func effectArgvAllowed(argv []string) bool {
 	return argv[1] == "reno"
 }
 
-// run is the ordered worker: chains FIFO, effects within a chain
+// runEffects is the ordered worker: chains FIFO, effects within a chain
 // strictly sequential (start, WAIT, next) -- a step's launch completes
 // before its focus resolves, and two fast transitions never interleave
-// their machine actions. Failures are loud per effect and do not stop
+// their machine actions. Stale-epoch chains (enqueued before a run
+// boundary) drop loudly. Failures are loud per effect and do not stop
 // the rest of the chain: half a step is better than none mid-show, and
 // the events journal records exactly which action died.
 func (b *Bus) runEffects() {
 	r := b.effects
 	defer close(r.done)
-	for chain := range r.queue {
+	for {
+		var chain effectChain
+		select {
+		case <-r.stopCh:
+			return
+		case chain = <-r.queue:
+		}
 		if chain.ack != nil {
 			close(chain.ack)
+			continue
+		}
+		r.mu.Lock()
+		stale := chain.epoch != r.epoch
+		r.mu.Unlock()
+		if stale {
+			log.Printf("khudson bus: %s: dropped %d effects from a finished run", chain.source, len(chain.effects))
 			continue
 		}
 		for _, e := range chain.effects {
@@ -200,20 +256,27 @@ func (r *effectRunner) flush() {
 	<-ack
 }
 
-// shutdown stops the worker and terminates a live effect group:
-// SIGTERM, grace, SIGKILL. New starts are refused from here on.
+// shutdown refuses new work, terminates a live effect group (SIGTERM,
+// grace, SIGKILL), and stops the worker. The queue stays open forever:
+// producers (input worker, ctl conns) are never quiesced, and a send on
+// a closed channel would panic the bus at the worst moment.
 func (r *effectRunner) shutdown() {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		<-r.done
+		return
+	}
 	r.closed = true
 	group := r.group
 	r.mu.Unlock()
 	if group != 0 {
 		_ = syscall.Kill(-group, syscall.SIGTERM)
 	}
-	close(r.queue)
+	close(r.stopCh)
 	select {
 	case <-r.done:
 		return

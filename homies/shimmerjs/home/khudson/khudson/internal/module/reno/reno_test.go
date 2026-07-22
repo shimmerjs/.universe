@@ -87,7 +87,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if len(effects) != 1 {
 		t.Fatalf("step one effects = %+v", effects)
 	}
-	wantArgv := []string{"khudson", "reno", "focus-session", "work", "--run", m.run.ID, "--step", "0", "--act", "0"}
+	wantArgv := []string{"/inst/khudson", "reno", "focus-session", "work", "--run", m.run.ID, "--step", "0", "--act", "0"}
 	if got := strings.Join(effects[0].Argv, " "); got != strings.Join(wantArgv, " ") {
 		t.Errorf("argv = %q", got)
 	}
@@ -102,11 +102,10 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if len(effects) != 2 || effects[0].Argv[2] != "open-url" || effects[1].Argv[2] != "focus-app" {
 		t.Fatalf("step two effects = %+v", effects)
 	}
-	if effects[1].Argv[0] != "/inst/khudson" {
-		t.Errorf("focus-app must carry the exe identity, got %q", effects[1].Argv[0])
-	}
-	if effects[0].Argv[0] != "khudson" {
-		t.Errorf("open-url may PATH-resolve, got %q", effects[0].Argv[0])
+	for _, e := range effects {
+		if e.Argv[0] != "/inst/khudson" {
+			t.Errorf("every effect head must be the exe identity (PATH flips mid-switch), got %q", e.Argv[0])
+		}
 	}
 
 	_, effects = ctl(t, m, "goto", "three")
@@ -114,7 +113,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("goto three: cursor=%d effects=%+v", m.run.Cursor, effects)
 	}
 	got := strings.Join(effects[0].Argv, " ")
-	if !strings.Contains(got, "launch-session aux --run "+m.run.ID) || !strings.HasSuffix(got, "--cwd /tmp -- claude") {
+	if !strings.HasPrefix(got, "/inst/khudson reno launch-session aux --run "+m.run.ID) || !strings.HasSuffix(got, "--cwd /tmp -- claude") {
 		t.Errorf("launch argv order (correlation before --): %q", got)
 	}
 
@@ -327,4 +326,80 @@ func rowsContain(rows []module.Row, sub string) bool {
 		}
 	}
 	return false
+}
+
+// A recovered journal without a usable script (ad hoc runs, moved
+// scripts) must render, not panic: pollNative has no recover, so a
+// panicking view crash-loops the bus straight back into the same
+// journal.
+func TestRecoveredScriptlessRunRenders(t *testing.T) {
+	dir := t.TempDir()
+	adhoc := &renocore.Run{Version: 1, ID: "r-adhoc", Demo: "adhoc",
+		StartedAt: time.Now(), Cursor: 0, Steps: make([]renocore.StepActual, 1)}
+	if err := renocore.WriteRun(dir, adhoc); err != nil {
+		t.Fatal(err)
+	}
+	m := &Mod{runsDir: dir, exe: "x", now: time.Now}
+	m.recover()
+	if m.run == nil || m.staged != nil {
+		t.Fatalf("recover: run=%v staged=%v", m.run, m.staged)
+	}
+	for _, view := range []string{"presenter", "recorder"} {
+		d, err := m.Poll(context.Background(), map[string]any{"view": view})
+		if err != nil {
+			t.Fatalf("%s poll: %v", view, err)
+		}
+		if len(d.Rows) == 0 {
+			t.Fatalf("%s: no rows", view)
+		}
+	}
+	if !rowsContain(mustRows(t, m, "presenter"), "without a usable script") {
+		t.Error("presenter must say why the run is inert")
+	}
+
+	// transitions refuse but do not panic; stop closes it out
+	if _, effects := m.HandleActEffects([]string{actNext}); len(effects) != 0 {
+		t.Error("scriptless run must not fire effects")
+	}
+	handled, effects := m.HandleActEffects([]string{actStop})
+	if !handled || m.run.Live() {
+		t.Fatal("stop must close a scriptless run")
+	}
+	if len(effects) != 1 || effects[0].Key != module.BoundaryKey {
+		t.Fatalf("stop must return the boundary, got %+v", effects)
+	}
+	// stopped with nothing staged still renders
+	if _, err := m.Poll(context.Background(), map[string]any{"view": "presenter"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustRows(t *testing.T, m *Mod, view string) []module.Row {
+	t.Helper()
+	d, err := m.Poll(context.Background(), map[string]any{"view": view})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.Rows
+}
+
+// Lifecycle boundaries ride the effect stream: stop and a fresh start
+// both emit the marker that invalidates queued chains bus-side.
+func TestLifecycleBoundaries(t *testing.T) {
+	m, path := testMod(t)
+	ctl(t, m, "load", path)
+	_, effects := ctl(t, m, "start")
+	if len(effects) != 1 || effects[0].Key != module.BoundaryKey {
+		t.Fatalf("start boundary: %+v", effects)
+	}
+	_, effects = ctl(t, m, "stop")
+	if len(effects) != 1 || effects[0].Key != module.BoundaryKey {
+		t.Fatalf("stop boundary: %+v", effects)
+	}
+	// load --replace over a live run cuts it too
+	ctl(t, m, "start")
+	_, effects = ctl(t, m, "load", path, "--replace")
+	if len(effects) != 1 || effects[0].Key != module.BoundaryKey {
+		t.Fatalf("replace boundary: %+v", effects)
+	}
 }

@@ -143,6 +143,15 @@ type Effect struct {
 	Argv []string
 }
 
+// BoundaryKey marks a run boundary in an effect stream: an Effect with
+// this key and no argv tells the bus executor to invalidate every chain
+// queued before it and interrupt the live child -- a stopped run's
+// staged actions must not execute into the next run.
+const BoundaryKey = "effect:boundary"
+
+// Boundary is the run-boundary marker effect.
+func Boundary() Effect { return Effect{Key: BoundaryKey} }
+
 // EffectHandler is the effectful sibling of ActHandler: one act both
 // moves in-process state AND fires exec effects. Handled acts repoll
 // like ActHandler's; effects exec bus-side under process-group tracking
