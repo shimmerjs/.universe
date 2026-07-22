@@ -47,20 +47,19 @@ func stripCells(line string) int {
 	return lipgloss.Width(line)
 }
 
-// stripLines renders the full view and returns the two strip rows.
-func stripLines(t *testing.T, m *model) (top, bot string) {
+// stripLines renders the full view and returns the single strip band row.
+func stripLines(t *testing.T, m *model) string {
 	t.Helper()
 	v := m.View()
 	lines := strings.Split(v.Content, "\n")
 	if len(lines) != m.height {
 		t.Fatalf("view lines = %d, want %d", len(lines), m.height)
 	}
-	return lines[m.height-2], lines[m.height-1]
+	return lines[m.height-1]
 }
 
-// The strip is exactly 2 rows of full-width real cells: drawn icon art on
-// both rows, 1x text on the bottom row alone, no escapes beyond SGR, the
-// clock flush right.
+// The strip is exactly one full-width band row: icon glyph, padded tab
+// labels, status content, the clock flush right, no escapes beyond SGR.
 func TestStripGeometry(t *testing.T) {
 	m := stripModel()
 	v := m.View()
@@ -73,17 +72,17 @@ func TestStripGeometry(t *testing.T) {
 			t.Errorf("line %d width = %d, want 196", i, w)
 		}
 	}
-	top, bot := lines[22], lines[23]
+	bot := lines[23]
 	for _, esc := range []string{"\x1b]66;", "\x1b[2C", "\x1b]8;"} {
-		if strings.Contains(top, esc) || strings.Contains(bot, esc) {
+		if strings.Contains(bot, esc) {
 			t.Errorf("strip carries a non-SGR escape %q the compositor would eat", esc)
 		}
 	}
-	if s := strings.TrimSpace(ansi.Strip(top)); s != "" {
-		t.Errorf("top row carries text %q, want blank (icons sit on the baseline row)", s)
-	}
 	if s := ansi.Strip(bot); !strings.HasPrefix(s, " "+homeGlyph+" ") {
 		t.Errorf("bottom row does not open with the home glyph: %q", s[:12])
+	}
+	if s := ansi.Strip(bot); !strings.Contains(s, " kb  clod  sys ") {
+		t.Errorf("bottom row missing the padded tab labels: %q", s[:24])
 	}
 	if !strings.Contains(ansi.Strip(bot), cupOffGlyph) {
 		t.Error("bottom row missing the cup glyph")
@@ -95,7 +94,7 @@ func TestStripGeometry(t *testing.T) {
 		t.Error("bottom row missing the flip chevron (home is the expanded layout)")
 	}
 	plain := ansi.Strip(bot)
-	for _, sub := range []string{"kb", "clod", "sys", "home", "bus absent"} {
+	for _, sub := range []string{"home", "bus absent"} {
 		if !strings.Contains(plain, sub) {
 			t.Errorf("bottom row missing %q", sub)
 		}
@@ -105,22 +104,45 @@ func TestStripGeometry(t *testing.T) {
 	}
 }
 
-// Strip hit zones ride the body table's tail: icon, the three tabs spanning
-// both rows, the flip chevron, the cup, the always-present battery readout,
-// then the whole-strip consume rect last -- no overlap among the specific
-// rects. (No kitty_mod cell here: stripModel leaves Strip.KittyMod empty.)
+// Tab band shape: padded labels on the band row, no box glyphs anywhere
+// -- the band is a surface, not a frame -- and the active tab notches
+// through to the bare background (TestStripSurfaceFill pins the palette
+// form).
+func TestStripActiveTabNotch(t *testing.T) {
+	m := stripModel()
+	m.layout = "keyboard" // the "kb" entry's target
+	m.resetLayout()
+	v := m.View()
+	lines := strings.Split(v.Content, "\n")
+	bot := ansi.Strip(lines[23])
+	if !strings.Contains(bot, " kb  clod  sys ") {
+		t.Errorf("band row missing the padded labels: %q", bot[:24])
+	}
+	if strings.ContainsAny(bot, "│┌┐└┘┬┴─") {
+		t.Error("band row carries box glyphs; the band is a surface")
+	}
+	// the active kb label renders in the bold accent
+	if !strings.Contains(lines[23], chromeAccent.Bold(true).Render(" kb ")) {
+		t.Error("active kb tab not accent-toned")
+	}
+}
+
+// Strip hit zones ride the body table's tail: icon, the three tabs, the
+// flip chevron, the cup, the always-present battery readout, then the
+// whole-strip consume rect last -- no overlap among the specific rects.
+// (No kitty_mod cell here: stripModel leaves Strip.KittyMod empty.)
 func TestStripHitTable(t *testing.T) {
 	m := stripModel()
 	m.View()
 	want := []rect{
-		{0, 22, 3, 2},   // home icon glyph
-		{3, 22, 4, 2},   // tab: kb
-		{7, 22, 6, 2},   // tab: clod
-		{13, 22, 5, 2},  // tab: sys
-		{18, 22, 3, 2},  // flip chevron glyph
-		{22, 22, 3, 2},  // caffeinate cup glyph (after the 1-col gap)
-		{25, 22, 10, 2}, // battery readout cell (always-present chrome)
-		{0, 22, 196, 2}, // whole-strip consume rect, last
+		{0, 23, 3, 1},   // home icon glyph
+		{3, 23, 4, 1},   // tab: kb (padded label)
+		{7, 23, 6, 1},   // tab: clod
+		{13, 23, 5, 1},  // tab: sys
+		{18, 23, 3, 1},  // flip chevron glyph
+		{22, 23, 3, 1},  // caffeinate cup glyph (after the 1-col gap)
+		{25, 23, 10, 1}, // battery readout cell (always-present chrome)
+		{0, 23, 196, 1}, // whole-strip consume rect, last
 	}
 	if len(m.hits) < len(want) {
 		t.Fatalf("hits = %d, want at least %d", len(m.hits), len(want))
@@ -132,7 +154,7 @@ func TestStripHitTable(t *testing.T) {
 		}
 	}
 	for i, h := range m.hits[:len(m.hits)-len(want)] {
-		if h.area.y+h.area.h > 22 {
+		if h.area.y+h.area.h > 23 {
 			t.Errorf("body hit %d (%+v) reaches into the strip", i, h.area)
 		}
 	}
@@ -167,16 +189,16 @@ func TestStripSurvivesCompositor(t *testing.T) {
 		}
 		return b.String()
 	}
-	if got := strings.TrimSpace(cellRow(22, 0, 24)); got != "" {
-		t.Errorf("icon-band top row cells = %q, want blank", got)
-	}
 	if got := cellRow(23, 0, 3); got != " "+homeGlyph+" " {
 		t.Errorf("home glyph cells = %q, want %q", got, " "+homeGlyph+" ")
 	}
-	// the kb tab's first letter must land INSIDE its hit rect {3,22,4,2}:
-	// a dropped skip/escape would shift the row left and misroute taps
+	// the kb tab's label must land INSIDE its hit rect {3,22,4,2}: a
+	// dropped skip/escape would shift the row left and misroute taps
 	if got := cellRow(23, 3, 7); !strings.Contains(got, "kb") {
 		t.Errorf("kb tab cells = %q, want the label inside its hit rect", got)
+	}
+	if got := cellRow(23, 3, 18); got != " kb  clod  sys " {
+		t.Errorf("tab label cells = %q, want the padded labels", got)
 	}
 	if got := cellRow(23, 18, 21); !strings.Contains(got, stripCollapseGlyph) {
 		t.Errorf("chevron cells = %q, want the collapse chevron inside its hit rect", got)
@@ -197,7 +219,7 @@ func TestStripSurvivesCompositor(t *testing.T) {
 func TestStripUnknownToggleRendersDead(t *testing.T) {
 	m := stripModel()
 	m.cfg.Strip.Toggles = []config.StripToggle{{Kind: "mystery"}}
-	_, bot := stripLines(t, m)
+	bot := stripLines(t, m)
 	if !strings.Contains(ansi.Strip(bot), "?") {
 		t.Error("unknown toggle kind did not render the dead placeholder")
 	}
@@ -205,7 +227,7 @@ func TestStripUnknownToggleRendersDead(t *testing.T) {
 		t.Error("unknown toggle kind rendered the cup")
 	}
 	before := m.layout
-	if !m.resolveTap(23, 22) {
+	if !m.resolveTap(23, 23) {
 		t.Fatal("dead toggle tap not consumed")
 	}
 	if m.layout != before || m.lastGst == "caffeinate: bus absent" {
@@ -213,18 +235,73 @@ func TestStripUnknownToggleRendersDead(t *testing.T) {
 	}
 }
 
-// Tab accent follows m.layout == target.
+// Tab accent follows m.layout == target: the active label renders in the
+// bold accent, inactive labels stay plain.
 func TestStripTabAccent(t *testing.T) {
+	active := chromeAccent.Bold(true).Render(" clod ")
 	m := stripModel()
-	_, bot := stripLines(t, m)
-	if strings.Contains(bot, "\x1b[35mclod") {
+	bot := stripLines(t, m)
+	if strings.Contains(bot, active) {
 		t.Error("inactive tab accent-toned")
 	}
 	m.layout = "hub"
 	m.resetLayout()
-	_, bot = stripLines(t, m)
-	if !strings.Contains(bot, "\x1b[35mclod") {
+	bot = stripLines(t, m)
+	if !strings.Contains(bot, active) {
 		t.Error("active-target tab not accent-toned")
+	}
+}
+
+// Under a palette the strip band carries the textured fill: inactive tab
+// labels and the status remainder sit on the band background, while the
+// active tab -- and the home icon while home shows -- sit bare, notching
+// the band open into the borderless panel directly above. Palette-less
+// docks carry no fill at all.
+func TestStripSurfaceFill(t *testing.T) {
+	m := stripModel()
+	m.layout = "hub"
+	m.resetLayout()
+	if bot := stripLines(t, m); strings.Contains(bot, "48;2;") {
+		t.Fatal("palette-less strip carries a background fill")
+	}
+	m.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
+	v := m.View()
+	buf := uv.NewScreenBuffer(196, 24)
+	uv.NewStyledString(v.Content).Draw(buf, buf.Bounds())
+	if c := buf.CellAt(5, 23); c == nil || c.Style.Bg == nil {
+		t.Error("inactive kb label carries no band fill")
+	}
+	if c := buf.CellAt(10, 23); c == nil || c.Style.Bg != nil {
+		t.Error("active clod tab carries a background; it must notch bare")
+	}
+	if c := buf.CellAt(1, 23); c == nil || c.Style.Bg == nil {
+		t.Error("home icon cell off the home layout carries no band fill")
+	}
+	if c := buf.CellAt(150, 23); c == nil || c.Style.Bg == nil {
+		t.Error("status remainder carries no band fill")
+	}
+	texture := false
+	for x := 30; x < 196; x++ {
+		if c := buf.CellAt(x, 23); c != nil && c.Content == "·" {
+			texture = true
+			break
+		}
+	}
+	if !texture {
+		t.Error("no texture glyph on the band")
+	}
+
+	// on the home layout the home ICON is the active notch
+	m2 := stripModel()
+	m2.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
+	v2 := m2.View()
+	buf2 := uv.NewScreenBuffer(196, 24)
+	uv.NewStyledString(v2.Content).Draw(buf2, buf2.Bounds())
+	if c := buf2.CellAt(1, 23); c == nil || c.Style.Bg != nil {
+		t.Error("home icon carries a background on the home layout; it must notch bare")
+	}
+	if c := buf2.CellAt(5, 23); c == nil || c.Style.Bg == nil {
+		t.Error("kb label carries no band fill on the home layout")
 	}
 }
 
@@ -236,7 +313,7 @@ func TestStripTaps(t *testing.T) {
 	m := stripModel()
 	m.View()
 
-	if !m.resolveTap(23, 22) {
+	if !m.resolveTap(23, 23) {
 		t.Fatal("tap on the cup not consumed")
 	}
 	if m.lastGst != "caffeinate: bus absent" {
@@ -253,19 +330,19 @@ func TestStripTaps(t *testing.T) {
 		t.Fatal("stub tap did not arm the flash")
 	}
 	m.now = time.Now()
-	_, bot := stripLines(t, m)
-	if !strings.Contains(bot, "\x1b[33msoon") {
+	bot := stripLines(t, m)
+	if !strings.Contains(bot, "\x1b[33m soon ") {
 		t.Error("flashing tab does not render soon in the warn tone")
 	}
 	// the status tally still names the stub ("nav: sys (soon)"), so probe
 	// for the warn-toned tab label specifically
 	m.now = time.Now().Add(trayFlashFor + time.Second)
-	_, bot = stripLines(t, m)
-	if strings.Contains(bot, "\x1b[33msoon") {
+	bot = stripLines(t, m)
+	if strings.Contains(bot, "\x1b[33m soon ") {
 		t.Error("flash did not clear after the window")
 	}
 
-	if !m.resolveTap(8, 22) {
+	if !m.resolveTap(8, 23) {
 		t.Fatal("tap on the clod tab not consumed")
 	}
 	if m.layout != "hub" {
@@ -281,7 +358,7 @@ func TestStripTaps(t *testing.T) {
 	}
 
 	m.View()
-	if !m.resolveTap(100, 22) {
+	if !m.resolveTap(100, 23) {
 		t.Fatal("bare strip tap not consumed by the whole-strip rect")
 	}
 	if m.layout != "home" {
@@ -295,7 +372,7 @@ func TestStripTaps(t *testing.T) {
 // column, expand on the collapsed layout restores it.
 func TestStripFlipChevron(t *testing.T) {
 	m := stripModel()
-	_, bot := stripLines(t, m)
+	bot := stripLines(t, m)
 	plain := ansi.Strip(bot)
 	if !strings.Contains(plain, stripCollapseGlyph) {
 		t.Error("expanded layout missing the collapse chevron")
@@ -304,15 +381,15 @@ func TestStripFlipChevron(t *testing.T) {
 		t.Error("expanded layout renders the expand chevron")
 	}
 
-	// chevron slot: home icon (3) + kb (4) + clod (6) + sys (5) -> x 18
-	if !m.resolveTap(19, 22) {
+	// chevron slot: home icon (3) + the padded tab labels (15) -> x 18
+	if !m.resolveTap(19, 23) {
 		t.Fatal("collapse tap not consumed")
 	}
 	if m.layout != "home-no-kb" {
 		t.Fatalf("collapse tap landed on %q, want home-no-kb", m.layout)
 	}
 
-	_, bot = stripLines(t, m)
+	bot = stripLines(t, m)
 	plain = ansi.Strip(bot)
 	if !strings.Contains(plain, stripExpandGlyph) {
 		t.Error("collapsed layout missing the expand chevron")
@@ -334,20 +411,20 @@ func TestStripFlipAbsent(t *testing.T) {
 	m := stripModel()
 	m.layout = "hub"
 	m.resetLayout()
-	_, bot := stripLines(t, m)
+	bot := stripLines(t, m)
 	plain := ansi.Strip(bot)
 	if strings.Contains(plain, stripCollapseGlyph) || strings.Contains(plain, stripExpandGlyph) {
 		t.Error("chevron rendered on a layout outside the flip pair")
 	}
 	for _, h := range m.hits {
-		if h.area == (rect{18, 22, 3, 2}) {
+		if h.area == (rect{18, 23, 3, 1}) {
 			t.Error("chevron hit rect registered outside the flip pair")
 		}
 	}
 
 	m = stripModel()
 	m.cfg.Strip.Flip = nil
-	_, bot = stripLines(t, m)
+	bot = stripLines(t, m)
 	plain = ansi.Strip(bot)
 	if strings.Contains(plain, stripCollapseGlyph) || strings.Contains(plain, stripExpandGlyph) {
 		t.Error("chevron rendered without a flip block")
@@ -367,7 +444,7 @@ func TestStripHitsLeaveCacheBackingAlone(t *testing.T) {
 		}
 	}
 	for i, h := range c {
-		if h.area.y >= 22 {
+		if h.area.y >= 23 {
 			t.Errorf("cached hit %d is a strip rect: %+v", i, h.area)
 		}
 	}
@@ -493,7 +570,7 @@ func TestStripBatteryGlyphBuckets(t *testing.T) {
 func TestStripBatteryReadout(t *testing.T) {
 	m := stripModel()
 	m.logi = &proto.LogiState{TimeNS: m.now.UnixNano(), Kind: "mx", SoC: 50, Charging: false}
-	_, bot := stripLines(t, m)
+	bot := stripLines(t, m)
 	plain := ansi.Strip(bot)
 	if !strings.Contains(plain, mouseGlyph+" "+batHalfGlyph) {
 		t.Error("fresh battery frame missing the mouse marker + half glyph")
@@ -503,7 +580,7 @@ func TestStripBatteryReadout(t *testing.T) {
 	}
 
 	m.logi = &proto.LogiState{TimeNS: m.now.Add(-2 * logiStale).UnixNano(), Kind: "mx", SoC: 50}
-	_, bot = stripLines(t, m)
+	bot = stripLines(t, m)
 	if !strings.Contains(ansi.Strip(bot), "50%") {
 		t.Error("stale battery frame dropped the last-known pct")
 	}
@@ -512,7 +589,7 @@ func TestStripBatteryReadout(t *testing.T) {
 	}
 
 	m.logi = nil
-	_, bot = stripLines(t, m)
+	bot = stripLines(t, m)
 	plain = ansi.Strip(bot)
 	if !strings.Contains(plain, mouseGlyph+" "+batUnknownGlyph) {
 		t.Error("no-data battery cell missing the mouse marker + placeholder glyph")
@@ -528,20 +605,20 @@ func TestStripBatteryReadout(t *testing.T) {
 // walks the clock instead of sleeping.
 func TestStripActFailWarnCell(t *testing.T) {
 	m := stripModel()
-	_, bot := stripLines(t, m)
+	bot := stripLines(t, m)
 	if strings.Contains(ansi.Strip(bot), "exit status 1") {
 		t.Fatal("act-fail text rendered before any failure broadcast")
 	}
 
 	m.handleBusMsg(proto.Msg{Type: proto.TypeActFail,
 		ActFail: &proto.ActFail{TimeNS: m.now.UnixNano(), Msg: "open: exit status 1"}})
-	_, bot = stripLines(t, m)
+	bot = stripLines(t, m)
 	if !strings.Contains(bot, chromeWarn.Render("! open: exit status 1")) {
 		t.Error("fresh act failure not rendered in the warn tone")
 	}
 
 	m.now = m.now.Add(actFailFor + time.Second)
-	_, bot = stripLines(t, m)
+	bot = stripLines(t, m)
 	if strings.Contains(ansi.Strip(bot), "exit status 1") {
 		t.Error("act-fail cell survived past the decay window")
 	}
@@ -558,14 +635,14 @@ func TestStripKittyModNote(t *testing.T) {
 
 	m := stripModel()
 	m.cfg.Strip.KittyMod = "ctrl+opt+shift"
-	_, bot := stripLines(t, m)
+	bot := stripLines(t, m)
 	if !strings.Contains(ansi.Strip(bot), want) {
 		t.Errorf("kitty_mod note %q not rendered in %q", want, ansi.Strip(bot))
 	}
 
 	m2 := stripModel()
 	m2.cfg.Strip.KittyMod = ""
-	_, bot2 := stripLines(t, m2)
+	bot2 := stripLines(t, m2)
 	if strings.Contains(ansi.Strip(bot2), want) {
 		t.Error("empty kitty_mod still rendered the chord glyphs")
 	}

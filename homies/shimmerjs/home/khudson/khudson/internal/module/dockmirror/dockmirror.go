@@ -225,22 +225,52 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 }
 
 // render emits one button row per RUNNING app: pinned-and-running first in
-// Dock order, then the rest alphabetically, then the minimized-window
-// section. Pinned-but-not-running apps do not appear. No cap: the rail
-// truncates loudly for itself, and a cap here would skew its overflow
-// count. Apps whose lsappinfo entry carried a bundle id also get the
-// quit/force-quit long-press menu -- the argv rides the BUNDLE id, never
-// the display name or a poll-time pid: `khudson ax quit|force-quit`
-// re-resolves and re-validates pids at exec time.
+// Dock order, then the rest alphabetically. Pinned-but-not-running apps do
+// not appear. No cap: the rail truncates loudly for itself, and a cap here
+// would skew its overflow count. Apps whose lsappinfo entry carried a
+// bundle id get the quit/force-quit long-press menu -- the argv rides the
+// BUNDLE id, never the display name or a poll-time pid: `khudson ax
+// quit|force-quit` re-resolves and re-validates pids at exec time.
+//
+// Minimized windows ride their owning app's menu as a "minimized" section
+// (the overlay separates and textures it) instead of standalone rail rows,
+// one item per window on the per-window unminimize verb -- `<exe> ax
+// unminimize <title>`, plus `--app <app>` when titleApp found a real split
+// (the verb's in-app fallback needs an owning app). Items keep this argv
+// UNCONDITIONALLY: on an ungranted or stale-permission machine the degrade
+// path is the verb itself failing loud with the grant hint, never a
+// downgrade to app-activate. Windows whose parsed app matches no running
+// row (title-parse misses) fall back to the old dim rail rows so nothing
+// vanishes. A failed sweep (untrusted included) is one dim note row, never
+// a hard poll failure: it is the expected state until Accessibility is
+// granted to khudson.
 func render(exe string, pinned []string, running map[string]string, mins []minWin, minErr error) module.Data {
+	minActs := map[string][]module.Act{}
+	var orphans []minWin
+	for _, w := range mins {
+		if w.app == selfName {
+			// the mirror must not list khudson itself (the AX tier carries
+			// only names; the bundle-id match lives in parseRunning)
+			continue
+		}
+		if _, ok := running[w.app]; !ok {
+			orphans = append(orphans, w)
+			continue
+		}
+		minActs[w.app] = append(minActs[w.app], module.Act{
+			Label: minTitle(w), Argv: unminArgv(exe, w), Section: "minimized",
+		})
+	}
+
 	appRow := func(app string) module.Row {
 		row := module.Row{Kind: module.RowText, Text: app, Act: []string{"open", "-a", app}}
 		if id := running[app]; id != "" {
 			row.Menu = []module.Act{
-				{Label: "Quit", Argv: []string{exe, "ax", "quit", "--bundle", id}},
-				{Label: "Force Quit", Argv: []string{exe, "ax", "force-quit", "--bundle", id}, Destructive: true},
+				{Label: "quit", Argv: []string{exe, "ax", "quit", "--bundle", id}},
+				{Label: "force quit", Argv: []string{exe, "ax", "force-quit", "--bundle", id}, Destructive: true},
 			}
 		}
+		row.Menu = append(row.Menu, minActs[app]...)
 		return row
 	}
 
@@ -264,16 +294,6 @@ func render(exe string, pinned []string, running map[string]string, mins []minWi
 		rows = append(rows, appRow(app))
 	}
 
-	// minimized section: dim rows after the running buttons, Text = window
-	// title (Key keeps the owning app for the rail's fallback). The Act is
-	// the per-window unminimize verb -- `<exe> ax unminimize <title>`,
-	// plus `--app <app>` when titleApp found a real split (the verb's
-	// in-app fallback needs an owning app). Rows keep this argv
-	// UNCONDITIONALLY: on an ungranted or stale-permission machine the
-	// degrade path is the verb itself failing loud with the grant hint,
-	// never a downgrade to app-activate. A failed sweep (untrusted
-	// included) is one dim note row, never a hard poll failure: it is the
-	// expected state until Accessibility is granted to khudson.
 	if minErr != nil {
 		note := "minimized: sweep failed: " + minErr.Error()
 		if errors.Is(minErr, ax.ErrUntrusted) {
@@ -281,24 +301,31 @@ func render(exe string, pinned []string, running map[string]string, mins []minWi
 		}
 		rows = append(rows, module.Row{Kind: module.RowText, Text: note, Style: module.StyleDim})
 	}
-	for _, w := range mins {
-		if w.app == selfName {
-			// the mirror must not list khudson itself (the AX tier carries
-			// only names; the bundle-id match lives in parseRunning)
-			continue
-		}
-		act := []string{exe, "ax", "unminimize", w.title}
-		if w.app != w.title {
-			act = append(act, "--app", w.app)
-		}
-		title := w.title
-		if title == "" {
-			title = w.app
-		}
+	for _, w := range orphans {
 		rows = append(rows, module.Row{Kind: module.RowText,
-			Text: title, Key: w.app, Style: module.StyleDim, Act: act})
+			Text: minTitle(w), Key: w.app, Style: module.StyleDim, Act: unminArgv(exe, w)})
 	}
 	return module.Data{Title: "dock", Rows: rows}
+}
+
+// unminArgv is the per-window unminimize verb -- `<exe> ax unminimize
+// <title>`, plus `--app <app>` when titleApp found a real split (the
+// verb's in-app fallback needs an owning app).
+func unminArgv(exe string, w minWin) []string {
+	argv := []string{exe, "ax", "unminimize", w.title}
+	if w.app != w.title {
+		argv = append(argv, "--app", w.app)
+	}
+	return argv
+}
+
+// minTitle is a minimized window's display label; a titleless window shows
+// its owning app.
+func minTitle(w minWin) string {
+	if w.title == "" {
+		return w.app
+	}
+	return w.title
 }
 
 // parsePinnedApps extracts tile-data file-labels from the persistent-apps

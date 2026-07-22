@@ -15,6 +15,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/shimmerjs/khudson/khudson/internal/config"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/kbview"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
@@ -273,12 +274,23 @@ func (m *model) renderRegion(r config.Region, rr rect) string {
 	return m.renderHomeWidget(w, rr)
 }
 
-// renderHomeWidget is a titled region: widget title on the border, module
-// rows inside, poll errors loud. The region consumes every tap that lands in
-// it; a tap on a content row with an act fires it, a long-press on a row
-// with a menu opens the popover anchored at the press.
+// renderHomeWidget is a titled region: widget title on the border (or on a
+// bare title row for a full-height side panel), module rows inside, poll
+// errors loud. The region consumes every tap that lands in it; a tap on a
+// content row with an act fires it, a long-press on a row with a menu
+// opens the popover anchored at the press.
 func (m *model) renderHomeWidget(w config.Widget, rr rect) string {
+	full := rr.h == m.height-stripH
 	content := rect{rr.x + 1, rr.y + 1, rr.w - 2, rr.h - 2}
+	if full {
+		// side-panel geometry: no top/bottom border rows, left inset only
+		// when a neighbor abuts
+		inset := 0
+		if rr.x > 0 {
+			inset = 1
+		}
+		content = rect{rr.x + inset, rr.y + 1, rr.w - inset, rr.h - 1}
+	}
 	title := w.Title
 	var lines []string
 	var acts [][]string
@@ -306,7 +318,7 @@ func (m *model) renderHomeWidget(w config.Widget, rr rect) string {
 				return
 			}
 			if row := y - content.y; row < len(menus) && len(menus[row]) > 0 {
-				m.openOverlay(w.ID, "", menus[row], x, y)
+				m.openOverlay(w.ID, menus[row], x, y)
 			}
 		}
 	}
@@ -318,11 +330,101 @@ func (m *model) renderHomeWidget(w config.Widget, rr rect) string {
 			m.sendRowAct(w.ID, acts[row])
 		}
 	}, longPress: lp})
-	if m.widgetData[w.ID].Attention {
+	if m.widgetData[w.ID].Attention && !full {
 		return renderAttentionBox(title, lines, rr.w, rr.h, m.attentionRamp(), m.attentionTick())
+	}
+	if full {
+		return m.renderSidePanel(title, lines, rr.w, rr.h, rr.x > 0, m.widgetData[w.ID].Attention)
 	}
 	return renderTitledBox(title, lines, rr.w, rr.h)
 }
+
+// renderSidePanel is the full-height panel chrome: the title rides a
+// lifted header band instead of a top border, the body renders full-bleed
+// below it, and a hairline separator marks the left edge only when a
+// neighbor abuts (the strip band caps the glass under it, so no bottom
+// border either). The dock-side sibling of kbview.Panel.
+//
+// attention carries the signal ON the header instead of regrowing the
+// marching frame (the box clashed with the borderless idiom and framed
+// side-panel-inset content one cell off): the title sits on the steady
+// warn wash -- an animated background under text drowned it,
+// glass-verified -- and the header's empty trailing cells march the warn
+// ramp, so the panel pulses without a frame.
+func (m *model) renderSidePanel(title string, body []string, w, h int, leftEdge, attention bool) string {
+	if w < 2 || h < 2 {
+		return blankBlock(w, h)
+	}
+	inset := 0
+	left, headLeft := "", ""
+	if leftEdge {
+		inset = 1
+		left = chromeDim.Render(kbview.Hairline())
+		headLeft = left
+	}
+	innerW := w - inset
+	ts, pad := chromeFG, lipgloss.NewStyle()
+	if hb, ok := m.palette.blend("background", "foreground", sidePanelHeaderBlend); ok {
+		ts = ts.Background(hb)
+		pad = pad.Background(hb)
+		if leftEdge {
+			headLeft = chromeDim.Background(hb).Render(kbview.Hairline())
+		}
+	}
+	if attention {
+		if wash := attnRowBG(m.palette); wash != nil {
+			ts = chromeFG.Background(wash)
+			if leftEdge {
+				headLeft = chromeDim.Background(wash).Render(kbview.Hairline())
+			}
+		} else {
+			// indexed fallback: a loud title, no wash to derive
+			ts = chromeWarn.Reverse(true)
+		}
+	}
+	t := fitCell(" "+title, innerW)
+	padW := max(innerW-lipgloss.Width(t), 0)
+	trail := pad.Render(strings.Repeat(" ", padW))
+	if attention {
+		trail = m.marchPad(inset+lipgloss.Width(t), padW)
+	}
+	lines := make([]string, 0, h)
+	lines = append(lines, headLeft+ts.Render(t)+trail)
+	for c := range strings.SplitSeq(fixedBlock(body, innerW, h-1), "\n") {
+		lines = append(lines, left+c)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// marchPad is the attention header's trailing band: per-cell backgrounds
+// from the warn ramp advancing one step per tick -- the comet runs on
+// EMPTY header cells only, so no text drowns. Palette-less docks get the
+// warn/dim alternation the attention box uses.
+func (m *model) marchPad(x0, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	ramp := m.attentionRamp()
+	tick := m.attentionTick()
+	var b strings.Builder
+	for i := range n {
+		if len(ramp) == 0 {
+			if wrapIdx(x0+i+tick, 2) == 0 {
+				b.WriteString(chromeWarn.Reverse(true).Render(" "))
+			} else {
+				b.WriteString(" ")
+			}
+			continue
+		}
+		bg := ramp[wrapIdx(x0+i+tick, len(ramp))]
+		b.WriteString(lipgloss.NewStyle().Background(bg).Render(" "))
+	}
+	return b.String()
+}
+
+// sidePanelHeaderBlend is the header band's distance off the theme
+// background (kbview.Panel's headerLift sibling).
+const sidePanelHeaderBlend = 0.12
 
 // attentionTick is the marching border's phase: one step per dock tick
 // (tickMsg advances m.now 1/s; no extra timer -- a slow crawl).
@@ -353,13 +455,14 @@ func (m *model) attentionLive() bool {
 // buttons (border, label, border -- no padding rows or columns beyond the
 // frame; borderless tiles read as floating labels on
 // glass), one per actionable row (rows with an Act) from the dock-mirror
-// module in row order -- running apps, then the minimized-window section as
-// dim tiles -- tap = the row's act. Identity hue colors the running label;
-// the minimized tier stays dim. Columns are the fewest that keep tiles at
-// most railTileW wide, so a wide region grows columns instead of stretching
-// tiles. Dim text rows without an Act (module degrade notes) list under the
-// grid. When the tiles outgrow the grid the tail truncates into a dim "+N"
-// cell, never silently.
+// module in row order -- running apps, plus dim tiles for any orphaned
+// minimized windows the module could not attach to a running app's menu --
+// tap = the row's act. Identity hue colors the running label; the orphan
+// tier stays dim. Columns are the fewest that keep tiles at most railTileW
+// wide, so a wide region grows columns instead of stretching tiles. Dim
+// text rows without an Act (module degrade notes) list under the grid.
+// When the tiles outgrow the grid the tail truncates into a dim "+N" cell,
+// never silently.
 func (m *model) renderRail(w config.Widget, rr rect) string {
 	if e, bad := m.widgetErr[w.ID]; bad {
 		m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
@@ -381,8 +484,8 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 	}
 	nicks := railNicknames(w.Render.Params)
 	colors := railColors(w.Render.Params)
-	cols := max((rr.w+railTileW+1)/(railTileW+1), 1)
-	bw := (rr.w - (cols - 1)) / cols
+	cols := max((rr.w+railTileW-1)/railTileW, 1)
+	bw := rr.w / cols
 	capacity := max((rr.h-len(notes))/railTileH, 0) * cols
 	if bw < 4 || capacity < 1 {
 		// region too small for tiles: a dim name list, never a panic
@@ -401,7 +504,7 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 		shown = shown[:capacity-1]
 		overflow = len(apps) - len(shown)
 	}
-	lpad := max((rr.w-(bw*cols+cols-1))/2, 0)
+	lpad := max((rr.w-bw*cols)/2, 0)
 	cells := make([][]string, 0, len(shown)+1)
 	for i, r := range shown {
 		name := railName(r, nicks)
@@ -415,22 +518,28 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 		// flash keys on the rail index, not the display name: two tiles
 		// sharing a name must not flash together
 		key := "rail:" + strconv.Itoa(i)
+		border := chromeDim
 		if m.flashLive(key) {
-			label = m.tapStyle(label)
+			if b, l, ok := m.pressStyles(); ok {
+				border, label = b, l
+			} else {
+				label = m.tapStyle(label)
+			}
 		}
-		cells = append(cells, railTile(name, bw, label))
+		cells = append(cells, railTile(name, bw, border, label))
 		m.hits = append(m.hits, hitRegion{
-			area: rect{rr.x + lpad + (i%cols)*(bw+1), rr.y + (i/cols)*railTileH, bw, railTileH},
+			area: rect{rr.x + lpad + (i%cols)*bw, rr.y + (i/cols)*railTileH, bw, railTileH},
 			do: func(int, int) {
 				m.flash(key)
 				m.sendRowAct(w.ID, r.Act)
 			},
-			longPress: m.menuOpener(w.ID, name, r.Menu),
+			longPress: m.menuOpener(w.ID, r.Menu),
 			pressKey:  key,
+			weldTile:  true,
 		})
 	}
 	if overflow > 0 {
-		cells = append(cells, railTile(fmt.Sprintf("+%d", overflow), bw, chromeDim))
+		cells = append(cells, railTile(fmt.Sprintf("+%d", overflow), bw, chromeDim, chromeDim))
 	}
 	pad := strings.Repeat(" ", lpad)
 	blank := strings.Split(blankBlock(bw, railTileH), "\n")
@@ -441,9 +550,6 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 			var b strings.Builder
 			b.WriteString(pad)
 			for c := range cols {
-				if c > 0 {
-					b.WriteString(" ")
-				}
 				if c < len(band) {
 					b.WriteString(band[c][j])
 				} else {
@@ -513,8 +619,10 @@ func railIdentity(r module.Row, display string, colors map[string]string) color.
 	return identityHue(display)
 }
 
-// borderedTile is one rounded-border button box: the label fitCell-ed and
-// centered, the border in the given tone. lipgloss v2 Width/Height are
+// borderedTile is one square-border button box: the label fitCell-ed and
+// centered, the border in the given tone. Square, not rounded: tiles pack
+// with zero gap, and touching rounded corners read as broken circles where
+// square corners read as a grid. lipgloss v2 Width/Height are
 // frame-inclusive, so the box is exactly w x h cells; w < 4 degrades to a
 // blank block.
 func borderedTile(label string, w, h int, border, style lipgloss.Style) []string {
@@ -522,22 +630,28 @@ func borderedTile(label string, w, h int, border, style lipgloss.Style) []string
 		return strings.Split(blankBlock(w, h), "\n")
 	}
 	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()).
 		BorderForeground(border.GetForeground()).
 		Width(w).
 		Height(h).
 		Align(lipgloss.Center, lipgloss.Center)
+	// a border carrying a background is the pressed treatment: the fill
+	// backs every cell -- interior padding and the frame ring alike
+	if bg := border.GetBackground(); !isNoColor(bg) {
+		box = box.Background(bg).BorderBackground(bg)
+	}
 	return strings.Split(box.Render(style.Render(fitCell(label, w-2))), "\n")
 }
 
-// railTile is one grid button: a snug rounded-border box, the name
-// fitCell-ed and centered on the middle row in the caller's tone (identity
-// hue for running apps, dim for the minimized tier and the overflow cell).
+// railTile is one grid button: a snug square-border box, the name
+// fitCell-ed and centered on the middle row in the caller's tones (identity
+// hue on a dim frame for running apps, dim throughout for the minimized
+// tier and the overflow cell, the pressStyles pair while pressed).
 // The border IS the button read; the only padding is the frame itself.
 // fixedBlock re-asserts the geometry per the ambiguous-width convention.
-func railTile(name string, w int, label lipgloss.Style) []string {
+func railTile(name string, w int, border, label lipgloss.Style) []string {
 	return strings.Split(
-		fixedBlock(borderedTile(name, w, railTileH, chromeDim, label), w, railTileH),
+		fixedBlock(borderedTile(name, w, railTileH, border, label), w, railTileH),
 		"\n")
 }
 

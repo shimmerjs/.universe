@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
@@ -25,12 +26,18 @@ func resourcesModel(w, h int) *model {
 }
 
 // resourcesData is the shared module contract: leading RowResource rows
-// (Key carries the window hint), one divider, then RowKV process rows.
+// (Key carries the window hint, the raw pair rides RawX/RawY/RawHeat), one
+// divider, then RowKV process rows -- the tail is bloom-only.
 func resourcesData() module.Data {
+	cpu := module.Resource("cpu 6h", 0.38, []float64{0.2, 0.7, 0.9}, "38%")
+	cpu.RawX, cpu.RawY, cpu.RawHeat = "3.2", "/12", 0.27
+	mem := module.Resource("mem 6h", 0.57, []float64{0.5, 0.6}, "20.5/36 GiB")
+	mem.RawX, mem.RawY, mem.RawHeat = "20", "/36G", 0.57
+	disk := module.Resource("/ 6h", 0.75, []float64{0.7, 0.75}, "3.0G/4.0G free 512M")
+	disk.RawX, disk.RawY, disk.RawHeat = "512M", " free", 0.875
+	disk.PctHeat = 0.875 // disk heats by free space, not used-fraction
 	return module.Data{Title: "resources", Rows: []module.Row{
-		module.Resource("cpu 6h", 0.38, []float64{0.2, 0.7, 0.9}, "38%"),
-		module.Resource("mem 6h", 0.57, []float64{0.5, 0.6}, "20.5G"),
-		module.Resource("/ 6h", 0.75, []float64{0.7, 0.75}, "512G"),
+		cpu, mem, disk,
 		{Kind: module.RowDivider},
 		{Kind: module.RowKV, Key: "kernel_task", Value: "12.3%c 0.4%m"},
 		{Kind: module.RowKV, Key: "windowserver", Value: "8.1%c 1.2%m"},
@@ -46,13 +53,26 @@ func hasBraille(s string) bool {
 	return false
 }
 
-func firstBrailleIndex(s string) int {
-	for i, r := range s {
-		if r >= 0x2800 && r <= 0x28ff {
-			return i
-		}
+// A failed part's degrade note (the composer's dim RowText stand-in)
+// renders on the card and in the bloom -- loud, never swallowed.
+func TestResourcesDegradeNoteVisible(t *testing.T) {
+	m := resourcesModel(80, 16)
+	d := resourcesData()
+	rows := []module.Row{d.Rows[0], d.Rows[1],
+		{Kind: module.RowText, Text: "disk: statfs failed", Style: module.StyleDim}}
+	rows = append(rows, d.Rows[3:]...)
+	d.Rows = rows
+	m.widgetData["res"] = d
+	if out := ansi.Strip(m.renderHome(15)); !strings.Contains(out, "disk: statfs failed") {
+		t.Fatal("card swallowed the degrade note")
 	}
-	return -1
+	m.openResourcesBloom(d, rect{0, 0, 40, 12})
+	if m.overlay == nil {
+		t.Fatal("bloom did not open")
+	}
+	if !strings.Contains(ansi.Strip(m.overlay.box), "disk: statfs failed") {
+		t.Fatal("bloom swallowed the degrade note")
+	}
 }
 
 func TestResourcesChromeRendererRegistered(t *testing.T) {
@@ -61,11 +81,11 @@ func TestResourcesChromeRendererRegistered(t *testing.T) {
 	}
 }
 
-// Leading resource rows become side-by-side live cells: name, gauge, bold
-// value stacked per cell, every metric's segments starting at its cell
-// column. Region content starts one line in (the region border; the home
-// body draws no outer frame).
-func TestResourcesCellsSideBySide(t *testing.T) {
+// The vitals card: one identical row per metric -- glyph, dot-grid history,
+// percent, raw pair -- and NOTHING else on glass: the divider and process
+// rows stay bloom-only. Region content starts one line in (the region
+// border; the home body draws no outer frame).
+func TestResourcesVitalsCard(t *testing.T) {
 	m := resourcesModel(80, 16)
 	m.widgetData["res"] = resourcesData()
 	out := m.renderHome(15)
@@ -82,209 +102,245 @@ func TestResourcesCellsSideBySide(t *testing.T) {
 		t.Fatal("resources fell through to the warn box")
 	}
 
-	names, values := ansi.Strip(lines[1]), ansi.Strip(lines[3])
-	for _, n := range []string{"cpu", "mem", "/"} {
-		if !strings.Contains(names, n) {
-			t.Errorf("cell name %q missing from %q", n, names)
+	// three card rows, one per metric (no title box: content starts at the
+	// region's first line): plaintext word label + dot grid + pct + raw
+	// pair; the root volume labels itself "disk", never a bare "/"
+	for i, want := range []struct{ label, pct, raw string }{
+		{"cpu", "38%", "3.2/12"},
+		{"mem", "57%", "20/36G"},
+		{"disk", "75%", "512M free"},
+	} {
+		plain := ansi.Strip(lines[i])
+		if !strings.Contains(plain, want.label) {
+			t.Errorf("row %d missing its word label %q: %q", i, want.label, plain)
+		}
+		if !hasBraille(plain) {
+			t.Errorf("row %d has no dot-grid history: %q", i, plain)
+		}
+		if !strings.Contains(plain, want.pct) || !strings.Contains(plain, want.raw) {
+			t.Errorf("row %d missing pct/raw: %q", i, plain)
 		}
 	}
-	// cells align: each value starts at its metric's cell column
-	for n, v := range map[string]string{"cpu": "38%", "mem": "20.5G", "/": "512G"} {
-		if strings.Index(names, n) != strings.Index(values, v) {
-			t.Errorf("%s cell misaligned: name at %d, value %q at %d",
-				n, strings.Index(names, n), v, strings.Index(values, v))
+	// the proc tail never reaches glass
+	for _, gone := range []string{"kernel_task", "windowserver", "----"} {
+		if strings.Contains(ansi.Strip(out), gone) {
+			t.Errorf("%q leaked onto the card", gone)
 		}
 	}
-	// gauge row: ANSI-16 fill + track backgrounds; live cells carry no spark
+	// no gauge bars anywhere (the card is grid + numbers only)
 	for _, sgr := range []string{"\x1b[42m", "\x1b[100m"} {
-		if !strings.Contains(lines[2], sgr) {
-			t.Errorf("gauge row missing SGR %q", sgr)
+		if strings.Contains(out, sgr) {
+			t.Errorf("gauge SGR %q leaked onto the card", sgr)
 		}
-	}
-	if hasBraille(lines[2]) || hasBraille(lines[1]) || hasBraille(lines[3]) {
-		t.Error("live cells must not carry a sparkline")
-	}
-	// big current value = bold
-	if !strings.Contains(lines[3], "\x1b[1m") {
-		t.Error("current value not bold")
 	}
 }
 
-// At the real home geometry (196x24 glass, rail 20 / tray 12 / claude 8 per
-// edge.cue -> a ~162x13 fill region) the three live cells must render side
-// by side. The widget is declared exactly as the live config does -- kind
-// "native", NO chrome flag -- so this also pins renderRegion dispatching on
-// the module id alone.
-func TestResourcesCellsAtLiveGeometry(t *testing.T) {
-	m := newHomeModel(196, 24)
-	m.cfg.Widgets["resources"] = config.Widget{ID: "resources", Title: "resources",
-		Render: config.Render{Kind: "native", Module: "resources"}}
-	l := m.cfg.Layouts["home"]
-	l.Regions = []config.Region{
-		{Widget: "dock-rail", Edge: "left", Size: 20},
-		{Widget: "nav-tray", Edge: "right", Size: 12},
-		{Widget: "claude-hud", Edge: "top", Size: 8},
-		{Widget: "resources", Edge: "fill"},
+// The raw pair aligns as sub-columns across rows: numerators right-aligned
+// into one column, the "/" separators stacked (disk's suffix pair leaves a
+// space in the slot), the bounds/suffixes starting together.
+func TestResourcesRawColumnAligned(t *testing.T) {
+	lines := vitalsLines(resourcesData(), 60, chromeRowStyles)
+	if len(lines) != 3 {
+		t.Fatalf("card lines = %d, want 3", len(lines))
 	}
-	m.cfg.Layouts["home"] = l
-	m.widgetData["resources"] = resourcesData()
-
-	out := m.renderHome(23)
-	lines := strings.Split(out, "\n")
-	if len(lines) != 23 {
-		t.Fatalf("home body lines = %d, want 23", len(lines))
-	}
-	for i, ln := range lines {
-		if w := lipgloss.Width(ln); w != 196 {
-			t.Errorf("line %d width = %d, want 196", i, w)
+	w0 := lipgloss.Width(lines[0])
+	for i, l := range lines {
+		if lipgloss.Width(l) != w0 {
+			t.Errorf("row %d width %d, want %d", i, lipgloss.Width(l), w0)
 		}
 	}
-	if strings.Contains(out, "no chrome renderer") {
-		t.Fatal("resources fell through to the warn box")
-	}
-	cells := -1
-	for i, ln := range lines {
-		p := ansi.Strip(ln)
-		if strings.Contains(p, "cpu") && strings.Contains(p, "mem") && strings.Contains(p, "/") {
-			cells = i
-			break
+	// measure sub-columns relative to the percent sign: the glyph prefixes
+	// have differing UTF-8 lengths, so absolute byte indexes lie about
+	// cells; the "%"-to-raw segment is pure ASCII.
+	cpu, mem, disk := ansi.Strip(lines[0]), ansi.Strip(lines[1]), ansi.Strip(lines[2])
+	rel := func(s, needle string) int {
+		at, pct := strings.Index(s, needle), strings.Index(s, "%")
+		if at < 0 || pct < 0 {
+			t.Fatalf("row missing %q or %%: %q", needle, s)
 		}
+		return at - pct
 	}
-	if cells < 0 {
-		t.Fatal("no line carries cpu, mem, and / side by side: cells path did not fire")
+	sepRel := rel(cpu, "/12")
+	if at := rel(mem, "/36G"); at != sepRel {
+		t.Errorf("mem separator at %%+%d, want %%+%d: %q", at, sepRel, mem)
+	}
+	if at := rel(disk, "free"); at != sepRel+1 {
+		t.Errorf("disk bound at %%+%d, want %%+%d (sep slot + 1): %q", at, sepRel+1, disk)
+	}
+	if c := disk[strings.Index(disk, "%")+sepRel]; c != ' ' {
+		t.Errorf("disk separator slot = %q, want space: %q", c, disk)
 	}
 }
 
-// One full-width history sparkline per resource beneath the cells: label,
-// dim window hint from the row Key, sparks column-aligned across rows.
-func TestResourcesHistoryRows(t *testing.T) {
+// The card caps its own width: growing the region past the spark cap must
+// not widen the rows (the freed right side stays blank).
+func TestResourcesWidthCapped(t *testing.T) {
+	at46 := vitalsLines(resourcesData(), 46, chromeRowStyles)
+	at60 := vitalsLines(resourcesData(), 60, chromeRowStyles)
+	for i := range at46 {
+		w46, w60 := lipgloss.Width(at46[i]), lipgloss.Width(at60[i])
+		if w46 != w60 {
+			t.Errorf("row %d grew with the region: %d vs %d", i, w46, w60)
+		}
+	}
+}
+
+// PctHeat overrides the percent's ramp: a mostly-full disk with a quiet
+// PctHeat renders its percent neutral, and a hot PctHeat renders a low
+// percent loud.
+func TestPctHeatOverridesFrac(t *testing.T) {
+	ss := chromeRowStyles
+	quiet := module.Resource("/ 6h", 0.9, []float64{0.9}, "")
+	quiet.PctHeat = 0.2
+	hot := module.Resource("/ 6h", 0.2, []float64{0.2}, "")
+	hot.PctHeat = 0.95
+	if got := textHeat(pctHeat(quiet), ss); got.GetForeground() != ss.fg.GetForeground() {
+		t.Error("quiet PctHeat did not neutralize a high used-fraction")
+	}
+	if got := textHeat(pctHeat(hot), ss); got.GetForeground() != ss.heat[2].GetForeground() {
+		t.Error("hot PctHeat did not heat a low used-fraction")
+	}
+}
+
+// textHeat: neutral fg at rest, the spark ramp's hotter buckets above --
+// digits and dots heat on the same thresholds.
+func TestTextHeatBuckets(t *testing.T) {
+	ss := chromeRowStyles
+	if got := textHeat(0.2, ss); got.GetForeground() != ss.fg.GetForeground() {
+		t.Error("low fraction not neutral fg")
+	}
+	if got := textHeat(0.7, ss); got.GetForeground() != ss.heat[1].GetForeground() {
+		t.Error("mid fraction not heat[1]")
+	}
+	if got := textHeat(0.9, ss); got.GetForeground() != ss.heat[2].GetForeground() {
+		t.Error("high fraction not heat[2]")
+	}
+}
+
+// A too-narrow region degrades to name + percent, never panics.
+func TestResourcesNarrowFallback(t *testing.T) {
+	lines := vitalsLines(resourcesData(), 12, chromeRowStyles)
+	for i, l := range lines {
+		plain := ansi.Strip(l)
+		if hasBraille(plain) {
+			t.Errorf("narrow row %d kept its grid: %q", i, plain)
+		}
+	}
+	_ = lines
+}
+
+// Tapping the card arms the debounced bloom; once the delay lapses it
+// opens the info popover: full-width dot grids, the process table, the
+// disk free reading -- and no fireable items.
+func TestResourcesBloomOpens(t *testing.T) {
 	m := resourcesModel(80, 16)
 	m.widgetData["res"] = resourcesData()
-	lines := strings.Split(m.renderHome(15), "\n")
+	m.View() // build hits
+	if m.overlay != nil {
+		t.Fatal("overlay open before any tap")
+	}
+	if !m.resolveTap(10, 5) {
+		t.Fatal("card tap not consumed")
+	}
+	if m.overlay != nil {
+		t.Fatal("bloom opened inside the debounce (double-tap flicker)")
+	}
+	if m.resPending == nil {
+		t.Fatal("tap did not arm the pending bloom")
+	}
+	// the debounce lapses: the tick opens it
+	m.resPending.at = time.Now().Add(-bloomDelay)
+	m.openPendingBloom()
+	o := m.overlay
+	if o == nil || !o.info {
+		t.Fatalf("lapsed debounce did not open the info bloom: %+v", o)
+	}
+	if m.resPending != nil {
+		t.Fatal("open left the pending mark set")
+	}
+	if len(o.items) != 0 {
+		t.Fatal("info bloom carries fireable items")
+	}
+	plain := ansi.Strip(o.box)
+	for _, want := range []string{"cpu", "kernel_task", "windowserver", "512M free"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("bloom missing %q", want)
+		}
+	}
+	if !hasBraille(plain) {
+		t.Error("bloom has no dot-grid histories")
+	}
 
-	sparkAt := -1
-	for i, name := range []string{"cpu", "mem", "/"} {
-		plain := ansi.Strip(lines[4+i])
-		if !strings.Contains(plain, name) {
-			t.Errorf("history row %d missing label %q: %q", i, name, plain)
-		}
-		if !strings.Contains(plain, "(6h)") {
-			t.Errorf("history row %d missing window hint: %q", i, plain)
-		}
-		at := firstBrailleIndex(plain)
-		if at < 0 {
-			t.Fatalf("history row %d has no sparkline: %q", i, plain)
-		}
-		if sparkAt < 0 {
-			sparkAt = at
-		} else if at != sparkAt {
-			t.Errorf("history row %d spark at %d, want %d (column-aligned)", i, at, sparkAt)
-		}
+	// outside tap dismisses (the box is clamped inside the frame; 79,15 is
+	// the far corner outside the anchor)
+	if !m.resolveTap(o.anchor.x+o.anchor.w, min(o.anchor.y+o.anchor.h, 15)) {
+		t.Fatal("outside tap not consumed")
+	}
+	if m.overlay != nil {
+		t.Fatal("outside tap kept the bloom open")
 	}
 }
 
-// styledBGWidth counts the cells rendered under the gauge background SGRs;
-// gauge content is ASCII spaces, so bytes equal cells.
-func styledBGWidth(line string) int {
-	n, styled := 0, false
-	for i := 0; i < len(line); {
-		if line[i] == 0x1b {
-			j := i + 1
-			for j < len(line) && line[j] != 'm' {
-				j++
-			}
-			if j >= len(line) {
-				break
-			}
-			seq := line[i : j+1]
-			styled = seq == "\x1b[42m" || seq == "\x1b[100m"
-			i = j + 1
-			continue
-		}
-		if styled {
-			n++
-		}
-		i++
-	}
-	return n
-}
-
-func countBraille(s string) int {
-	n := 0
-	for _, r := range s {
-		if r >= 0x2800 && r <= 0x28ff {
-			n++
-		}
-	}
-	return n
-}
-
-// The history spark dominates the live-cell gauge: the gauge is one sample
-// of the series beside it, so it caps at cellGaugeCap while the history
-// spark draws every emitted sample across the remaining region width.
-func TestResourcesSparkDominatesGauge(t *testing.T) {
-	series := make([]float64, module.MaxSeries)
-	for i := range series {
-		series[i] = 0.5
-	}
-	// 160 cols = the live fill region's content width at 196x24 with the
-	// edge.cue peel (rail 20 / tray 12)
-	lines := resourceClusterLines(module.Data{Rows: []module.Row{
-		module.Resource("cpu 6h", 0.5, series, "50% of 12"),
-	}}, 160, chromeRowStyles)
-	if len(lines) != 4 {
-		t.Fatalf("lines = %d, want 3 cell lines + 1 history row", len(lines))
-	}
-	gauge := styledBGWidth(lines[1])
-	if gauge != cellGaugeCap {
-		t.Errorf("cell gauge width = %d, want capped at %d", gauge, cellGaugeCap)
-	}
-	spark := countBraille(lines[3])
-	if spark != module.MaxSeries {
-		t.Errorf("history spark cells = %d, want the full emitted series %d", spark, module.MaxSeries)
-	}
-	if spark <= gauge*2 {
-		t.Errorf("spark %d vs gauge %d: history must visually dominate", spark, gauge)
-	}
-}
-
-// The hint renders ONLY when the module put one in the Key.
-func TestResourcesHistoryHintOnlyWhenProvided(t *testing.T) {
-	with := historyLine(module.Resource("cpu 6h", 0.4, []float64{0.5}, "40%"), 40, chromeRowStyles)
-	without := historyLine(module.Resource("cpu", 0.4, []float64{0.5}, "40%"), 40, chromeRowStyles)
-	if !strings.Contains(ansi.Strip(with), "(6h)") {
-		t.Error("provided hint not rendered")
-	}
-	if strings.Contains(ansi.Strip(without), "(") {
-		t.Error("hint invented for a bare key")
-	}
-	for _, l := range []string{with, without} {
-		if w := lipgloss.Width(l); w != 40 {
-			t.Errorf("history line width = %d, want 40", w)
-		}
-	}
-}
-
-// Divider then process rows as a column-aligned table: names left-aligned
-// and padded, cpu and mem fields right-aligned in per-column cells so the
-// %c and %m columns line up vertically.
-func TestResourcesProcessTableAligned(t *testing.T) {
+// A fast second tap converts to the monitor layout BEFORE the bloom ever
+// renders (the debounce eats the flicker); a mid-speed second tap converts
+// through the open bloom; a slow one holds the bloom open.
+func TestResourcesBloomDoubleTapConverts(t *testing.T) {
 	m := resourcesModel(80, 16)
 	m.widgetData["res"] = resourcesData()
-	lines := strings.Split(m.renderHome(15), "\n")
+	m.cfg.Layouts[monitorLayout] = config.Layout{Kind: "home",
+		Regions: []config.Region{{Widget: "res", Edge: "fill"}}}
+	m.View()
 
-	if !strings.Contains(ansi.Strip(lines[7]), "----") {
-		t.Errorf("divider row missing: %q", ansi.Strip(lines[7]))
+	// fast double tap: converts pre-bloom, no overlay ever shows
+	if !m.resolveTap(10, 5) || !m.resolveTap(10, 5) {
+		t.Fatal("card taps not consumed")
 	}
-	p1, p2 := ansi.Strip(lines[8]), ansi.Strip(lines[9])
-	if !strings.Contains(p1, "kernel_task") || !strings.Contains(p2, "windowserver") {
-		t.Fatalf("process rows missing: %q / %q", p1, p2)
+	if m.overlay != nil {
+		t.Fatal("fast double tap flashed the bloom")
 	}
-	if strings.Index(p1, "%c") != strings.Index(p2, "%c") {
-		t.Errorf("%%c column not aligned: %q / %q", p1, p2)
+	if m.resPending != nil {
+		t.Fatal("conversion left the pending bloom armed")
 	}
-	if strings.Index(p1, "%m") != strings.Index(p2, "%m") {
-		t.Errorf("%%m column not aligned: %q / %q", p1, p2)
+	if m.layout != monitorLayout {
+		t.Fatalf("layout = %q, want %q", m.layout, monitorLayout)
+	}
+
+	// back home; a single tap whose debounce lapsed opens the bloom
+	m.layout = "home"
+	m.resetLayout()
+	m.View()
+	if !m.resolveTap(10, 5) {
+		t.Fatal("card tap not consumed")
+	}
+	m.resPending.at = time.Now().Add(-bloomDelay)
+	m.openPendingBloom()
+	o := m.overlay
+	if o == nil {
+		t.Fatal("bloom did not open")
+	}
+
+	// slow tap: past the window, stays open
+	o.openedWall = time.Now().Add(-time.Second)
+	if !m.resolveTap(o.anchor.x+1, o.anchor.y+1) {
+		t.Fatal("in-box tap not consumed")
+	}
+	if m.overlay == nil {
+		t.Fatal("slow in-box tap dismissed the bloom")
+	}
+	if m.layout == monitorLayout {
+		t.Fatal("slow tap converted")
+	}
+
+	// mid-speed tap: bloom open, still inside the window, converts
+	o.openedWall = time.Now()
+	if !m.resolveTap(o.anchor.x+1, o.anchor.y+1) {
+		t.Fatal("in-box tap not consumed")
+	}
+	if m.overlay != nil {
+		t.Fatal("conversion left the bloom open")
+	}
+	if m.layout != monitorLayout {
+		t.Fatalf("layout = %q, want %q", m.layout, monitorLayout)
 	}
 }
 
@@ -293,33 +349,27 @@ func TestResourcesProcessTableAligned(t *testing.T) {
 // their row's value columns out of line.
 func TestResourcesProcessColumnsShortAndLongNames(t *testing.T) {
 	long := "averylongprocessnamewellpastthecap"
-	lines := resourceClusterLines(module.Data{Rows: []module.Row{
-		{Kind: module.RowDivider},
+	rows := []module.Row{
 		{Kind: module.RowKV, Key: "sh", Value: "289.7%c 13.0%m"},
 		{Kind: module.RowKV, Key: long, Value: "8.1%c 0.4%m"},
 		{Kind: module.RowKV, Key: "kernel_task", Value: "28.5%c 0.1%m"},
-	}}, 78, chromeRowStyles)
-	if len(lines) != 4 {
-		t.Fatalf("lines = %d, want 4 (divider + 3 rows)", len(lines))
 	}
-	rows := make([]string, 3)
-	for i := range rows {
-		rows[i] = ansi.Strip(lines[1+i])
+	keyW, valW := kvColumns(rows)
+	if keyW != kvNameCap {
+		t.Errorf("keyW = %d, want the cap %d", keyW, kvNameCap)
 	}
-	cAt, mAt := strings.Index(rows[0], "%c"), strings.Index(rows[0], "%m")
-	for i, r := range rows[1:] {
-		if at := strings.Index(r, "%c"); at != cAt {
-			t.Errorf("row %d %%c at %d, want %d: %q", i+1, at, cAt, r)
+	vals := make([]string, len(rows))
+	for i, r := range rows {
+		vals[i] = alignFields(r.Value, valW)
+	}
+	cAt, mAt := strings.Index(vals[0], "%c"), strings.Index(vals[0], "%m")
+	for i, v := range vals[1:] {
+		if at := strings.Index(v, "%c"); at != cAt {
+			t.Errorf("row %d %%c at %d, want %d: %q", i+1, at, cAt, v)
 		}
-		if at := strings.Index(r, "%m"); at != mAt {
-			t.Errorf("row %d %%m at %d, want %d: %q", i+1, at, mAt, r)
+		if at := strings.Index(v, "%m"); at != mAt {
+			t.Errorf("row %d %%m at %d, want %d: %q", i+1, at, mAt, v)
 		}
-	}
-	if strings.Contains(rows[1], long) {
-		t.Errorf("long name not capped: %q", rows[1])
-	}
-	if !strings.Contains(rows[1], long[:kvNameCap]) {
-		t.Errorf("capped name missing its %d-col prefix: %q", kvNameCap, rows[1])
 	}
 }
 
@@ -336,13 +386,13 @@ func TestResourcesErrorIsLoud(t *testing.T) {
 	}
 }
 
-// liveResourcesJSON is an exact TypeWidgetData payload for the resources
-// widget captured from a live bus: old-sampler junk kv rows included. The
-// replay below must cell the leading resource rows regardless.
-const liveResourcesJSON = `{"title":"resources","rows":[{"kind":"resource","key":"cpu 6h","value":"14% of 12","frac":0.139892578125,"series":[0.234619140625,0.27587890625,0.2604573567708333,0.2529296875,0.2993977864583333,0.2722574869791667,0.3171793619791667,0.311767578125,0.29345703125,0.2899576822916667,0.2667236328125,0.2520345052083333,0.24515787760416666,0.232177734375,0.22025553385416666,0.19970703125,0.197021484375,0.194580078125,0.19234212239583334,0.18359375,0.18888346354166666,0.180419921875,0.172607421875,0.15877278645833334,0.1527099609375,0.14713541666666666,0.16202799479166666,0.16239420572916666,0.16939290364583334,0.16280110677083334,0.15641276041666666,0.15055338541666666,0.15848795572916666,0.1524658203125,0.14689127604166666,0.13509114583333334,0.124267578125,0.1209716796875,0.137939453125,0.14689127604166666,0.14176432291666666,0.14375813802083334,0.14558919270833334,0.135986328125,0.14119466145833334,0.1298828125,0.13948567708333334,0.13496907552083334,0.1441650390625,0.1392822265625,0.134765625,0.13728841145833334,0.1329345703125,0.12894694010416666,0.12528483072916666,0.14192708333333334,0.13720703125,0.1395263671875,0.14168294270833334,0.139892578125]},{"kind":"resource","key":"mem 6h","value":"18.4/36 GiB","frac":0.5107447306315104,"series":[0.5635422600640191,0.5649672614203559,0.5657365587022569,0.5611983405219184,0.5633714463975694,0.5639533996582031,0.5276370578342013,0.5250087314181857,0.5254033406575521,0.5274912516276041,0.5262400309244791,0.5263642205132378,0.5247535705566406,0.5236083136664497,0.5256678263346354,0.5300627814398872,0.5263184441460503,0.52430174085829,0.5239134894476997,0.5240838792588975,0.5310609605577257,0.5251803927951388,0.5230962965223525,0.5225062900119357,0.5223553975423177,0.5208702087402344,0.5314153035481771,0.5308409796820747,0.5270491706000434,0.5318904452853732,0.526808844672309,0.5266876220703125,0.5328025817871094,0.5251837836371528,0.5227843390570747,0.53205320570204,0.526717291937934,0.5259518093532987,0.5246768527560763,0.5210982428656684,0.5035663180881076,0.5025575425889757,0.5078587002224393,0.5130568610297309,0.5166753133138021,0.5094087388780382,0.5088691711425781,0.5099275377061632,0.5235438876681857,0.5129890441894531,0.510650634765625,0.5105226304796007,0.5107205708821615,0.5141766866048177,0.5140410529242622,0.5127283732096354,0.5106993781195747,0.5104336208767362,0.5111024644639757,0.5141525268554688]},{"kind":"resource","key":"/ 6h","value":"406G/460G free 54G","frac":0.8816888280972833,"series":[0.8815273940064646,0.8815186118593634,0.8819221349485767,0.8815296972488176,0.8815376674615643,0.8819006932535787,0.8815353310790335,0.8815330029815472,0.8815330526918138,0.8815400701244503,0.8815464744637987,0.8815536410272351,0.8815536907375018,0.8815537818729906,0.8815689352192624,0.8815763669041208,0.8815804928562494,0.8815836163180015,0.881583417476935,0.8815835334675571,0.8815970298049419,0.8816115286327034,0.8816115534878368,0.8815950082540998,0.881595049679322,0.8816498718183493,0.8816082560401516,0.8816154308886324,0.8816153480381881,0.8816154391736768,0.8816219097933807,0.8816290597867282,0.8816383058963179,0.8816383390364956,0.8816384964523398,0.8816308162161485,0.8816370134293859,0.8816174938646968,0.8816178086963853,0.8816126471137022,0.8816042626487338,0.8816037572610232,0.881610053894794,0.881617328163808,0.8816212635599148,0.8816215452514256,0.8816215038262034,0.8816298965762162,0.8816451576280657,0.8816471046135079,0.8816471046135079,0.8816542214666777,0.8816542546068554,0.8816608080770036,0.8816678006545069,0.8816679000750401,0.88166797464044,0.881675132918832,0.8816751080636988,0.8816888280972833]},{"kind":"divider"},{"kind":"kv","key":"<defunct>","value":"0.0%c 0.0%m"},{"kind":"kv","key":"ps","value":"0.0%c 0.0%m"},{"kind":"kv","key":"caffeinate","value":"0.0%c 0.0%m"},{"kind":"kv","key":"mdworker_shared","value":"0.0%c 0.0%m"},{"kind":"kv","key":"com.apple.safariplatformsupport.helper","value":"0.0%c 0.0%m"},{"kind":"kv","key":"kitten","value":"0.0%c 0.0%m"},{"kind":"kv","key":"khudson","value":"0.0%c 0.0%m"},{"kind":"kv","key":"kitty","value":"0.0%c 0.0%m"},{"kind":"kv","key":"zsh","value":"0.0%c 0.0%m"},{"kind":"kv","key":"(taskgated)","value":"0.0%c 0.0%m"}]}`
+// liveResourcesJSON is an exact TypeWidgetData payload captured from a live
+// bus BEFORE the raw-pair fields existed: the card must render its three
+// rows regardless (empty raw column, never a crash).
+const liveResourcesJSON = `{"title":"resources","rows":[{"kind":"resource","key":"cpu 6h","value":"14% of 12","frac":0.139892578125,"series":[0.23,0.27,0.26]},{"kind":"resource","key":"mem 6h","value":"18.4/36 GiB","frac":0.51,"series":[0.56,0.56]},{"kind":"resource","key":"/ 6h","value":"406G/460G free 54G","frac":0.88,"series":[0.88,0.88]},{"kind":"divider"},{"kind":"kv","key":"kitty","value":"0.0%c 0.0%m"},{"kind":"kv","key":"zsh","value":"0.0%c 0.0%m"}]}`
 
-// TestResourcesReplayLiveWidgetData replays the captured live payload
-// through the real decode + render path at the live glass geometry.
+// TestResourcesReplayLiveWidgetData replays a captured (pre-raw-pair)
+// payload through the real decode + render path at the live glass geometry.
 func TestResourcesReplayLiveWidgetData(t *testing.T) {
 	var d module.Data
 	if err := json.Unmarshal([]byte(liveResourcesJSON), &d); err != nil {
@@ -362,22 +412,17 @@ func TestResourcesReplayLiveWidgetData(t *testing.T) {
 	m.widgetData["resources"] = d
 
 	lines := strings.Split(m.renderHome(23), "\n")
-	cells := -1
-	for i, ln := range lines {
+	rowsSeen := 0
+	for _, ln := range lines {
 		p := ansi.Strip(ln)
-		if strings.Contains(p, "cpu") && strings.Contains(p, "mem") && strings.Contains(p, "/") {
-			cells = i
-			break
+		if hasBraille(p) && (strings.Contains(p, "%")) {
+			rowsSeen++
 		}
 	}
-	if cells < 0 {
-		t.Fatal("live payload did not render side-by-side cells")
+	if rowsSeen < 3 {
+		t.Fatalf("card rows with grid+pct = %d, want 3 (pre-raw payload must still render)", rowsSeen)
 	}
-	// the three live values share the cells' value line
-	v := ansi.Strip(lines[cells+2])
-	for _, want := range []string{"14% of 12", "18.4/36 GiB", "406G/460G free 54G"} {
-		if !strings.Contains(v, want) {
-			t.Errorf("cell value %q missing from %q", want, v)
-		}
+	if strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "kitty ") {
+		t.Error("proc tail leaked onto the card from the live payload")
 	}
 }

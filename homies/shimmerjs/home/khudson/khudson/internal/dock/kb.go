@@ -8,48 +8,56 @@
 package dock
 
 import (
+	"context"
 	"maps"
-	"os"
 	"os/exec"
 	"slices"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/kbview"
-	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keymappdb"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/usbserial"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
 
-// ensureBoard loads the static board once. Since kb-live sits on the default
-// home layout the first attempt fires at dock startup, so a MISSING store
-// must not latch: stay unlatched behind a cheap stat and adopt a later
-// Keymapp sync without a dock restart. A store that exists but fails to load
-// still latches (no per-frame re-parse of a corrupt DB). Never fatal.
+// kbSerialTTL bounds the loader's serial poll: at most one ioreg exec per
+// window regardless of frame rate (constant-cost invariant).
+const kbSerialTTL = 10 * time.Second
+
+// ensureBoard resolves the board through the keyboard.Loader: the USB
+// serial names the deployed revision, the payload comes from the local
+// caches (network only asynchronously, never blocking a tick). A flash is
+// adopted on the next serial poll without a dock restart; a resolve that
+// yields nothing keeps the board already on glass. Never fatal.
 func (m *model) ensureBoard() {
-	if m.kbLoaded {
+	if m.kbLoader == nil {
+		m.kbLoader = &keyboard.Loader{Poller: &usbserial.Poller{TTL: kbSerialTTL}}
+	}
+	st := m.kbLoader.Load(context.Background())
+	if st.Board == nil || len(st.Board.Layers) == 0 {
+		if m.kbBoard == nil {
+			err := st.Err
+			if st.Board != nil && st.Err == "" {
+				err = "layout has no layers"
+			}
+			if err != m.kbErr {
+				// hint transitions (no board -> fetching) redraw too
+				m.kbErr = err
+				m.homeCache.ok = false
+			}
+		}
+		return // stale board beats a blank view mid-session
+	}
+	if st.Board == m.kbBoard {
 		return
 	}
-	path, err := keymappdb.DefaultPath()
-	if err != nil {
-		m.kbLoaded = true
-		m.kbErr = err.Error()
-		return
-	}
-	if _, err := os.Stat(path); err != nil {
-		m.kbErr = err.Error()
-		return
-	}
-	m.kbLoaded = true
+	m.kbBoard = st.Board
 	m.kbErr = ""
-	rev, err := keymappdb.Active(path)
-	if err != nil {
-		m.kbErr = err.Error()
-		return
+	if m.kbLayer >= len(st.Board.Layers) {
+		m.kbLayer = 0
 	}
-	m.kbBoard = keyboard.FromRevision(rev)
-	if m.kbBoard == nil || len(m.kbBoard.Layers) == 0 {
-		m.kbErr = "layout has no layers"
-	}
+	m.homeCache.ok = false
 }
 
 // handleKeyMsg folds one TypeKey broadcast into the keyboard view state via
@@ -93,10 +101,12 @@ func (m *model) kbLiveVisible() bool {
 
 // kbTheme builds the kbview capability set from the dock chrome + palette:
 // chrome styles, the theme background (nil when no palette broadcast -- the
-// palette-less render the golden pins), and the identity-hue function.
+// palette-less render the golden pins), the house accent for the bar band,
+// and the identity-hue function.
 func (m *model) kbTheme() kbview.Theme {
 	bg, _ := m.palette.color("background")
-	return kbview.Theme{FG: chromeFG, Dim: chromeDim, Background: bg, Hue: identityHue}
+	ac, _ := m.palette.color("color5")
+	return kbview.Theme{FG: chromeFG, Dim: chromeDim, Background: bg, Accent: ac, Hue: identityHue}
 }
 
 // addKbHits maps the core's returned hits onto the dock tap table, owning the
@@ -123,27 +133,33 @@ func (m *model) addKbHits(hits []kbview.Hit) {
 	}
 }
 
-// renderKeyboard draws the fullscreen keyboard view: the kbview body in a
-// titled box, rebuilding the hit table (selector jumps + oryx from the core,
-// then a whole-interior cycle target -- or a consume on the empty state).
+// renderKeyboard draws the fullscreen keyboard view: the tab bar band caps
+// the TOP as the panel's interactive header (layer tabs, the board title
+// as its note, oryx flush right), the kbview grid fills the rest,
+// rebuilding the hit table (selector jumps + oryx from the bar, a bar-band
+// cycle target, then a whole-interior cycle target -- or a consume on the
+// empty state).
 func (m *model) renderKeyboard(bodyH int) string {
 	m.ensureBoard()
 	m.resetHits()
 	th := m.kbTheme()
-	interior := kbview.Rect{X: 1, Y: 1, W: m.width - 2, H: bodyH - 2}
-	body, hits := kbview.Body(m.kbBoard, m.kbErr, m.kbLayer, interior, "", m.kbTexture(), keymappdb.ErrNoRevision.Error(), th)
-	m.addKbHits(hits)
-	drect := rect{1, 1, m.width - 2, bodyH - 2}
-	if kbview.Empty(m.kbBoard, m.kbErr) {
-		m.hits = append(m.hits, hitRegion{area: drect, do: consumeTap})
-	} else {
-		m.hits = append(m.hits, m.kbCycleHit(drect))
-	}
+	body := kbview.Body(m.kbBoard, m.kbErr, m.kbLayer, m.width, bodyH-1, "", m.kbTexture(), keyboard.ErrNoBoard.Error(), th)
+	drect := rect{0, 1, m.width, bodyH - 1}
 	title := "keyboard"
 	if m.kbBoard != nil && m.kbBoard.Title != "" {
 		title = "keyboard: " + m.kbBoard.Title
 	}
-	return kbview.TitledBox(title, body, m.width, bodyH, kbview.LayerEdge(m.kbBoard, m.kbLayer, th), th)
+	bar := ""
+	if kbview.Empty(m.kbBoard, m.kbErr) {
+		m.hits = append(m.hits, hitRegion{area: drect, do: consumeTap})
+	} else {
+		var barHits []kbview.Hit
+		bar, barHits = kbview.Bar(m.kbBoard, m.kbLayer, m.width, title, th)
+		m.addKbHits(barHits) // bar-local Y=0 IS the top row
+		m.hits = append(m.hits, m.kbCycleHit(rect{0, 0, m.width, 1}))
+		m.hits = append(m.hits, m.kbCycleHit(drect))
+	}
+	return kbview.Panel(title, body, m.width, bodyH, bar, false, kbview.LayerEdge(m.kbBoard, m.kbLayer, th), th)
 }
 
 // kbCycleHit is the tap-to-next-layer target both keyboard hosts append after
@@ -157,26 +173,38 @@ func (m *model) kbCycleHit(area rect) hitRegion {
 }
 
 // renderKBLive draws the keyboard as a home-region chrome widget: the same
-// kbview body in a titled box at rr. The layer-cycle hit covers ONLY the
-// selector row (the board is display glass here), and the whole region
-// consumes any other tap (appended last; the hit table is first-match). No
-// resetHits: region renderers never reset.
+// kbview grid in a side-border panel at rr (left border only when a
+// neighbor abuts), the tab bar band capping the TOP as the interactive
+// header. The layer-cycle hit covers ONLY the tab-bar row (the board is
+// display glass here), and the whole region consumes any other tap
+// (appended last; the hit table is first-match). No resetHits: region
+// renderers never reset.
 func (m *model) renderKBLive(w config.Widget, rr rect) string {
 	m.ensureBoard()
 	th := m.kbTheme()
-	interior := kbview.Rect{X: rr.x + 1, Y: rr.y + 1, W: rr.w - 2, H: rr.h - 2}
+	inset := 0
+	if rr.x > 0 {
+		inset = 1
+	}
 	mode, _ := w.Render.Params["mode"].(string)
 	texture, _ := w.Render.Params["texture"].(string)
-	body, hits := kbview.Body(m.kbBoard, m.kbErr, m.kbLayer, interior, mode, texture, keymappdb.ErrNoRevision.Error(), th)
-	m.addKbHits(hits)
+	body := kbview.Body(m.kbBoard, m.kbErr, m.kbLayer, rr.w-inset, rr.h-1, mode, texture, keyboard.ErrNoBoard.Error(), th)
 	title := w.Title
 	if m.kbBoard != nil && m.kbBoard.Title != "" {
 		title = "keyboard: " + m.kbBoard.Title
 	}
+	bar := ""
 	if !kbview.Empty(m.kbBoard, m.kbErr) {
-		m.hits = append(m.hits, m.kbCycleHit(rect{interior.X, interior.Y, interior.W, 1}))
+		var barHits []kbview.Hit
+		bar, barHits = kbview.Bar(m.kbBoard, m.kbLayer, rr.w, title, th)
+		for i := range barHits {
+			barHits[i].Area.X += rr.x
+			barHits[i].Area.Y = rr.y
+		}
+		m.addKbHits(barHits)
+		m.hits = append(m.hits, m.kbCycleHit(rect{rr.x, rr.y, rr.w, 1}))
 	}
-	box := kbview.TitledBox(title, body, rr.w, rr.h, kbview.LayerEdge(m.kbBoard, m.kbLayer, th), th)
+	box := kbview.Panel(title, body, rr.w, rr.h, bar, inset == 1, kbview.LayerEdge(m.kbBoard, m.kbLayer, th), th)
 	m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
 	return box
 }

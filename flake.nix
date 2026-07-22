@@ -64,6 +64,13 @@
       url = "github:OsiPog/kitty-tab-switcher";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # ZSA keyboard flasher CLI; upstream flake, not in nixpkgs. kuiboard
+    # execs this binary for the flash loop (khudson docs:
+    # flash-generations-design.md)
+    zapp = {
+      url = "github:zsa/zapp";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     # Automatically up-to-date vscode extensions for nix
     nix-vscode-extensions = {
       url = "github:nix-community/nix-vscode-extensions";

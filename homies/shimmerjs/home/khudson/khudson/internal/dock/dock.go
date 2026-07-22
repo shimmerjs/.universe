@@ -11,6 +11,7 @@ package dock
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"maps"
 	"net"
 	"slices"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/kbview"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
@@ -80,6 +82,10 @@ type hitRegion struct {
 	// press is held on it: flashLive ORs the live press in, so any renderer
 	// with tap-flash treatment acknowledges contact for free.
 	pressKey string
+	// weldTile marks a rail-tile hit whose menu welds to the tile's border;
+	// unmarked regions (whole-widget rows) keep plain press-cell anchoring
+	// even when their rect happens to be tile-shaped.
+	weldTile bool
 }
 
 // pressState is the touch currently held on a press-keyed element; nil
@@ -138,9 +144,14 @@ func (m *model) resolveLongPress(x, y int) bool {
 	m.overlay = nil
 	for _, h := range m.hits {
 		if h.longPress != nil && h.area.contains(x, y) {
-			// stash the element's key first: the fired flash lands on the
-			// menu's origin element when an item execs
+			// stash the element's key and rect first: the fired flash lands
+			// on the menu's origin element when an item execs, and the
+			// opener welds the box to a weldTile origin rect
 			m.overlayOriginKey = h.pressKey
+			m.overlayOriginTile = rect{}
+			if h.weldTile {
+				m.overlayOriginTile = h.area
+			}
 			h.longPress(x, y)
 			return true
 		}
@@ -187,6 +198,9 @@ type (
 	// flashTickMsg is the one-shot redraw at a tap flash's expiry; it
 	// advances m.now so the expired flash drops off the next frame.
 	flashTickMsg time.Time
+	// bloomTickMsg is the deferred resources-bloom open at the double-tap
+	// debounce deadline.
+	bloomTickMsg time.Time
 )
 
 type model struct {
@@ -253,9 +267,12 @@ type model struct {
 	// pressed is the touch currently held on a press-keyed element (touch
 	// acknowledgment); nil = none. overlayOriginKey is the pressKey of the
 	// element whose long-press opened the current menu -- the fired flash
-	// lands there when an item execs.
-	pressed          *pressState
-	overlayOriginKey string
+	// lands there when an item execs. overlayOriginTile is that element's
+	// hit rect; openOverlay welds the box to tile-shaped origins and zeroes
+	// it, so direct openOverlay callers keep plain touch-cell anchoring.
+	pressed           *pressState
+	overlayOriginKey  string
+	overlayOriginTile rect
 	// overlay is the modal long-press popover; nil = closed. While set,
 	// resolveTap routes every tap through it (base hits unreachable) and
 	// View composites overlay.box over the frame on the P0-pinned Canvas
@@ -276,13 +293,22 @@ type model struct {
 	// label is clock-driven)
 	homeCache homeCache
 
-	// keyboard view state: the static Moonlander board, loaded once (lazy),
-	// the shown layer index, and the load error/empty message. No polling --
-	// the layout is static and offline.
+	// keyboard view state: the static Moonlander board, the shown layer
+	// index, and the load error/empty message. kbLoader resolves the board
+	// off the USB serial (TTL-bounded) with the local caches behind it, so
+	// a flash is adopted without a dock restart.
 	kbBoard  *keyboard.Board
 	kbErr    string
 	kbLayer  int
-	kbLoaded bool
+	kbLoader *keyboard.Loader
+
+	// resPending is the resources card's armed-but-not-open bloom: the
+	// first tap records it, bloomTick opens it after the debounce, a fast
+	// second tap converts to the monitor layout instead (no bloom
+	// flicker). resPendingArmed is drained by Update into the tick, the
+	// flashArmed idiom.
+	resPending      *pendingBloom
+	resPendingArmed bool
 
 	// openURL hands a URL to the OS (default /usr/bin/open); nil in bare
 	// test models so a stray tap in a test never spawns a browser
@@ -308,23 +334,25 @@ func (m *model) resetLayout() {
 	m.homeCache.ok = false
 	m.hits = m.hits[:0]
 	// an open menu (or an armed confirm) must not float over a layout it
-	// was not anchored in
+	// was not anchored in; same for an armed-but-unopened resources bloom
 	m.overlay = nil
+	m.resPending = nil
+	m.resPendingArmed = false
 }
 
-// stripH is the status strip under the body: two rows, so the strip-hosted
-// nav icons draw at double height. Strip-chrome geometry, not a region
-// size.
-const stripH = 2
+// stripH is the status strip under the body: ONE band row -- the body runs
+// down to touch the band, and the active notch opens straight into the
+// panel above (a bare spacer row read as a gap on glass). Touch rides the
+// elements' width; a 30px-tall row is the accepted target height.
+// Strip-chrome geometry, not a region size.
+const stripH = 1
 
 // stripIconW is one strip icon's width in cells: a nerd-font glyph with a
-// space either side, sitting on the BOTTOM strip row at the text baseline;
-// the hit rect stays 2 rows tall for touch. Bigger-than-a-cell icons are a
-// dead end twice over: OSC 66 scaled runs die at the compositor
-// (ultraviolet forwards only SGR and OSC 8 -- TestStripSurvivesCompositor
-// pins that class), and 4x2 quadrant block art has ~8x4 pixel resolution,
-// which read as blobs on glass. One crisp designed glyph
-// beats both.
+// space either side. Bigger-than-a-cell icons are a dead end twice over:
+// OSC 66 scaled runs die at the compositor (ultraviolet forwards only SGR
+// and OSC 8 -- TestStripSurvivesCompositor pins that class), and 4x2
+// quadrant block art has ~8x4 pixel resolution, which read as blobs on
+// glass. One crisp designed glyph beats both.
 const stripIconW = 3
 
 // homeGlyph is the chrome-owned home icon on the strip; not a config
@@ -373,13 +401,27 @@ func flashTick() tea.Cmd {
 	return tea.Tick(tapFlashFor, func(t time.Time) tea.Msg { return flashTickMsg(t) })
 }
 
-// drainFlashArmed reports and clears the tap-flash mark flash() set during
-// the current dispatch; Update turns it into flashTick.
-func (m *model) drainFlashArmed() bool {
-	armed := m.flashArmed
-	m.flashArmed = false
+// bloomTick arms the deferred-bloom open at the debounce deadline.
+func bloomTick() tea.Cmd {
+	return tea.Tick(bloomDelay, func(t time.Time) tea.Msg { return bloomTickMsg(t) })
+}
+
+// drainMark reports and clears a one-shot dispatch mark (the armed-tick
+// idiom): a renderer or tap handler sets the mark, Update drains it into
+// its one-shot tick.
+func drainMark(mark *bool) bool {
+	armed := *mark
+	*mark = false
 	return armed
 }
+
+// drainBloomArmed drains the deferred-bloom mark tapResources set during
+// the current dispatch; Update turns it into bloomTick.
+func (m *model) drainBloomArmed() bool { return drainMark(&m.resPendingArmed) }
+
+// drainFlashArmed drains the tap-flash mark flash() set during the current
+// dispatch; Update turns it into flashTick.
+func (m *model) drainFlashArmed() bool { return drainMark(&m.flashArmed) }
 
 func retryBus() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return retryMsg{} })
@@ -489,12 +531,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseRight {
 			m.lastGst = fmt.Sprintf("long-press @%d,%d (mouse)", msg.X, msg.Y)
 			m.resolveLongPress(msg.X, msg.Y)
+			if m.drainFlashArmed() {
+				// openOverlay armed the bloom settle; without the tick the
+				// box would stay accent-framed until an unrelated redraw
+				return m, flashTick()
+			}
 			return m, nil
 		}
 		m.taps++
 		m.resolveTap(msg.X, msg.Y)
+		var cmds []tea.Cmd
 		if m.drainFlashArmed() {
-			return m, flashTick()
+			cmds = append(cmds, flashTick())
+		}
+		if m.drainBloomArmed() {
+			cmds = append(cmds, bloomTick())
+		}
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
 		}
 
 	case busConnectedMsg:
@@ -553,26 +607,44 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.handleBusMsg(msg.msg)
+		// one-shot ticks armed by the dispatch ride BESIDE the bus wait --
+		// dropping the wait would wedge the reader
+		cmds := []tea.Cmd{waitBus(m.busGen, m.busCh)}
 		if m.drainFlashArmed() {
-			// a gesture tap flashed: arm the expiry redraw WITHOUT
-			// replacing the bus wait -- dropping it would wedge the reader
-			return m, tea.Batch(waitBus(m.busGen, m.busCh), flashTick())
+			cmds = append(cmds, flashTick())
 		}
-		return m, waitBus(m.busGen, m.busCh)
+		if m.drainBloomArmed() {
+			cmds = append(cmds, bloomTick())
+		}
+		return m, tea.Batch(cmds...)
 
 	case tickMsg:
 		m.now = time.Time(msg)
 		m.sendHeartbeat()
+		// keyboard-bearing views adopt loader changes (an async fetch
+		// landing, a flash's new revision) here: the keyboard layout has no
+		// polled widgets, so nothing else invalidates its cached frame.
+		// Bounded: a memo-hit Load is field checks (constant-cost).
+		if m.layoutKind() == "keyboard" || m.kbLiveVisible() {
+			m.ensureBoard()
+		}
 		return m, tick()
 
 	case flashTickMsg:
 		// advance the clock so the expired flash drops off the frame this
 		// redraw composes; no re-arm -- the 1 s tick owns steady state
 		m.now = time.Time(msg)
-		if o := m.overlay; o != nil && m.now.Sub(o.openedAt) >= tapFlashFor {
-			// the bloom window closed: settle the box border to chrome
-			o.box = o.render(m.overlayFrameStyle(o), m.overlayFillStyle())
+		if o := m.overlay; o != nil && len(o.items) > 0 && m.now.Sub(o.openedAt) >= tapFlashFor {
+			// the bloom window closed: settle the box border to chrome.
+			// Item-less overlays (the resources info bloom) are excluded:
+			// their box is hand-built, and o.render would rebuild it as an
+			// empty menu frame.
+			o.box = o.render(m.overlayBloomStyle(o), m.overlayFillStyle())
 		}
+
+	case bloomTickMsg:
+		m.now = time.Time(msg)
+		m.openPendingBloom()
 	}
 	return m, nil
 }
@@ -842,72 +914,90 @@ func (m *model) renderSkewStub(bodyH int) string {
 		m.width, bodyH)
 }
 
-// renderStrip is the 2-row strip under the body, hosting the nav band ahead
-// of the status content: the drawn home icon, config tab labels (active
-// target accented, stub targets flashing "soon"), the flip chevron (only
-// while the active layout is one of the strip.flip pair), drawn toggle cups,
-// the kitty_mod chord note, the always-present battery readout, the act-fail
-// warn cell while one is fresh, then layout, bus state, and gesture tally,
-// the clock flush right. Icons occupy both rows as real cells (see the strip
-// art block for why escapes cannot); 1x text sits on the BOTTOM row with
-// blank cells above it. Registers the strip hits as it places the band:
-// icon, tabs, chevron, cups, kitty_mod, battery, act-fail, then a
-// whole-strip consume rect so strip taps never leak into the body
-// (first-match table).
+// renderStrip is the one-row band under the body, nav ahead of status
+// content: the home icon (bare while a home layout shows -- the icon IS
+// home's tab), config section tabs (band labels, the active tab notching
+// through to the bare background), the flip chevron (only while the active
+// layout is one of the strip.flip pair), toggle cups, the kitty_mod chord
+// note, the always-present battery readout, the act-fail warn cell while
+// one is fresh, then layout, bus state, and gesture tally, the clock flush
+// right. Everything outside the active notch sits on the stripSurface
+// fill. Registers the strip hits as it places the band: icon, tabs,
+// chevron, cups, kitty_mod, battery, act-fail, then a whole-strip consume
+// rect so strip taps never leak into the body (first-match table).
 func (m *model) renderStrip() string {
 	yTop := m.height - stripH
-	var top, bot strings.Builder
+	srf := m.stripSurface()
+	var bot strings.Builder
 	x := 0
-	icon := func(glyph string, style lipgloss.Style, key string, do func(int, int)) {
-		top.WriteString(strings.Repeat(" ", stripIconW))
+	// icon draws a glyph cell on the band (or on the bare background when
+	// it is the active view's notch); the caller pre-tones the style
+	icon := func(glyph string, style lipgloss.Style, notch bool, key string, do func(int, int)) {
 		// force painted cells == stripIconW (fitCell convention): nerd
 		// glyphs are the ambiguous-width poster child
-		bot.WriteString(fitCellPad(" "+style.Render(glyph)+" ", stripIconW))
+		if notch {
+			bot.WriteString(fitCellPad(" "+style.Render(glyph)+" ", stripIconW))
+		} else {
+			bot.WriteString(srf.pad(srf.run(x, 0, 1)+style.Render(glyph), stripIconW))
+		}
 		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, stripIconW, stripH}, do: do, pressKey: key})
 		x += stripIconW
 	}
 
 	if m.width >= stripIconW {
+		// the home icon IS home's tab: it notches bare while home shows
+		home, _ := m.homeLayout()
+		notch := m.layout == home
 		style := m.sty.brand
+		if !notch {
+			style = srf.style(style)
+		}
 		if m.flashLive("icon:home") {
 			style = m.tapStyle(style)
 		}
-		icon(homeGlyph, style, "icon:home", func(x, y int) {
+		icon(homeGlyph, style, notch, "icon:home", func(x, y int) {
 			m.flash("icon:home")
 			m.homeTap(x, y)
 		})
 	}
 	if m.cfg != nil && m.cfg.Strip != nil {
+		// section tabs, the kb bar's band idiom: padded labels ride the
+		// band and the ACTIVE tab sits on the bare background, notching the
+		// band open -- full-height panels are borderless above the strip,
+		// so the notch is continuous with the panel body (the lipgloss tab
+		// notch, minus the frame). No walls, no border welds: the
+		// band-vs-bare contrast draws the tabs.
 		for _, e := range m.cfg.Strip.Entries {
-			label, style := e.Label, chromeFG
-			if e.Target == m.layout {
-				style = chromeAccent
+			active := e.Target == m.layout
+			label, style := e.Label, srf.label(chromeFG)
+			if active {
+				style = chromeAccent.Bold(true)
 			}
 			if m.flashLive(e.Label) {
 				// the "soon" stub flash is the informative one: it outranks
 				// the tap restyle
-				label, style = "soon", chromeWarn
+				label, style = "soon", srf.style(chromeWarn)
 			} else if m.flashLive("tab:" + e.Label) {
 				style = m.tapStyle(style)
 			}
-			w := lipgloss.Width(label) + 2
-			if x+w > m.width {
+			label = " " + label + " "
+			lw := lipgloss.Width(label)
+			if x+lw > m.width {
 				break
 			}
-			top.WriteString(strings.Repeat(" ", w))
-			// force painted cells == the budgeted w (fitCell convention):
-			// an ambiguous-width label must not desync the row from the
-			// hit rect registered below
-			bot.WriteString(fitCellPad(" "+style.Render(label)+" ", w))
+			// force painted cells == the budgeted width (fitCell
+			// convention): an ambiguous-width label must not desync the
+			// row from the hit rect registered below
+			bot.WriteString(fitCellPad(style.Render(label), lw))
 			m.hits = append(m.hits, hitRegion{
-				area: rect{x, yTop, w, stripH},
+				area: rect{x, yTop, lw, stripH},
 				do: func(int, int) {
 					m.flash("tab:" + e.Label)
 					m.trayActivate(e.Target, e.Label)
 				},
 				pressKey: "tab:" + e.Label,
 			})
-			x += w
+			x += lw
 		}
 		// flip chevron: a control (chromeFG, not a state light), rendered
 		// only while the active layout is one of the pair; tap flips to the
@@ -921,11 +1011,11 @@ func (m *model) renderStrip() string {
 				glyph, target = stripExpandGlyph, f.Expanded
 			}
 			if glyph != "" {
-				style := chromeFG
+				style := srf.label(chromeFG)
 				if m.flashLive("icon:chevron") {
 					style = m.tapStyle(style)
 				}
-				icon(glyph, style, "icon:chevron", func(int, int) {
+				icon(glyph, style, false, "icon:chevron", func(int, int) {
 					m.flash("icon:chevron")
 					m.trayActivate(target, "kb")
 				})
@@ -936,8 +1026,7 @@ func (m *model) renderStrip() string {
 			if x+1+stripIconW > m.width {
 				break
 			}
-			top.WriteString(" ")
-			bot.WriteString(" ")
+			bot.WriteString(srf.run(x, 0, 1))
 			x++
 			if tg.Kind != "caffeinate" {
 				// unknown kind: LOOK dead -- dim glyph, consumed no-op tap
@@ -946,28 +1035,28 @@ func (m *model) renderStrip() string {
 				if g == "" {
 					g = "?"
 				}
-				icon(g, chromeDim, "", consumeTap)
+				icon(g, srf.label(chromeDim), false, "", consumeTap)
 				continue
 			}
-			glyph, style := tg.Off, chromeFG
+			glyph, style := tg.Off, srf.label(chromeFG)
 			if glyph == "" {
 				glyph = cupOffGlyph
 			}
 			if m.caffeinate == "on" {
-				glyph, style = tg.On, chromeAccent
+				glyph, style = tg.On, srf.style(chromeAccent)
 				if glyph == "" {
 					glyph = cupOnGlyph
 				}
 			}
 			if degraded {
 				// a tap that cannot land must look dead, never silently no-op
-				style = chromeWarn
+				style = srf.style(chromeWarn)
 			}
 			key := "cup:" + strconv.Itoa(i)
 			if m.flashLive(key) {
 				style = m.tapStyle(style)
 			}
-			icon(glyph, style, key, func(int, int) {
+			icon(glyph, style, false, key, func(int, int) {
 				m.flash(key)
 				m.sendCaffeinateToggle()
 			})
@@ -981,8 +1070,7 @@ func (m *model) renderStrip() string {
 			label := "kitty_mod " + km
 			w := lipgloss.Width(label) + 2
 			if x+w <= m.width {
-				top.WriteString(strings.Repeat(" ", w))
-				bot.WriteString(fitCellPad(" "+chromeDim.Render(label)+" ", w))
+				bot.WriteString(srf.pad(srf.run(x, 0, 1)+srf.label(chromeDim).Render(label), w))
 				m.hits = append(m.hits, hitRegion{area: rect{x, yTop, w, stripH}, do: consumeTap})
 				x += w
 			}
@@ -1007,8 +1095,7 @@ func (m *model) renderStrip() string {
 			}
 			label = mouseGlyph + " " + glyph + " " + strconv.Itoa(m.logi.SoC) + "%"
 		}
-		top.WriteString(strings.Repeat(" ", batteryCellW))
-		bot.WriteString(fitCellPad(" "+tone.Render(label)+" ", batteryCellW))
+		bot.WriteString(srf.pad(srf.run(x, 0, 1)+srf.label(tone).Render(label), batteryCellW))
 		m.hits = append(m.hits, hitRegion{area: rect{x, yTop, batteryCellW, stripH}, do: consumeTap})
 		x += batteryCellW
 	}
@@ -1021,8 +1108,7 @@ func (m *model) renderStrip() string {
 		label := "! " + m.actFail.Msg
 		w := lipgloss.Width(label) + 2
 		if x+w <= m.width {
-			top.WriteString(strings.Repeat(" ", w))
-			bot.WriteString(fitCellPad(" "+chromeWarn.Render(label)+" ", w))
+			bot.WriteString(srf.pad(srf.run(x, 0, 1)+srf.style(chromeWarn).Render(label), w))
 			m.hits = append(m.hits, hitRegion{area: rect{x, yTop, w, stripH}, do: consumeTap})
 			x += w
 		}
@@ -1032,26 +1118,114 @@ func (m *model) renderStrip() string {
 	// by construction
 	rem := m.width - x
 	left := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.sty.strip.Render(" "+m.layout+" | "),
-		m.renderBusIndicator(),
-		m.sty.strip.Render(" | "+m.lastGestureLabel()),
+		srf.label(m.sty.strip).Render(" "+m.layout+" | "),
+		m.renderBusIndicator(srf),
+		srf.label(m.sty.strip).Render(" | "+m.lastGestureLabel()),
 	)
-	clock := m.sty.strip.Render(strings.ToLower(m.now.Format("Mon 15:04")))
+	clock := srf.label(m.sty.strip).Render(strings.ToLower(m.now.Format("Mon 15:04")))
 	var status string
 	gap := rem - lipgloss.Width(left) - lipgloss.Width(clock)
 	switch {
 	case gap >= 1:
-		status = left + strings.Repeat(" ", gap) + clock
+		status = left + srf.run(x+lipgloss.Width(left), 0, gap) + clock
 	case lipgloss.Width(clock)+1 <= rem:
-		status = fitCellPad(left, rem-lipgloss.Width(clock)-1) + " " + clock
+		status = srf.pad(left, rem-lipgloss.Width(clock)-1) + srf.run(m.width-lipgloss.Width(clock)-1, 0, 1) + clock
 	default:
-		status = fitCellPad(left+" "+clock, rem)
+		status = srf.pad(left+" "+clock, rem)
 	}
-	top.WriteString(strings.Repeat(" ", rem))
 	bot.WriteString(status)
 
 	m.hits = append(m.hits, hitRegion{area: rect{0, yTop, m.width, stripH}, do: consumeTap})
-	return top.String() + "\n" + bot.String()
+	return bot.String()
+}
+
+// Strip surface: one solid band row tinted toward the house accent
+// (color5 -- the theme background pulled toward it; the neutral fg pull is
+// the accentless fallback), textured with glyphs pulled further along the
+// same ramp. The active section tab -- and the home icon while home is
+// showing -- sit on the bare background, notching the band open into the
+// borderless panel above (the kb bar idiom). No palette = no surface; the
+// indexed base renders exactly as before.
+const (
+	stripFillBlend = 0.22
+	stripTexBlend  = 0.4
+	stripTexture   = "dots:sparse"
+)
+
+// stripSurface carries the derived surface styles; the zero value (no
+// palette) degrades every helper to its bare input.
+type stripSurface struct {
+	bg   color.Color // band tone
+	text color.Color // quiet band text: the theme foreground, full contrast
+	tex  lipgloss.Style
+	cell func(x, y int) string
+}
+
+func (m *model) stripSurface() stripSurface {
+	bg, ok := m.palette.blend("background", "color5", stripFillBlend)
+	if !ok {
+		if bg, ok = m.palette.blend("background", "foreground", stripFillBlend); !ok {
+			return stripSurface{}
+		}
+	}
+	s := stripSurface{bg: bg}
+	s.text, _ = m.palette.color("foreground")
+	if fg, ok := m.palette.blend("background", "color5", stripTexBlend); ok {
+		s.cell, _ = kbview.TexCellFn(stripTexture)
+		s.tex = lipgloss.NewStyle().Background(bg).Foreground(fg)
+	}
+	return s
+}
+
+// style seats a colored tone on the band, keeping its foreground; tones
+// that already carry a background (the tap flash) keep theirs entirely.
+// GetBackground yields NoColor, not nil, when unset.
+func (s stripSurface) style(base lipgloss.Style) lipgloss.Style {
+	if s.bg == nil {
+		return base
+	}
+	if _, unset := base.GetBackground().(lipgloss.NoColor); !unset {
+		return base
+	}
+	return base.Background(s.bg)
+}
+
+// label seats QUIET text on the band: foreground-toned at full contrast
+// (glass-verified twice: dim and body-toned text both read faint on the
+// band), band background.
+func (s stripSurface) label(base lipgloss.Style) lipgloss.Style {
+	if s.bg == nil {
+		return base
+	}
+	st := base.Background(s.bg)
+	if s.text != nil {
+		st = st.Foreground(s.text)
+	}
+	return st
+}
+
+// run is n blank surface cells at absolute column x on strip row y,
+// texture glyphs included; bare spaces without a palette.
+func (s stripSurface) run(x, y, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if s.bg == nil {
+		return strings.Repeat(" ", n)
+	}
+	return kbview.TexRun(s.cell, lipgloss.NewStyle().Background(s.bg), s.tex, x, y, n)
+}
+
+// pad crops/pads content to w cells, the padding on the bare surface.
+func (s stripSurface) pad(content string, w int) string {
+	t := fitCell(content, w)
+	if p := w - lipgloss.Width(t); p > 0 {
+		if s.bg == nil {
+			return t + strings.Repeat(" ", p)
+		}
+		return t + lipgloss.NewStyle().Background(s.bg).Render(strings.Repeat(" ", p))
+	}
+	return t
 }
 
 // batteryGlyph picks the readout glyph by state-of-charge bucket
@@ -1122,12 +1296,12 @@ func (m *model) layoutKind() string {
 	return "home"
 }
 
-func (m *model) renderBusIndicator() string {
+func (m *model) renderBusIndicator(srf stripSurface) string {
 	if m.bus == busConnected {
-		return m.sty.strip.Render("bus ok")
+		return srf.label(m.sty.strip).Render("bus ok")
 	}
 	// degraded state is loud, never silent
-	return m.sty.warn.Render("bus absent -- mouse fallback")
+	return srf.style(m.sty.warn).Render("bus absent -- mouse fallback")
 }
 
 func (m *model) lastGestureLabel() string {

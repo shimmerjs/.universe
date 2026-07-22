@@ -1,6 +1,9 @@
 package dock
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,14 +17,43 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/generations"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/kbview"
-	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keymappdb"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keydict"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/oryx"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/usbserial"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 )
 
-const kbFixtureDB = "../keyboard/keymappdb/testdata/fixture.sqlite3"
-const kbEmptyDB = "../keyboard/keymappdb/testdata/empty.sqlite3"
+const kbFixturePath = "../keyboard/testdata/layout.json"
+
+// kbFixtureLayout loads the aw4 layout payload fixture.
+func kbFixtureLayout(t testing.TB) *oryx.Layout {
+	t.Helper()
+	raw, err := os.ReadFile(kbFixturePath)
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	var l oryx.Layout
+	if err := json.Unmarshal(raw, &l); err != nil {
+		t.Fatalf("fixture decode: %v", err)
+	}
+	return &l
+}
+
+// kbInertLoader never sees a board, a store, or the network: for models
+// whose kbBoard is preloaded (or deliberately absent) and must not be
+// swapped by ensureBoard.
+func kbInertLoader(t testing.TB) *keyboard.Loader {
+	t.Helper()
+	return &keyboard.Loader{
+		Poller: &usbserial.Poller{TTL: time.Hour, Read: func(context.Context) (usbserial.Identity, error) {
+			return usbserial.Identity{}, usbserial.ErrNotPresent
+		}},
+		GenDir: t.TempDir(),
+	}
+}
 
 // fixture thumb legends: the dictionary maps the left wide key (KC_DOWN)
 // and right wide key (KC_UP) to arrow glyphs.
@@ -30,20 +62,14 @@ const (
 	kbUpArrow   = "↑"
 )
 
-// kbModel is a keyboard-layout dock model preloaded with the fixture board so
-// the view never touches the real Keymapp store. Skips when the exec'd
-// keymappdb reader's sqlite3 CLI is missing (skip-on-missing: the nix
-// checkPhase has no host binaries).
+// kbModel is a keyboard-layout dock model preloaded with the fixture board
+// and an inert loader, so the view never touches the serial, the network,
+// or a real store (a fixture board must never be swapped for whatever the
+// machine happens to have deployed).
 // testing.TB so benchmarks share the fixture.
 func kbModel(t testing.TB, w, h int) *model {
 	t.Helper()
-	if _, err := keymappdb.Sqlite3Bin(); err != nil {
-		t.Skipf("sqlite3: %v", err)
-	}
-	rev, err := keymappdb.Active(kbFixtureDB)
-	if err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
+	t.Setenv("HOME", t.TempDir()) // isolate paths.Resolve state
 	m := &model{
 		cfg: &config.Config{
 			Widgets: map[string]config.Widget{},
@@ -58,8 +84,8 @@ func kbModel(t testing.TB, w, h int) *model {
 		widgetErr:  map[string]string{},
 		sty:        buildStyles(day),
 	}
-	m.kbBoard = keyboard.FromRevision(rev)
-	m.kbLoaded = true
+	m.kbBoard = keyboard.FromLayout(kbFixtureLayout(t), keydict.Embedded())
+	m.kbLoader = kbInertLoader(t)
 	return m
 }
 
@@ -98,8 +124,8 @@ func TestKeyboardRenderGeometry(t *testing.T) {
 }
 
 // The whole View at 196x24 renders through the keyboard branch with the
-// 2-row strip, exact height, no panic. The strip rows carry scaled runs, so
-// they measure by the hand budget, not lipgloss.
+// strip band, exact height, no panic. The body/strip boundary derives from
+// stripH so a strip-geometry change cannot silently skew the split.
 func TestKeyboardViewFullRegion(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	v := m.View()
@@ -107,24 +133,25 @@ func TestKeyboardViewFullRegion(t *testing.T) {
 	if len(lines) != 24 {
 		t.Fatalf("view lines = %d, want 24", len(lines))
 	}
-	for i, l := range lines[:22] {
+	body := 24 - stripH
+	for i, l := range lines[:body] {
 		if w := lipgloss.Width(l); w != 196 {
 			t.Errorf("line %d width = %d, want 196", i, w)
 		}
 	}
-	for i, l := range lines[22:] {
+	for i, l := range lines[body:] {
 		if c := stripCells(l); c != 196 {
-			t.Errorf("strip row %d = %d cells by hand budget, want 196", i, c)
+			t.Errorf("strip row %d = %d cells, want 196", i, c)
 		}
 	}
 }
 
-// The thumb cluster is one 4-key row: the wide piano key's legend renders
-// on the SAME line as the 3-key arc, at the cluster's inner end, for both
-// halves (fixture home layer: left wide=down-arrow with spc/bksp/tab,
-// right wide=up-arrow with esc/../enter) -- seated with the cluster below
-// every main row, never up in row 4.
-func TestKeyboardThumbClusterSeated(t *testing.T) {
+// The full render's thumb cluster mirrors the physical board: the wide piano
+// key on its own key-row (tap+hold pair, so 2 lines) directly below main row
+// 4 and ABOVE the 3-key arc, hugging the arc's grid-side edge -- the left
+// half's piano key centered over spc/bksp (fixture home layer), the right
+// half mirrored with the piano key right of Esc's column.
+func TestKeyboardThumbClusterPiano(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	bodyH := m.height - stripH
 	plain := ansi.Strip(m.renderKeyboard(bodyH))
@@ -140,31 +167,32 @@ func TestKeyboardThumbClusterSeated(t *testing.T) {
 		return -1
 	}
 
-	wide := lineOf(kbDownArrow) // left wide key
+	wide := lineOf(kbDownArrow) // left piano key
 	arc := lineOf("spc")        // left arc first key
-	if wide != arc {
-		t.Errorf("left wide key line %d not seated on the arc line %d", wide, arc)
+	if wide != arc-2 {
+		t.Errorf("left piano line %d, want one key-row (2 lines) above the arc line %d", wide, arc)
 	}
-	rwide := lineOf(kbUpArrow) // right wide key
+	rwide := lineOf(kbUpArrow) // right piano key
 	rarc := lineOf("Esc")      // right arc first key
-	if rwide != rarc {
-		t.Errorf("right wide key line %d not seated on the arc line %d", rwide, rarc)
+	if rwide != rarc-2 {
+		t.Errorf("right piano line %d, want one key-row (2 lines) above the arc line %d", rwide, rarc)
 	}
 	if wide != rwide {
-		t.Errorf("thumb rows misaligned: left %d right %d", wide, rwide)
+		t.Errorf("piano rows misaligned: left %d right %d", wide, rwide)
 	}
 	// the whole cluster sits below every main row (rctl is on main row 4)
 	if r4 := lineOf("rctl"); r4 >= wide {
-		t.Errorf("main row 4 at line %d not above the thumb cluster at %d", r4, wide)
+		t.Errorf("main row 4 at line %d not above the piano row at %d", r4, wide)
 	}
-	// the wide key sits at the cluster's inner end: left half arc-then-wide,
-	// right half wide-then-arc, mirrored around the center gap
-	l := lines[wide]
-	if strings.Index(l, "spc") > strings.Index(l, kbDownArrow) {
-		t.Error("left wide key not at the cluster's inner end (want arc then wide)")
+	// grid-side alignment: the left piano key spans the arc's first two keys
+	// (its centered legend lands between spc and bksp); the right piano key
+	// spans the arc's last two, so its legend sits right of Esc's column
+	pl, al := lines[wide], lines[arc]
+	if ai, si, bi := strings.Index(pl, kbDownArrow), strings.Index(al, "spc"), strings.Index(al, "bksp"); ai < si || ai > bi {
+		t.Errorf("left piano legend at %d not over spc(%d)..bksp(%d)", ai, si, bi)
 	}
-	if strings.Index(l, kbUpArrow) > strings.Index(l, "Esc") {
-		t.Error("right wide key not at the cluster's inner end (want wide then arc)")
+	if ai, ei := strings.Index(pl, kbUpArrow), strings.Index(al, "Esc"); ai <= ei {
+		t.Errorf("right piano legend at %d not right of Esc(%d)", ai, ei)
 	}
 }
 
@@ -180,24 +208,25 @@ func TestKeyboardLayerNavigation(t *testing.T) {
 		}
 	}
 
-	// tap the body (bottom of the region, away from the selector) cycles fwd
+	// tap the body (mid-grid, away from the tab bar) cycles fwd
 	if m.kbLayer != 0 {
 		t.Fatalf("start layer = %d, want 0", m.kbLayer)
 	}
-	if !m.resolveTap(90, 20) {
+	if !m.resolveTap(90, 10) {
 		t.Fatal("body tap not consumed")
 	}
 	if m.kbLayer != 1 {
 		t.Fatalf("after body tap layer = %d, want 1 (cycled)", m.kbLayer)
 	}
 
-	// tapping the first selector button jumps back to layer 0
+	// tapping the first tab on the bar (the panel's TOP row) jumps back to
+	// layer 0
 	_ = m.renderKeyboard(bodyH)
-	if !m.resolveTap(2, 1) {
-		t.Fatal("selector tap not consumed")
+	if !m.resolveTap(2, 0) {
+		t.Fatal("tab tap not consumed")
 	}
 	if m.kbLayer != 0 {
-		t.Fatalf("after selector tap layer = %d, want 0", m.kbLayer)
+		t.Fatalf("after tab tap layer = %d, want 0", m.kbLayer)
 	}
 }
 
@@ -208,7 +237,7 @@ func TestKeyboardCycleWraps(t *testing.T) {
 	bodyH := m.height - stripH
 	for range n {
 		_ = m.renderKeyboard(bodyH)
-		m.resolveTap(90, 20)
+		m.resolveTap(90, 10)
 	}
 	if m.kbLayer != 0 {
 		t.Fatalf("after %d cycles layer = %d, want 0 (wrapped)", n, m.kbLayer)
@@ -318,16 +347,17 @@ func TestKeyboardLiveLayerAndClear(t *testing.T) {
 	}
 }
 
-// An empty / never-synced store renders the calm sync hint, never crashes.
-func TestKeyboardEmptyDBMessage(t *testing.T) {
+// A board never seen (cold start, nothing local) renders the calm plug-in
+// hint, never crashes.
+func TestKeyboardNoBoardMessage(t *testing.T) {
 	m := kbModel(t, 196, 24)
-	// simulate the empty-store load result
+	// simulate the cold-start load result
 	m.kbBoard = nil
-	m.kbErr = keymappdb.ErrNoRevision.Error()
+	m.kbErr = keyboard.ErrNoBoard.Error()
 	bodyH := m.height - stripH
 	out := m.renderKeyboard(bodyH)
-	if !strings.Contains(out, "open Keymapp") {
-		t.Error("empty-store hint missing")
+	if !strings.Contains(out, "plug in the board") {
+		t.Error("no-board hint missing")
 	}
 	lines := strings.Split(out, "\n")
 	if len(lines) != bodyH {
@@ -340,70 +370,57 @@ func TestKeyboardEmptyDBMessage(t *testing.T) {
 	}
 }
 
-// A genuinely empty DB file loaded through ensureBoard yields the sync
-// hint: kbErr records keymappdb.ErrNoRevision and the render shows the
-// "open Keymapp" line, not an error.
-func TestKeyboardEnsureBoardEmptyDB(t *testing.T) {
-	if _, err := keymappdb.Sqlite3Bin(); err != nil {
-		t.Skipf("sqlite3: %v", err)
-	}
-	db, err := os.ReadFile(kbEmptyDB)
-	if err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
-	home := t.TempDir()
-	dir := filepath.Join(home, "Library", "Application Support", ".keymapp")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "keymapp.sqlite3"), db, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
+// ensureBoard with no board on the bus and nothing local yields the hint:
+// kbErr records keyboard.ErrNoBoard and the render shows the plug-in line,
+// not an error.
+func TestKeyboardEnsureBoardNoBoard(t *testing.T) {
 	m := kbModel(t, 120, 20)
 	m.kbBoard = nil
-	m.kbLoaded = false
 	m.kbErr = ""
 	m.ensureBoard()
-	if m.kbErr != keymappdb.ErrNoRevision.Error() {
-		t.Fatalf("kbErr = %q, want ErrNoRevision", m.kbErr)
+	if m.kbErr != keyboard.ErrNoBoard.Error() {
+		t.Fatalf("kbErr = %q, want ErrNoBoard", m.kbErr)
 	}
-	if out := m.renderKeyboard(18); !strings.Contains(ansi.Strip(out), "open Keymapp") {
-		t.Error("empty DB did not render the sync hint")
+	if out := m.renderKeyboard(18); !strings.Contains(ansi.Strip(out), "plug in the board") {
+		t.Error("no board did not render the plug-in hint")
 	}
 }
 
-// A missing store must not latch a stale kbErr: a failed ensureBoard followed
-// by a Keymapp sync (the store appearing) loads the board and clears the
-// error, adopting without a dock restart.
+// A missing board must not latch a stale kbErr: a failed ensureBoard
+// followed by the board appearing (plug-in with a deployed generation to
+// resolve from) loads the board and clears the error, adopting without a
+// dock restart.
 func TestKeyboardEnsureBoardClearsErrOnLateLoad(t *testing.T) {
-	if _, err := keymappdb.Sqlite3Bin(); err != nil {
-		t.Skipf("sqlite3: %v", err)
-	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
 	m := kbModel(t, 120, 20)
+	l := kbFixtureLayout(t)
+	gens := t.TempDir()
+	present := false
+	m.kbLoader = &keyboard.Loader{
+		// TTL zero: every ensureBoard re-reads the scripted serial
+		Poller: &usbserial.Poller{Read: func(context.Context) (usbserial.Identity, error) {
+			if !present {
+				return usbserial.Identity{}, usbserial.ErrNotPresent
+			}
+			return usbserial.Identity{LayoutID: l.HashID, RevisionID: l.RevisionID}, nil
+		}},
+		GenDir: gens,
+		Fetch: func(context.Context, string, string) (*oryx.Layout, error) {
+			t.Error("network fetch ran with a local payload available")
+			return nil, errors.New("no")
+		},
+	}
 	m.kbBoard = nil
-	m.kbLoaded = false
 	m.kbErr = ""
 	m.ensureBoard()
 	if m.kbErr == "" {
-		t.Fatal("missing store did not set kbErr")
+		t.Fatal("missing board did not set kbErr")
 	}
-	if m.kbLoaded {
-		t.Fatal("missing store latched kbLoaded")
-	}
-	db, err := os.ReadFile(kbFixtureDB)
-	if err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
-	dir := filepath.Join(home, "Library", "Application Support", ".keymapp")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if _, err := generations.Append(gens, generations.Record{
+		FlashedAt: time.Now(), LayoutID: l.HashID, RevisionID: l.RevisionID, Layout: l,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "keymapp.sqlite3"), db, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	present = true
 	m.ensureBoard()
 	if m.kbBoard == nil {
 		t.Fatalf("late load did not adopt the board: %s", m.kbErr)
@@ -413,10 +430,60 @@ func TestKeyboardEnsureBoardClearsErrOnLateLoad(t *testing.T) {
 	}
 }
 
+// A serial that CHANGES after a successful load is re-resolved (a firmware
+// flash re-enumerating the board with a new revision): the board on glass
+// follows the deployment without a restart, keyed on the serial.
+func TestKeyboardEnsureBoardReloadsOnNewRevision(t *testing.T) {
+	m := kbModel(t, 196, 24)
+	l := kbFixtureLayout(t)
+	l2 := kbFixtureLayout(t)
+	l2.Title = "aw5"
+	l2.RevisionID = "aw5aw5"
+	gens := t.TempDir()
+	for _, p := range []*oryx.Layout{l, l2} {
+		if _, err := generations.Append(gens, generations.Record{
+			FlashedAt: time.Now(), LayoutID: p.HashID, RevisionID: p.RevisionID, Layout: p,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serialRev := l.RevisionID
+	m.kbLoader = &keyboard.Loader{
+		// TTL zero: every ensureBoard re-reads the scripted serial
+		Poller: &usbserial.Poller{Read: func(context.Context) (usbserial.Identity, error) {
+			return usbserial.Identity{LayoutID: l.HashID, RevisionID: serialRev}, nil
+		}},
+		GenDir: gens,
+	}
+	m.kbBoard = nil
+	m.ensureBoard()
+	if m.kbBoard == nil || m.kbBoard.Title != "aw4" {
+		t.Fatalf("initial load: board %+v, err %q", m.kbBoard, m.kbErr)
+	}
+
+	// a flash lands: the board re-enumerates with the new revision
+	serialRev = l2.RevisionID
+	m.homeCache.ok = true
+	m.ensureBoard()
+	if m.kbBoard == nil || m.kbBoard.Title != "aw5" {
+		t.Fatalf("new revision not adopted: board title %q, err %q", m.kbBoard.Title, m.kbErr)
+	}
+	if m.homeCache.ok {
+		t.Error("reload kept the stale home cache")
+	}
+
+	// unchanged revision: no re-parse
+	before := m.kbBoard
+	m.ensureBoard()
+	if m.kbBoard != before {
+		t.Error("unchanged revision re-parsed the board")
+	}
+}
+
 // The kb-live region widget at the home layout's 75-col rect: exact line
-// geometry, board content on glass, selector hits offset into the region, and
-// a layer-cycle hit covering ONLY the selector row -- a board-area tap is
-// consumed without cycling.
+// geometry, board content on glass, tab hits offset into the region, and
+// a layer-cycle hit covering ONLY the bottom tab-bar row -- a board-area tap
+// is consumed without cycling.
 func TestKBLiveRegionRender(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	w := config.Widget{ID: "kb-live", Title: "keyboard", Chrome: true,
@@ -450,31 +517,33 @@ func TestKBLiveRegionRender(t *testing.T) {
 		t.Fatalf("board tap cycled the layer to %d", m.kbLayer)
 	}
 
-	// a selector-row tap right of the buttons cycles to the next layer
-	if !m.resolveTap(interior.x+interior.w-2, interior.y) {
-		t.Fatal("selector-row tap not consumed")
+	// a tab-bar tap on the band (right of the tabs, off the oryx button)
+	// cycles to the next layer; the bar is the region's TOP row
+	if !m.resolveTap(rr.x+40, rr.y) {
+		t.Fatal("tab-bar tap not consumed")
 	}
 	if m.kbLayer != 1 {
-		t.Fatalf("selector-row tap layer = %d, want 1 (cycled)", m.kbLayer)
+		t.Fatalf("tab-bar tap layer = %d, want 1 (cycled)", m.kbLayer)
 	}
 
-	// selector button hits are offset into the region: the first button
-	// jumps back to layer 0
+	// tab hits are offset into the region: the first tab on the bar jumps
+	// back to layer 0
 	m.resetHits()
 	_ = m.renderKBLive(w, rr)
-	if !m.resolveTap(interior.x+1, interior.y) {
-		t.Fatal("selector button tap not consumed")
+	if !m.resolveTap(rr.x+1, rr.y) {
+		t.Fatal("tab tap not consumed")
 	}
 	if m.kbLayer != 0 {
-		t.Fatalf("selector button tap layer = %d, want 0", m.kbLayer)
+		t.Fatalf("tab tap layer = %d, want 0", m.kbLayer)
 	}
 }
 
 // kbCompact reports whether out is the compact render: main rows fold to
 // single tap lines, so the Q row (main row 1) and Z row (main row 3) sit
 // 2 lines apart instead of the full render's 4 (tap+hold pairs). The thumb
-// cluster no longer discriminates -- both modes seat the wide key on the
-// arc line -- so this asserts the legends exist and reads the row pitch.
+// cluster shape rides the mode -- compact folds the wide key onto the arc
+// line, full seats it one key-row (2 lines) above -- and is asserted per
+// mode alongside the pitch.
 func kbCompact(t *testing.T, out string) bool {
 	t.Helper()
 	lines := strings.Split(ansi.Strip(out), "\n")
@@ -487,13 +556,17 @@ func kbCompact(t *testing.T, out string) bool {
 		t.Fatalf("legend %q not rendered", sub)
 		return -1
 	}
-	if wide, arc := lineOf(kbDownArrow), lineOf("spc"); wide != arc {
-		t.Fatalf("wide key line %d off the cluster line %d", wide, arc)
-	}
+	wide, arc := lineOf(kbDownArrow), lineOf("spc")
 	switch pitch := lineOf("Z") - lineOf("Q"); pitch {
 	case 2:
+		if wide != arc {
+			t.Fatalf("compact wide key line %d off the cluster line %d", wide, arc)
+		}
 		return true
 	case 4:
+		if wide != arc-2 {
+			t.Fatalf("full piano line %d, want 2 lines above the arc line %d", wide, arc)
+		}
 		return false
 	default:
 		t.Fatalf("main row pitch %d, want 2 (compact) or 4 (full)", pitch)
@@ -542,10 +615,10 @@ func TestKBLiveCompactStripRender(t *testing.T) {
 	}
 }
 
-// Auto mode flips on the region interior: 15 rows (blank + the cluster
-// pair below the main rows) still holds the full render, one row less
-// engages compact; an explicit params mode overrides auto in BOTH
-// directions.
+// Auto mode flips on the grid area (box interior; the tab bar rides the
+// box's bottom row outside it): 14 rows -- the full grid -- still holds the
+// full render, one row less engages compact; an explicit params mode
+// overrides auto in BOTH directions.
 func TestKBLiveModeSelection(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	render := func(params map[string]any, h int) string {
@@ -555,16 +628,16 @@ func TestKBLiveModeSelection(t *testing.T) {
 		return m.renderKBLive(w, rect{120, 1, 75, h})
 	}
 
-	if kbCompact(t, render(nil, 17)) { // interior 15 = full height
-		t.Error("interior 15 rendered compact, want full")
+	if kbCompact(t, render(nil, 15)) { // grid area 14 = full height
+		t.Error("grid area 14 rendered compact, want full")
 	}
-	if !kbCompact(t, render(nil, 16)) { // interior 14 < 15
-		t.Error("interior 14 rendered full, want compact")
+	if !kbCompact(t, render(nil, 14)) { // grid area 13 < 14
+		t.Error("grid area 13 rendered full, want compact")
 	}
 	if !kbCompact(t, render(map[string]any{"mode": "compact"}, 17)) {
 		t.Error("mode=compact override ignored on a tall region")
 	}
-	if kbCompact(t, render(map[string]any{"mode": "full"}, 16)) {
+	if kbCompact(t, render(map[string]any{"mode": "full"}, 14)) {
 		t.Error("mode=full override ignored on a short region")
 	}
 }
@@ -647,30 +720,25 @@ func BenchmarkKBLiveRecompose(b *testing.B) {
 	}
 }
 
-// A TypeKey event arriving before the board has loaded triggers the lazy load
-// and is folded in, not dropped. The loader resolves the store through $HOME
-// (keymappdb.DefaultPath), so the fixture is staged under a temp home.
+// A TypeKey event arriving before the board has loaded triggers the lazy
+// load and is folded in, not dropped: the loader resolves the scripted
+// serial against a staged generation.
 func TestKeyboardFirstEventLoadsBoard(t *testing.T) {
-	if _, err := keymappdb.Sqlite3Bin(); err != nil {
-		t.Skipf("sqlite3: %v", err)
-	}
-	db, err := os.ReadFile(kbFixtureDB)
-	if err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
-	home := t.TempDir()
-	dir := filepath.Join(home, "Library", "Application Support", ".keymapp")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "keymapp.sqlite3"), db, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-
 	m := kbModel(t, 196, 24)
+	l := kbFixtureLayout(t)
+	gens := t.TempDir()
+	if _, err := generations.Append(gens, generations.Record{
+		FlashedAt: time.Now(), LayoutID: l.HashID, RevisionID: l.RevisionID, Layout: l,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.kbLoader = &keyboard.Loader{
+		Poller: &usbserial.Poller{TTL: time.Hour, Read: func(context.Context) (usbserial.Identity, error) {
+			return usbserial.Identity{LayoutID: l.HashID, RevisionID: l.RevisionID}, nil
+		}},
+		GenDir: gens,
+	}
 	m.kbBoard = nil
-	m.kbLoaded = false
 	m.kbErr = ""
 
 	m.handleKeyMsg(keyMsg(proto.KeyEventKey, 1, 1, true, 0))
@@ -683,11 +751,11 @@ func TestKeyboardFirstEventLoadsBoard(t *testing.T) {
 }
 
 // Live-gated: render the user's REAL layout through the actual keyboard view
-// and log every layer's grid. Set KHUDSON_KEYMAPP_DB=1 to run; the logged output
-// is the real on-glass render.
+// and log every layer's grid. Set KHUDSON_KB_REAL=1 to run; the logged
+// output is the real on-glass render.
 func TestKeyboardRenderRealDB(t *testing.T) {
-	if os.Getenv("KHUDSON_KEYMAPP_DB") == "" {
-		t.Skip("set KHUDSON_KEYMAPP_DB=1 to render the real Keymapp layout")
+	if os.Getenv("KHUDSON_KB_REAL") == "" {
+		t.Skip("set KHUDSON_KB_REAL=1 to render the real deployed layout")
 	}
 	m := &model{
 		cfg: &config.Config{
@@ -698,7 +766,14 @@ func TestKeyboardRenderRealDB(t *testing.T) {
 		widgetData: map[string]module.Data{}, widgetErr: map[string]string{},
 		sty: buildStyles(day),
 	}
-	m.ensureBoard()
+	// default loader: real serial, real caches; the payload may arrive on
+	// the async fetch, so give it a few ticks
+	for i := 0; i < 100 && m.kbBoard == nil; i++ {
+		m.ensureBoard()
+		if m.kbBoard == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	if m.kbBoard == nil {
 		t.Fatalf("no board loaded: %s", m.kbErr)
 	}
@@ -710,27 +785,33 @@ func TestKeyboardRenderRealDB(t *testing.T) {
 	}
 }
 
-// The layer fill is an OFF-BASE indicator: the base layer renders with
-// no fill even under a palette; a non-base layer floods every INTERIOR
-// cell -- the frame rows stay unfilled (NO OVERFLOWS ON FILLS; the
-// compositor test pins the perimeter) -- and held keys stay plain
-// reverse-video so presses pop. Palette-less docks render exactly as
-// before (the golden pins that).
+// The layer fill is an OFF-BASE indicator: the base layer renders with no
+// fill even under a palette -- only the tab-bar band row carries a
+// background -- and a non-base layer floods every INTERIOR cell (the top
+// border row stays unfilled; NO OVERFLOWS ON FILLS, the compositor test
+// pins the perimeter) while held keys stay plain reverse-video so presses
+// pop.
 func TestKeyboardLayerChipTint(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	bodyH := m.height - stripH
 
-	// no palette broadcast: no background runs at all
+	// no palette broadcast: no truecolor background runs at all
 	if strings.Contains(m.renderKeyboard(bodyH), "48;2;") {
 		t.Fatal("palette-less render carries a background fill")
 	}
 
 	m.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
 	if kbview.LayerChip(m.kbBoard, 0, m.kbTheme()) != nil {
-		t.Fatal("base layer must carry no fill (off-base indicator)")
+		t.Fatal("base layer must carry no chip (off-base indicator)")
 	}
-	if strings.Contains(m.renderKeyboard(bodyH), "48;2;") {
-		t.Fatal("base layer render carries a background fill")
+	lines0 := strings.Split(m.renderKeyboard(bodyH), "\n")
+	if !strings.Contains(lines0[0], "48;2;") {
+		t.Error("tab-bar band (the panel header) carries no background")
+	}
+	for i, l := range lines0[1:] {
+		if strings.Contains(l, "48;2;") {
+			t.Errorf("base layer line %d carries a background fill", i+1)
+		}
 	}
 	if len(m.kbBoard.Layers) < 3 {
 		t.Fatalf("fixture board has %d layers, need 3+", len(m.kbBoard.Layers))
@@ -745,22 +826,37 @@ func TestKeyboardLayerChipTint(t *testing.T) {
 	m.kbLayer = 1
 	m.homeCache.ok = false
 	out1 := m.renderKeyboard(bodyH)
-	// interior flood, clean frame: every interior line carries the fill,
-	// the border rows carry none
+	// interior flood: every line carries a background (header band, chip
+	// flood, bar band)
 	lines1 := strings.Split(out1, "\n")
-	if strings.Contains(lines1[0], "48;2;") || strings.Contains(lines1[len(lines1)-1], "48;2;") {
-		t.Error("frame row carries the fill")
-	}
-	for i, l := range lines1[1 : len(lines1)-1] {
+	for i, l := range lines1 {
 		if !strings.Contains(l, "48;2;") {
-			t.Errorf("interior line %d carries no fill", i+1)
+			t.Errorf("line %d carries no fill", i)
 		}
 	}
 
-	// held key: plain reverse-video, no chip on its tap cell
+	// held key: plain reverse-video on the tap cell, and ONLY there -- the
+	// hold half keeps the chip (glass-reported: it dropped to the bare
+	// background, a hole under every held key on a filled layer)
 	m.handleKeyMsg(keyMsg(proto.KeyEventKey, 1, 1, true, 0))
-	if !strings.Contains(m.renderKeyboard(bodyH), "\x1b[1;7m") {
+	held := m.renderKeyboard(bodyH)
+	if !strings.Contains(held, "\x1b[1;7m") {
 		t.Error("held key lost its plain reverse-video block under the tint")
+	}
+	buf := uv.NewScreenBuffer(m.width, bodyH)
+	uv.NewStyledString(held).Draw(buf, buf.Bounds())
+	bare := 0
+	for y := 1; y < bodyH-1; y++ {
+		for x := range m.width {
+			if c := buf.CellAt(x, y); c != nil && c.Style.Bg == nil {
+				bare++
+			}
+		}
+	}
+	// exactly the held key's reverse-video tap cell (kw=11 on this glass)
+	// escapes the interior flood
+	if bare != 11 {
+		t.Errorf("%d bare interior cells under a held key, want 11 (the tap cell alone)", bare)
 	}
 }
 
@@ -899,10 +995,10 @@ func TestKeyboardTextureSurvivesCompositor(t *testing.T) {
 	}
 }
 
-// NO OVERFLOWS ON FILLS: through the real cell compositor, no frame
-// cell -- row 0, row h-1, col 0, col w-1 -- of a filled render carries
-// ANY background (a chip bg on a border cell shows outside the mid-cell
-// stroke), while every interior cell carries the fill, textures included.
+// FILLS ARE FULL-BLEED: through the real cell compositor, the borderless
+// fullscreen panel floods every cell to the absolute edges (columns 0 and
+// w-1 included -- there is no frame to protect): header band on the title
+// row, chip flood on the grid, band fill on the bar row.
 func TestKeyboardFilledFrameNoOverflow(t *testing.T) {
 	for _, tex := range []string{"none", "dots"} {
 		m := kbTexModel(t, tex)
@@ -916,12 +1012,8 @@ func TestKeyboardFilledFrameNoOverflow(t *testing.T) {
 				if c == nil {
 					continue
 				}
-				frame := y == 0 || y == bodyH-1 || x == 0 || x == m.width-1
-				if frame && c.Style.Bg != nil {
-					t.Fatalf("%s: frame cell (%d,%d) carries a background %v", tex, x, y, c.Style.Bg)
-				}
-				if !frame && c.Style.Bg == nil {
-					t.Fatalf("%s: interior cell (%d,%d) carries no fill", tex, x, y)
+				if c.Style.Bg == nil {
+					t.Fatalf("%s: cell (%d,%d) carries no fill", tex, x, y)
 				}
 			}
 		}
@@ -968,11 +1060,10 @@ func TestOryxURL(t *testing.T) {
 	}
 }
 
-// The oryx link renders INSIDE the widget on the last interior row,
-// right-aligned -- off the selector row (it must not read as a layer
-// button) and off the border (a tag there breaks the frame line) -- and
-// its hit hands the configurator URL to the opener seam. A nil opener
-// (every bare test model) must never panic.
+// The oryx button renders on the bar row capping the panel's TOP, flush
+// against the view's right edge opposite the layer tabs (the band runs to
+// the absolute edges) -- and its hit hands the configurator URL to the
+// opener seam. A nil opener (every bare test model) must never panic.
 func TestKBOryxInteriorLink(t *testing.T) {
 	m := kbModel(t, 196, 24)
 	var opened string
@@ -980,26 +1071,19 @@ func TestKBOryxInteriorLink(t *testing.T) {
 	bodyH := m.height - stripH
 	out := m.renderKeyboard(bodyH)
 	lines := strings.Split(out, "\n")
-	if strings.Contains(ansi.Strip(lines[1]), " oryx ") {
-		t.Fatal("oryx still renders on the selector row")
+	if strings.Contains(ansi.Strip(lines[len(lines)-1]), "oryx") {
+		t.Fatal("oryx on the panel's bottom row; the bar moved to the top")
 	}
-	for _, y := range []int{0, len(lines) - 1} {
-		if strings.Contains(ansi.Strip(lines[y]), "oryx") {
-			t.Fatalf("oryx on the border row %d; the frame line must stay unbroken", y)
-		}
-	}
-	last := ansi.Strip(lines[len(lines)-2]) // last interior row
-	bi := strings.Index(last, " oryx ")
+	bar := ansi.Strip(lines[0]) // the bar row caps the panel's top
+	bi := strings.Index(bar, " oryx ")
 	if bi < 0 {
-		t.Fatal("oryx link not on the last interior row")
+		t.Fatal("oryx link not on the bar row")
 	}
-	i := lipgloss.Width(last[:bi]) // cell column, not byte offset
-	// interior spans cols 1..w-2; the link sits kbOryxPad cells off its
-	// right edge
-	if got, want := i, 1+(m.width-2)-kbview.OryxPad-len(" oryx "); got != want {
-		t.Errorf("oryx link starts at col %d, want %d (right-aligned)", got, want)
+	i := lipgloss.Width(bar[:bi]) // cell column, not byte offset
+	if got, want := i, m.width-len(" oryx "); got != want {
+		t.Errorf("oryx link starts at col %d, want %d (flush right)", got, want)
 	}
-	if !m.resolveTap(i+1, bodyH-2) {
+	if !m.resolveTap(i+1, 0) {
 		t.Fatal("tap on the link not consumed")
 	}
 	if !strings.HasPrefix(opened, "https://configure.zsa.io/moonlander/layouts/") {

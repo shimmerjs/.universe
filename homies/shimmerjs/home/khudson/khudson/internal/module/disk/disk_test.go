@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -75,12 +76,45 @@ func TestPollRowShape(t *testing.T) {
 	if want := "3.0G/4.0G free 512M"; res.Value != want {
 		t.Errorf("res.Value = %q, want %q", res.Value, want)
 	}
-	if len(res.Series) != 0 {
-		t.Errorf("res.Series = %v, want none (disk history display dropped; the ring still records)", res.Series)
+	// the emitted series is the free-floor danger derived from the ring's
+	// used-fraction: 0.75 used of 4G -> 1G superuser-free, floor 40 ->
+	// 0.6 + 0.4*(1 - 1/40) = 0.99
+	if len(res.Series) != 1 || math.Abs(res.Series[0]-0.99) > 1e-9 {
+		t.Errorf("res.Series = %v, want [0.99] (free-floor danger history)", res.Series)
+	}
+	// raw pair: free space, and the WHOLE row (raw + pct) heats by absolute
+	// free space vs the 40G floor: avail 0.5G -> 0.6 + 0.4*(1 - 0.5/40)
+	if res.RawX != "512M" || res.RawY != " free" {
+		t.Errorf("raw pair = %q + %q, want 512M + \" free\"", res.RawX, res.RawY)
+	}
+	wantHeat := 0.6 + 0.4*(1-0.5/40)
+	if math.Abs(res.RawHeat-wantHeat) > 1e-9 || math.Abs(res.PctHeat-wantHeat) > 1e-9 {
+		t.Errorf("RawHeat/PctHeat = %v/%v, want %v", res.RawHeat, res.PctHeat, wantHeat)
 	}
 	snap := m.HistSnapshot()
 	if hs, ok := snap["disk//"]; !ok || len(hs.Samples) != 1 || hs.Samples[0] != 0.75 {
-		t.Errorf("HistSnapshot = %+v, want the ring holding [0.75]", snap)
+		t.Errorf("HistSnapshot = %+v, want the ring holding [0.75] (the ring keeps used-fraction)", snap)
+	}
+}
+
+// The floor is the hot boundary, exclusive: AT the floor the row is still
+// neutral (heatBucket 0), strictly under it warms, empty is loud, plenty
+// of headroom decays quiet, and floor<=0 disables the ramp.
+func TestFreeFloorDangerBoundaries(t *testing.T) {
+	if d := freeFloorDanger(40, 40); d >= 0.6 {
+		t.Errorf("at the floor: danger %v, want neutral (<0.6)", d)
+	}
+	if d := freeFloorDanger(39.9, 40); d < 0.6 || d >= 0.85 {
+		t.Errorf("just under the floor: danger %v, want warn band", d)
+	}
+	if d := freeFloorDanger(0, 40); d != 1 {
+		t.Errorf("empty: danger %v, want 1", d)
+	}
+	if d := freeFloorDanger(400, 40); d >= 0.1 {
+		t.Errorf("10x headroom: danger %v, want near-quiet", d)
+	}
+	if d := freeFloorDanger(5, 0); d != 0 {
+		t.Errorf("disabled floor: danger %v, want 0", d)
 	}
 }
 

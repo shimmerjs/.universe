@@ -1,20 +1,28 @@
 package keyboard
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 
-	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keymappdb"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keydict"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/oryx"
 )
 
-const fixtureDB = "keymappdb/testdata/fixture.sqlite3"
-
-// needSqlite3 skips when the exec'd keymappdb reader's sqlite3 CLI is
-// missing (skip-on-missing: the nix checkPhase has no host binaries).
-func needSqlite3(t *testing.T) {
+// fixtureLayout loads testdata/layout.json: the aw4 layout payload in the
+// flattened oryx.Layout shape (extracted from the old keymappdb fixture, so
+// the assertions carry over).
+func fixtureLayout(t *testing.T) *oryx.Layout {
 	t.Helper()
-	if _, err := keymappdb.Sqlite3Bin(); err != nil {
-		t.Skipf("sqlite3: %v", err)
+	raw, err := os.ReadFile("testdata/layout.json")
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
 	}
+	var l oryx.Layout
+	if err := json.Unmarshal(raw, &l); err != nil {
+		t.Fatalf("fixture decode: %v", err)
+	}
+	return &l
 }
 
 // The geometry template covers all 72 slots: 36 per half, 32 main + 4 thumb
@@ -59,20 +67,19 @@ func TestMoonlanderSlotsShape(t *testing.T) {
 	}
 }
 
-// FromRevision parses the fixture into a board: 4 layers named home/syms/
-// osm-nav/sys, each with 72 placed keys, and known keys resolve to legends.
-func TestFromRevisionFixture(t *testing.T) {
-	needSqlite3(t)
-	rev, err := keymappdb.Active(fixtureDB)
-	if err != nil {
-		t.Fatalf("Active: %v", err)
-	}
-	b := FromRevision(rev)
+// FromLayout parses the fixture into a board: 4 layers named home/syms/
+// osm-nav/sys, each with 72 placed keys, and known keys resolve to legends
+// through the embedded dictionary.
+func TestFromLayoutFixture(t *testing.T) {
+	b := FromLayout(fixtureLayout(t), keydict.Embedded())
 	if b.Title != "aw4" {
 		t.Errorf("title = %q, want aw4", b.Title)
 	}
 	if b.LayoutID != "0Nw4x" {
 		t.Errorf("layout id = %q, want 0Nw4x", b.LayoutID)
+	}
+	if b.RevisionID != "EeaQeZ" {
+		t.Errorf("revision id = %q, want EeaQeZ", b.RevisionID)
 	}
 	if b.Geometry != "moonlander" {
 		t.Errorf("geometry = %q, want moonlander", b.Geometry)
@@ -89,7 +96,8 @@ func TestFromRevisionFixture(t *testing.T) {
 		}
 	}
 
-	// slot 0 is the top-left key (KC_GRAVE -> "`"); slot 8 is Q on layer 0
+	// slot 0 is the top-left key (KC_GRAVE -> "`"); placement pins the zip
+	// against the geometry's slot order
 	home := b.Layers[0]
 	if home.Keys[0].Slot.Half != Left || home.Keys[0].Slot.Row != 0 || home.Keys[0].Slot.Col != 0 {
 		t.Errorf("slot 0 placement = %+v, want Left row0 col0", home.Keys[0].Slot)
@@ -113,12 +121,7 @@ func TestFromRevisionFixture(t *testing.T) {
 
 // A customLabel wins over the dictionary legend (the user's own key text).
 func TestPlaceKeyCustomLabel(t *testing.T) {
-	needSqlite3(t)
-	rev, err := keymappdb.Active(fixtureDB)
-	if err != nil {
-		t.Fatalf("Active: %v", err)
-	}
-	b := FromRevision(rev)
+	b := FromLayout(fixtureLayout(t), keydict.Embedded())
 	found := ""
 	oslLayer := -2
 	for _, l := range b.Layers {
@@ -141,5 +144,14 @@ func TestPlaceKeyCustomLabel(t *testing.T) {
 	}
 	if oslLayer != 2 {
 		t.Errorf("custom-labeled OSL key TapLayer = %d, want 2", oslLayer)
+	}
+}
+
+// A nil layout builds an empty board, not a panic (the loader hands
+// FromLayout whatever the store produced).
+func TestFromLayoutNil(t *testing.T) {
+	b := FromLayout(nil, nil)
+	if b == nil || len(b.Layers) != 0 {
+		t.Fatalf("nil layout board = %+v", b)
 	}
 }

@@ -100,6 +100,25 @@ func regLive(t *testing.T, sessionsDir, id string) {
 	touch(t, filepath.Join(sessionsDir, id+".json"), regStatusRecord(id, "idle", "", 0), time.Now())
 }
 
+// The dialog state column: a user-opened dialog ("waiting" + waitingFor
+// "dialog open") is not needs-user and wears the dim comment glyph, never
+// the warn bell/triangle pair; any other waiting reason keeps needs-user.
+func TestStateSpanDialogOpen(t *testing.T) {
+	now := time.Now()
+	s := session{regStatus: "waiting", regWaiting: "dialog open"}
+	if s.needsUser(now) {
+		t.Fatal("needsUser = true for a user-opened dialog")
+	}
+	sp := s.stateSpan(now)
+	if !strings.Contains(sp.Text, glyphDialog) || sp.Style != module.StyleDim {
+		t.Errorf("stateSpan = %+v, want dim %q", sp, glyphDialog)
+	}
+	other := session{regStatus: "waiting", regWaiting: "permission prompt"}
+	if !other.needsUser(now) {
+		t.Error("needsUser = false for a permission wait")
+	}
+}
+
 // tsEntry is one transcript head line carrying a start timestamp.
 func tsEntry(ts string) string {
 	return fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"content":"hi"}}`, ts)

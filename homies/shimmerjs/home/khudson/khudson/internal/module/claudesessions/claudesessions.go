@@ -71,6 +71,7 @@ const (
 	glyphAttention = "\uf0f3" // bell: notification awaiting the user
 	glyphDone      = "\uf00c" // check: turn complete, idle at prompt
 	glyphPerm      = "\uf071" // warning triangle: permission prompt (actionable)
+	glyphDialog    = "\uf075" // comment bubble: a user-opened dialog (/btw aside), not a prompt
 	glyphError     = "\uf00d" // cross: turn ended in an API error (StopFailure)
 	glyphFoldOpen  = "\uf078" // chevron-down: fleet tree expanded
 	glyphFoldShut  = "\uf054" // chevron-right: fleet tree folded to its root
@@ -1185,22 +1186,33 @@ func (s session) regKnown() bool {
 	return s.regStatus == "waiting" || s.regStatus == "busy" || s.regStatus == "idle"
 }
 
+// dialogOpen reports a registry wait the USER raised (the /btw aside,
+// /config -- waitingFor reads "dialog open"): the session is technically
+// waiting, but on a dialog the user opened themselves, so it must not
+// read as the session prompting for input. Prefix match: the registry
+// vocabulary is prose and may grow qualifiers.
+func (s session) dialogOpen() bool {
+	return s.regStatus == "waiting" && strings.HasPrefix(s.regWaiting, "dialog")
+}
+
 // needsUser reports the session blocked on the user RIGHT NOW. The
 // registry status is ground truth when it speaks our vocabulary: Claude
 // Code itself flips "waiting" (permission gate, plan approval, question),
 // "busy" (turn running), and "idle" (at the prompt, nothing pending)
 // live, so a granted gate un-washes on the next poll with none of the
 // transcript-activity heuristics attentionLive needs (glass-reported:
-// the wash tracked activity, not need). idle is hard-false: gates only
-// fire mid-turn, and an unanswered idle_prompt bell over a finished
-// session is exactly the resting state the wash must not mark. Two
-// escapes to the spool heuristic: an unknown/absent status, and a
-// notification STRICTLY newer than the busy flip -- a gate the registry
-// has not caught up to must not be silenced by the stale busy.
+// the wash tracked activity, not need). A "waiting" whose waitingFor is a
+// user-opened dialog is carved out: the user raised it, nothing is asking
+// for them (stateSpan still marks it with the dim dialog glyph). idle is
+// hard-false: gates only fire mid-turn, and an unanswered idle_prompt
+// bell over a finished session is exactly the resting state the wash must
+// not mark. Two escapes to the spool heuristic: an unknown/absent status,
+// and a notification STRICTLY newer than the busy flip -- a gate the
+// registry has not caught up to must not be silenced by the stale busy.
 func (s session) needsUser(now time.Time) bool {
 	switch s.regStatus {
 	case "waiting":
-		return true
+		return !s.dialogOpen()
 	case "idle":
 		return false
 	case "busy":
@@ -1261,6 +1273,10 @@ func (s session) stateSpan(now time.Time) module.Span {
 	if s.needsUser(now) {
 		g, st := s.attentionGlyph()
 		return module.Span{Text: " " + g, Style: st}
+	}
+	if s.dialogOpen() {
+		// visible but quiet: the user opened this dialog themselves
+		return module.Span{Text: " " + glyphDialog, Style: module.StyleDim}
 	}
 	if !s.regKnown() && s.attention {
 		return module.Span{Text: " " + glyphAttention, Style: module.StyleDim}

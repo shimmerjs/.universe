@@ -1,9 +1,11 @@
 package dock
 
 import (
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
@@ -41,6 +43,46 @@ func TestThemeBroadcastStoresPalette(t *testing.T) {
 	}
 	if !maps.Equal(m.palette, palette(pal)) {
 		t.Fatalf("palette-less broadcast cleared the stored palette: %v", m.palette)
+	}
+}
+
+// TestRailPressFillsWholeTile: with a palette, a pressed rail tile is one
+// lit chip -- the pressFillAlpha accent blend backs the whole cell (label
+// band and frame ring alike) and the border lifts to full accent, brighter
+// than but hue-matched to the fill. Expiry restores the dim frame.
+func TestRailPressFillsWholeTile(t *testing.T) {
+	m := newHomeModel(320, 18)
+	m.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
+	m.widgetData["dock-rail"] = railData()
+	m.View()
+	if !m.resolveTap(2, 2) {
+		t.Fatal("tap on the Safari tile not consumed")
+	}
+	border, label, ok := m.pressStyles()
+	if !ok {
+		t.Fatal("pressStyles unavailable under a full palette")
+	}
+	fr, fg, fb, _ := label.GetBackground().RGBA()
+	fill := fmt.Sprintf("48;2;%d;%d;%d", fr>>8, fg>>8, fb>>8)
+	br, bg, bb, _ := border.GetForeground().RGBA()
+	accent := fmt.Sprintf("38;2;%d;%d;%d", br>>8, bg>>8, bb>>8)
+
+	m.now = time.Now()
+	v := m.View()
+	if !strings.Contains(v.Content, label.Render("safari")) {
+		t.Error("pressed label not rendered on the fill")
+	}
+	if !strings.Contains(v.Content, fill) {
+		t.Error("press fill missing from the tile cell")
+	}
+	if !strings.Contains(v.Content, accent) {
+		t.Error("pressed border not lifted to the accent")
+	}
+
+	m.now = time.Now().Add(tapFlashFor + time.Second)
+	v = m.View()
+	if strings.Contains(v.Content, fill) || strings.Contains(v.Content, accent) {
+		t.Error("press treatment survived flash expiry")
 	}
 }
 

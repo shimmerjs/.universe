@@ -56,8 +56,8 @@ func wantNoBusMsg(t *testing.T, msgs <-chan proto.Msg) {
 // railMenu is a quit/force-quit pair like dockmirror publishes.
 func railMenu(id string) []module.Act {
 	return []module.Act{
-		{Label: "Quit", Argv: []string{"/inst/khudson", "ax", "quit", "--bundle", id}},
-		{Label: "Force Quit", Argv: []string{"/inst/khudson", "ax", "force-quit", "--bundle", id}, Destructive: true},
+		{Label: "quit", Argv: []string{"/inst/khudson", "ax", "quit", "--bundle", id}},
+		{Label: "force quit", Argv: []string{"/inst/khudson", "ax", "force-quit", "--bundle", id}, Destructive: true},
 	}
 }
 
@@ -87,7 +87,11 @@ func TestOverlayModalTapGate(t *testing.T) {
 	m := overlayModel(t)
 	msgs := busSink(t, m)
 
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	// a sectioned act adds a dotted-rule row: an in-box non-item band
+	// alongside the frame rows
+	menu := append(railMenu("com.apple.Safari"),
+		module.Act{Label: "win", Argv: []string{"/inst/khudson", "ax", "unminimize", "win"}, Section: "minimized"})
+	m.openOverlay("dock-rail", menu, 40, 5)
 	o := m.overlay
 	if o == nil {
 		t.Fatal("openOverlay did not open")
@@ -96,8 +100,9 @@ func TestOverlayModalTapGate(t *testing.T) {
 	// asserts below must see only gate-caused arming
 	m.drainFlashArmed()
 
-	// (b) box border: consumed, stays open
-	if !m.resolveTap(o.anchor.x, o.anchor.y) {
+	// (b) the section rule row (under the roof row + two items): consumed,
+	// stays open
+	if !m.resolveTap(o.anchor.x, o.anchor.y+3) {
 		t.Fatal("in-box tap not consumed")
 	}
 	if m.overlay == nil {
@@ -127,9 +132,9 @@ func TestOverlayModalTapGate(t *testing.T) {
 	}
 
 	// (a) item tap: the non-destructive Quit fires immediately and closes
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 40, 5)
 	it := m.overlay.items[0]
-	if !m.resolveTap(it.area.x+1, it.area.y+1) {
+	if !m.resolveTap(it.area.x+1, it.area.y) {
 		t.Fatal("item tap not consumed")
 	}
 	msg := wantBusMsg(t, msgs)
@@ -148,11 +153,11 @@ func TestOverlayModalTapGate(t *testing.T) {
 func TestOverlayConfirmTwoTap(t *testing.T) {
 	m := overlayModel(t)
 	msgs := busSink(t, m)
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 40, 5)
 	fq := m.overlay.items[1]
 
 	// first tap arms, nothing execs
-	if !m.resolveTap(fq.area.x+1, fq.area.y+1) {
+	if !m.resolveTap(fq.area.x+1, fq.area.y) {
 		t.Fatal("force-quit tap not consumed")
 	}
 	if m.overlay == nil {
@@ -161,13 +166,13 @@ func TestOverlayConfirmTwoTap(t *testing.T) {
 	if c := m.overlay.confirm; c == nil || c.item != 1 {
 		t.Fatalf("confirm = %+v, want the force-quit item armed", m.overlay.confirm)
 	}
-	if !strings.Contains(m.overlay.box, confirmPrefix+"Force Quit") {
+	if !strings.Contains(m.overlay.box, confirmPrefix+"force quit") {
 		t.Fatal("armed box does not show the confirm target")
 	}
 	wantNoBusMsg(t, msgs)
 
 	// a bounce tap inside the arm cooldown is consumed without firing
-	if !m.resolveTap(fq.area.x+1, fq.area.y+1) {
+	if !m.resolveTap(fq.area.x+1, fq.area.y) {
 		t.Fatal("bounce tap not consumed")
 	}
 	if m.overlay == nil || m.overlay.confirm == nil {
@@ -178,7 +183,7 @@ func TestOverlayConfirmTwoTap(t *testing.T) {
 	// past the cooldown, an explicit tap on the Confirm rect execs and
 	// dismisses
 	m.overlay.confirm.armedAt = m.overlay.confirm.armedAt.Add(-confirmArmDelay)
-	if !m.resolveTap(fq.area.x+1, fq.area.y+1) {
+	if !m.resolveTap(fq.area.x+1, fq.area.y) {
 		t.Fatal("confirm tap not consumed")
 	}
 	msg := wantBusMsg(t, msgs)
@@ -190,11 +195,11 @@ func TestOverlayConfirmTwoTap(t *testing.T) {
 	}
 
 	// quit stays single-tap even with a stale arm on the other item
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 40, 5)
 	fq = m.overlay.items[1]
-	m.resolveTap(fq.area.x+1, fq.area.y+1) // arm force-quit
+	m.resolveTap(fq.area.x+1, fq.area.y) // arm force-quit
 	q := m.overlay.items[0]
-	if !m.resolveTap(q.area.x+1, q.area.y+1) {
+	if !m.resolveTap(q.area.x+1, q.area.y) {
 		t.Fatal("quit tap not consumed")
 	}
 	if msg := wantBusMsg(t, msgs); !slices.Equal(msg.Argv, []string{"/inst/khudson", "ax", "quit", "--bundle", "com.apple.Safari"}) {
@@ -205,10 +210,11 @@ func TestOverlayConfirmTwoTap(t *testing.T) {
 	}
 }
 
-// The long-press bridge: a rail-tile press opens that tile's menu anchored
-// at the press; a second long-press while open closes and reopens at the
-// new press, dropping any pending confirm; a press on a menu-less region
-// only closes.
+// The long-press bridge: a rail-tile press opens that tile's menu WELDED to
+// the tile's right border, top-aligned (the box border column replaces the
+// tile's, so the menu extends the button); a second long-press while open
+// closes and reopens welded to the new tile, dropping any pending confirm;
+// a press on a menu-less region only closes.
 func TestLongPressOpensMenuAndReanchors(t *testing.T) {
 	m := overlayModel(t)
 	press := func(x, y int) {
@@ -216,12 +222,15 @@ func TestLongPressOpensMenuAndReanchors(t *testing.T) {
 			Gesture: &proto.Gesture{Kind: proto.GestureLongPress, Col: x, Row: y}})
 	}
 
-	press(4, 1) // Safari tile {0,0,9,3}
+	press(4, 1) // Safari tile {0,0,10,3}: box on its right border column
 	if m.overlay == nil {
 		t.Fatal("rail long-press did not open the menu")
 	}
-	if m.overlay.anchor.x != 4 || m.overlay.anchor.y != 1 {
-		t.Fatalf("anchor = %+v, want the press cell", m.overlay.anchor)
+	if m.overlay.anchor.x != 9 || m.overlay.anchor.y != 0 {
+		t.Fatalf("anchor = %+v, want welded to the tile's right border (x 9, y 0)", m.overlay.anchor)
+	}
+	if m.overlay.weld != weldRight {
+		t.Fatalf("weld = %d, want weldRight", m.overlay.weld)
 	}
 	if !slices.Equal(m.overlay.items[0].argv, []string{"/inst/khudson", "ax", "quit", "--bundle", "com.apple.Safari"}) {
 		t.Fatalf("menu argv = %v, want Safari's", m.overlay.items[0].argv)
@@ -230,16 +239,16 @@ func TestLongPressOpensMenuAndReanchors(t *testing.T) {
 	// arm the confirm, then re-press on the Mail tile: fresh menu, fresh
 	// anchor, no pending confirm
 	fq := m.overlay.items[1]
-	m.resolveTap(fq.area.x+1, fq.area.y+1)
+	m.resolveTap(fq.area.x+1, fq.area.y)
 	if m.overlay.confirm == nil {
 		t.Fatal("confirm did not arm")
 	}
-	press(14, 1) // Mail tile {10,0,9,3}
+	press(14, 1) // Mail tile {10,0,10,3}: box welds to ITS right border
 	if m.overlay == nil {
 		t.Fatal("second long-press did not reopen")
 	}
-	if m.overlay.anchor.x != 14 {
-		t.Fatalf("anchor.x = %d, want the new press column", m.overlay.anchor.x)
+	if m.overlay.anchor.x != 19 {
+		t.Fatalf("anchor.x = %d, want the new tile's border column (19)", m.overlay.anchor.x)
 	}
 	if m.overlay.confirm != nil {
 		t.Fatal("re-anchor kept the pending confirm")
@@ -303,7 +312,7 @@ func TestPressLightsElement(t *testing.T) {
 // tick once the bloom window closes.
 func TestOverlayBloomSettles(t *testing.T) {
 	m := overlayModel(t)
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 40, 5)
 	fresh := m.overlay.box
 	if !strings.Contains(fresh, "\x1b[35m") {
 		t.Fatalf("fresh box has no accent frame: %q", fresh[:60])
@@ -329,7 +338,7 @@ func TestOverlayFiredFlashesOrigin(t *testing.T) {
 		t.Fatalf("overlay origin = %+v, want rail:0", m.overlay)
 	}
 	it := m.overlay.items[0]
-	if !m.resolveTap(it.area.x+1, it.area.y+1) {
+	if !m.resolveTap(it.area.x+1, it.area.y) {
 		t.Fatal("item tap not consumed")
 	}
 	if m.overlay != nil {
@@ -353,8 +362,8 @@ func TestRightClickOpensMenu(t *testing.T) {
 	if m.overlay == nil {
 		t.Fatal("right click did not open the menu")
 	}
-	if m.overlay.anchor.x != 4 || m.overlay.anchor.y != 1 {
-		t.Fatalf("anchor = %+v, want the click cell", m.overlay.anchor)
+	if m.overlay.anchor.x != 9 || m.overlay.anchor.y != 0 {
+		t.Fatalf("anchor = %+v, want welded to the tile's right border (x 9, y 0)", m.overlay.anchor)
 	}
 	if !slices.Equal(m.overlay.items[0].argv, []string{"/inst/khudson", "ax", "quit", "--bundle", "com.apple.Safari"}) {
 		t.Fatalf("menu argv = %v, want Safari's", m.overlay.items[0].argv)
@@ -405,7 +414,7 @@ func TestRowMenuLongPressInWidgetBox(t *testing.T) {
 // An anchor near the frame edge clamps the box fully on glass.
 func TestOverlayClampsIntoFrame(t *testing.T) {
 	m := overlayModel(t)
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 195, 23)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 195, 23)
 	o := m.overlay
 	if o == nil {
 		t.Fatal("openOverlay did not open")
@@ -464,9 +473,9 @@ func TestOverlayOpenGolden(t *testing.T) {
 // layout or geometry it was not anchored in.
 func TestOverlayClearedOnLayoutAndResize(t *testing.T) {
 	m := overlayModel(t)
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 40, 5)
 	fq := m.overlay.items[1]
-	m.resolveTap(fq.area.x+1, fq.area.y+1) // arm the destructive confirm
+	m.resolveTap(fq.area.x+1, fq.area.y) // arm the destructive confirm
 	if m.overlay == nil || m.overlay.confirm == nil {
 		t.Fatal("confirm did not arm")
 	}
@@ -475,7 +484,7 @@ func TestOverlayClearedOnLayoutAndResize(t *testing.T) {
 		t.Fatal("resetLayout kept the armed overlay")
 	}
 
-	m.openOverlay("dock-rail", "safari", railMenu("com.apple.Safari"), 40, 5)
+	m.openOverlay("dock-rail", railMenu("com.apple.Safari"), 40, 5)
 	if m.overlay == nil {
 		t.Fatal("reopen failed")
 	}

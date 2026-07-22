@@ -15,7 +15,7 @@ widgets: {
 			module: "dock-mirror"
 			poll:   "5s"
 			params: {
-				nicknames: {"Google Chrome": "chrome", "Telegram": "tg", "QuickTime Player": "qt"}
+				nicknames: {"Google Chrome": "chrome", "Telegram": "tg", "QuickTime Player": "qt", "Calendar": "cal"}
 			}
 		}
 	}
@@ -39,12 +39,13 @@ widgets: {
 			}
 		}
 	}
-	// live keyboard region: the fullscreen keyboard view's selector strip +
+	// live keyboard region: the fullscreen keyboard view's layer tab bar +
 	// active layer grid as a home-region widget, TypeKey highlights included.
-	// Chrome (no bus module, no poll): the dock renders it from the Keymapp
-	// store and the push-based key broadcasts. Hiding/restoring this column
-	// is the strip's flip chevron (strip.flip below), not a widget
-	// affordance -- the widget renders wherever a layout places it.
+	// Chrome (no bus module, no poll): the dock resolves the board off the
+	// USB serial (oryx cache / generations store behind it) and the
+	// push-based key broadcasts. Hiding/restoring this column is the
+	// strip's flip chevron (strip.flip below), not a widget affordance --
+	// the widget renders wherever a layout places it.
 	"kb-live": {
 		title:  "keyboard"
 		glyph:  ""
@@ -69,7 +70,14 @@ widgets: {
 			params: {
 				volumes: ["/"]
 				window:  "6h"
-				top:     10
+				// the card shows no processes; five feed the tap bloom
+				top: 5
+				// disk reads neutral until free space drops toward this
+				// floor (GiB); the whole disk row heats by free space,
+				// never by used-fraction. 80 is a taste-pass setting so
+				// the warm band is visible on this host (~54G free);
+				// dial back to 40 once seen
+				"free-floor": 80
 			}
 		}
 	}
@@ -179,9 +187,10 @@ theme: {
 caffeinate: on: true
 
 // strip-hosted nav: tabs between the chrome-owned home icon and the
-// caffeinate cup on the 2-row status strip. The home icon is chrome (homeTap
-// resolves by layout KIND), never an entry. "sys" names no layout ON
-// PURPOSE -- the "soon" flash IS the stub. Cup glyphs: filled (nf-md-coffee)
+// caffeinate cup on the one-row strip band. The home icon is chrome (homeTap
+// resolves by layout KIND), never an entry. "sys" lands the monitor layout
+// (fullscreen btop) -- the same destination the resources bloom's
+// double-tap converts to. Cup glyphs: filled (nf-md-coffee)
 // while the bus holds the assertion, outline (nf-md-coffee_outline) when
 // off; tap toggles. flip is the collapse/expand chevron beside the tabs:
 // it hides/restores the kb column by flipping between the named layouts.
@@ -189,7 +198,7 @@ strip: {
 	entries: [
 		{label: "kb", target: "keyboard"},
 		{label: "clod", target: "claude"},
-		{label: "sys", target: "sys"},
+		{label: "sys", target: "monitor"},
 	]
 	toggles: [
 		{kind: "caffeinate", on: "\U000F0176", off: "\U000F06CA"},
@@ -203,11 +212,16 @@ strip: {
 layouts: {
 	home: {
 		kind: "home"
-		// peel order, load-bearing: kb-live right (75 cols: 73-col interior
-		// is the exact uncropped floor -- kbKeyW(73)=4 at MainCols=7), then
-		// claude panel right (73), then the left column stacks rail /
-		// resources (196x24 glass -> 194x20 interior, stripH=2; left column
-		// 194-75-73 = 46 cols: rail 46x8, resources 46x12).
+		// peel order, load-bearing: kb-live right (75 cols: >=73 interior
+		// cols keep the grid uncropped -- kbKeyW(73)=4 at MainCols=7; the
+		// side panel spends 1 on the hairline), then claude panel right
+		// (73), then the left column stacks rail / resources (196x24 glass
+		// -> 196x23 body, stripH=1, no outer frame; left column 196-75-73 =
+		// 48 cols: resources bottom 48x6 -- the vitals card, content ~32
+		// cols left-anchored; rail left 33x17 = 5 tile rows x 3 flush
+		// max-width tiles, pinned to the card's read so the column shares
+		// one width. The 15x17 remainder right of the rail stays blank:
+		// clawed-back space reserved for coming layout changes.
 		// SYNC with home-no-kb below: the two home-kind layouts share
 		// claude-panel / dock-rail / resources; widget changes must land
 		// in both region lists. kb-live is home-only -- the strip flip
@@ -215,8 +229,8 @@ layouts: {
 		regions: [
 			{widget: "kb-live", edge: "right", size: 75},
 			{widget: "claude-panel", edge: "right", size: 73},
-			{widget: "dock-rail", edge: "top", size: 8},
-			{widget: "resources", edge: "fill"},
+			{widget: "resources", edge: "bottom", size: 6},
+			{widget: "dock-rail", edge: "left", size: 33},
 		]
 	}
 	// collapsed home variant behind the strip's flip chevron: NO keyboard,
@@ -229,8 +243,8 @@ layouts: {
 		kind: "home"
 		regions: [
 			{widget: "claude-panel", edge: "right", size: 148},
-			{widget: "dock-rail", edge: "top", size: 8},
-			{widget: "resources", edge: "fill"},
+			{widget: "resources", edge: "bottom", size: 6},
+			{widget: "dock-rail", edge: "left", size: 33},
 		]
 	}
 	// static all-layers Moonlander view; the strip's "kb" tab targets
@@ -245,6 +259,13 @@ layouts: {
 		regions: [
 			{widget: "claude-panel", edge: "fill"},
 		]
+	}
+	// fullscreen system monitor (the scraped btop, full-panel live):
+	// behind the strip's "sys" tab AND the resources bloom's double-tap;
+	// the strip leads back.
+	monitor: {
+		kind:  "full-panel"
+		panel: "btop"
 	}
 }
 

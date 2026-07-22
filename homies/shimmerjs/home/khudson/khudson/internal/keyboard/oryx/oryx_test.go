@@ -110,7 +110,7 @@ func TestFetchLayout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	l, err := fetchLayout(t.Context(), srv.Client(), srv.URL, "TESTr")
+	l, err := fetchLayout(t.Context(), srv.Client(), srv.URL, "TESTr", RevisionLatest)
 	if err != nil {
 		t.Fatal(err)
 	}

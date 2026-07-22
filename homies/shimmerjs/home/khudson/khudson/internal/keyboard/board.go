@@ -1,21 +1,22 @@
 // Board is the static, offline layout model the keyboard view renders: the
-// active revision's layers, each key placed on the Moonlander geometry with
-// its resolved tap/hold legends. The build itself is static -- once from
-// the Keymapp DB (or the Oryx fallback), working unplugged; Held is the one
-// live join point, the overlay a renderer draws on top (design doctrine:
-// static view = static only, live view = static + HID overlay).
+// deployed revision's layers, each key placed on the Moonlander geometry
+// with its resolved tap/hold legends. The build itself is static -- once
+// from an Oryx layout payload (Loader resolves it from the local caches or
+// the network), working unplugged; Held is the one live join point, the
+// overlay a renderer draws on top (design doctrine: static view = static
+// only, live view = static + HID overlay).
 package keyboard
 
 import (
 	"strconv"
 
-	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keymappdb"
+	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keydict"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/oryx"
 )
 
 // Board is a parsed layout: a title, its revision id, and the layers.
 // Held is the live-highlight overlay -- slot index -> currently pressed --
-// fed by the bus TypeKey stream; FromRevision leaves it nil (allocated
+// fed by the bus TypeKey stream; FromLayout leaves it nil (allocated
 // lazily by the writer) and the static render ignores a nil map.
 // LayoutID and Geometry are the layout's Oryx slug and board geometry --
 // together with RevisionID they address the layout in the configure.zsa.io
@@ -47,24 +48,25 @@ type PlacedKey struct {
 	HoldLayer int
 }
 
-// FromRevision builds a Board from a Keymapp DB revision, resolving every
-// key's legends through the revision's code dictionary. Layers with an empty
-// title get a positional fallback name.
-func FromRevision(r *keymappdb.Revision) *Board {
-	b := &Board{RevisionID: r.ID}
-	if r.Layout != nil {
-		b.Title = r.Layout.Title
-		b.LayoutID = r.Layout.HashID
-		b.Geometry = r.Layout.Geometry
+// FromLayout builds a Board from an Oryx layout payload, resolving every
+// key's legends through dict. Layers with an empty title get a positional
+// fallback name.
+func FromLayout(l *oryx.Layout, dict keydict.Dict) *Board {
+	b := &Board{}
+	if l != nil {
+		b.Title = l.Title
+		b.RevisionID = l.RevisionID
+		b.LayoutID = l.HashID
+		b.Geometry = l.Geometry
 	}
 	slots := MoonlanderSlots()
-	for i, l := range layersOf(r.Layout) {
-		layer := Layer{Title: layerTitle(l.Title, i)}
-		for pos, key := range l.Keys {
+	for i, ly := range layersOf(l) {
+		layer := Layer{Title: layerTitle(ly.Title, i)}
+		for pos, key := range ly.Keys {
 			if pos >= len(slots) {
 				break
 			}
-			layer.Keys = append(layer.Keys, placeKey(slots[pos], key, r.Dict))
+			layer.Keys = append(layer.Keys, placeKey(slots[pos], key, dict))
 		}
 		b.Layers = append(b.Layers, layer)
 	}
@@ -86,7 +88,7 @@ func layerTitle(t string, i int) string {
 }
 
 // placeKey resolves one Oryx key's tap/hold slots into display legends.
-func placeKey(slot Slot, k oryx.Key, dict keymappdb.Dict) PlacedKey {
+func placeKey(slot Slot, k oryx.Key, dict keydict.Dict) PlacedKey {
 	pk := PlacedKey{Slot: slot, TapLayer: -1, HoldLayer: -1}
 	// a customLabel overrides the tap legend entirely (the user's own text)
 	switch {

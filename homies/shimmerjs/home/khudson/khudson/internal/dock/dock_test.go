@@ -66,7 +66,7 @@ func TestReloadRerendersNewConfig(t *testing.T) {
 	m.taps = 7
 	m.palette = palette{"background": "#232a2e"}
 	m.kbBoard = &keyboard.Board{Title: "ml", Layers: []keyboard.Layer{{Title: "base"}}}
-	m.kbLoaded = true
+	m.kbLoader = kbInertLoader(t)
 	board := m.kbBoard
 
 	// nil-guarded: a config-less reload changes nothing
@@ -159,9 +159,9 @@ func TestNonHomeLayoutFullWidth(t *testing.T) {
 	// full hit-table lock: only the status strip's chrome (home icon, the
 	// always-present battery readout, whole-strip consume; no strip config here)
 	want := []rect{
-		{0, 18, 3, 2},   // strip: home icon glyph
-		{3, 18, 10, 2},  // strip: battery readout (always-present chrome)
-		{0, 18, 120, 2}, // strip: whole-strip consume rect
+		{0, 19, 3, 1},   // strip: home icon glyph
+		{3, 19, 10, 1},  // strip: battery readout (always-present chrome)
+		{0, 19, 120, 1}, // strip: whole-strip consume rect
 	}
 	if len(m.hits) != len(want) {
 		t.Fatalf("hits = %d, want %d", len(m.hits), len(want))
@@ -191,18 +191,19 @@ func TestKeyboardViewFullWidth(t *testing.T) {
 	if len(lines) != 24 {
 		t.Fatalf("view lines = %d, want 24", len(lines))
 	}
-	for i, l := range lines[:22] {
+	body := 24 - stripH
+	for i, l := range lines[:body] {
 		if w := lipgloss.Width(l); w != 196 {
 			t.Errorf("line %d width = %d, want 196 (full width)", i, w)
 		}
 	}
-	for i, l := range lines[22:] {
+	for i, l := range lines[body:] {
 		if c := stripCells(l); c != 196 {
 			t.Errorf("strip row %d = %d cells, want 196", i, c)
 		}
 	}
 	for _, h := range m.hits {
-		if h.area.y < 22 && h.area.x+h.area.w > 193 && h.area.w == 3 {
+		if h.area.y < body && h.area.x+h.area.w > 193 && h.area.w == 3 {
 			t.Fatalf("keyboard view still carries an affordance column at %+v", h.area)
 		}
 	}

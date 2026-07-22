@@ -23,6 +23,13 @@ type palette map[string]string
 // indexed-ANSI until the bus TypeTheme lands.
 var day palette
 
+// isNoColor reports an unset lipgloss color: getters yield NoColor, never
+// nil, so a bare nil check on GetBackground is always false.
+func isNoColor(c color.Color) bool {
+	_, unset := c.(lipgloss.NoColor)
+	return unset
+}
+
 // color returns the named palette entry when present and parseable.
 func (p palette) color(name string) (color.Color, bool) {
 	v := p[name]
@@ -93,6 +100,29 @@ func (m *model) attentionRamp() []color.Color {
 	}
 	// Blend1D includes the warn endpoint; drop it or the plateau gains a cell
 	return append(ramp, lipgloss.Blend1D(attentionRampLen-attentionPlateau+1, warn, dim)[1:]...)
+}
+
+// Pressed-cell fill: the tap/long-press chip covers the WHOLE tile, not
+// just the label band -- accent at pressFillAlpha over the theme
+// background (the semi-transparent read) behind every interior cell, the
+// frame lifted to full accent so the border visibly matches the fill's
+// hue instead of staying dim chrome.
+const pressFillAlpha = 0.7
+
+// pressStyles derives the pressed-tile vocabulary: border (full accent
+// carrying the fill as background -- borderedTile reads the cell fill off
+// it) and label (background-toned text on the fill). ok=false without the
+// palette tones; callers keep the indexed tapStyle fallback on the label.
+func (m *model) pressStyles() (border, label lipgloss.Style, ok bool) {
+	ac, okA := m.palette.color("color5")
+	bg, okB := m.palette.color("background")
+	if !okA || !okB {
+		return border, label, false
+	}
+	fill := blendToward(ac, bg, 1-pressFillAlpha)
+	border = lipgloss.NewStyle().Foreground(ac).Background(fill)
+	label = lipgloss.NewStyle().Foreground(bg).Background(fill).Bold(true)
+	return border, label, true
 }
 
 // Attention row wash: an input-requested row renders over a steady

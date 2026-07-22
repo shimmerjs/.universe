@@ -91,7 +91,10 @@ type sample struct {
 func (m *Mod) render(s sample, params map[string]any) module.Data {
 	histCap, hint := module.HistWindow(params)
 	// measured utilization drives the cpu gauge, history, and Value; the
-	// loadavg fallback labels itself as load -- never a fake percent
+	// loadavg fallback labels itself as load -- never a fake percent. The
+	// raw pair is ALWAYS load-over-cores (scheduler pressure): it may
+	// legitimately disagree with a utilization percent, and that
+	// disagreement is diagnostic.
 	cpuFrac := 0.0
 	if s.ncpu > 0 {
 		cpuFrac = s.load1 / float64(s.ncpu)
@@ -117,12 +120,27 @@ func (m *Mod) render(s sample, params map[string]any) module.Data {
 	}
 	m.cadence = module.HistCadence(params)
 	m.last = now().Unix()
-	return module.Data{Title: "cpu / mem", Rows: []module.Row{
-		module.Resource("cpu "+hint, cpuFrac, module.BucketMax(m.cpu.Samples(), module.MaxSeries),
-			cpuVal),
-		module.Resource("mem "+hint, memFrac, module.BucketMax(m.mem.Samples(), module.MaxSeries),
-			fmt.Sprintf("%.1f/%.0f GiB", s.usedGiB, s.totalGiB)),
-	}}
+	cpu := module.Resource("cpu "+hint, cpuFrac, module.BucketMax(m.cpu.Samples(), module.MaxSeries),
+		cpuVal)
+	// the whole row tones by ONE signal -- whatever drives the gauge
+	// (measured utilization, or the loadavg fallback). The load pair stays
+	// displayed as data, but it carries no alarm of its own: macOS load
+	// EMAs run inflated (post-burst tails, QoS churn), and a red load
+	// beside a neutral percent read as a contradiction on glass.
+	cpu.RawX, cpu.RawY, cpu.RawHeat = fmt.Sprintf("%.1f", s.load1), fmt.Sprintf("/%d", s.ncpu), cpuFrac
+	mem := module.Resource("mem "+hint, memFrac, module.BucketMax(m.mem.Samples(), module.MaxSeries),
+		fmt.Sprintf("%.1f/%.0f GiB", s.usedGiB, s.totalGiB))
+	mem.RawX, mem.RawY, mem.RawHeat = gibCompact(s.usedGiB), "/"+gibCompact(s.totalGiB)+"G", memFrac
+	return module.Data{Title: "cpu / mem", Rows: []module.Row{cpu, mem}}
+}
+
+// gibCompact renders GiB for the tight raw column: one decimal under 10,
+// whole numbers above.
+func gibCompact(v float64) string {
+	if v < 10 {
+		return fmt.Sprintf("%.1f", v)
+	}
+	return fmt.Sprintf("%.0f", v)
 }
 
 // HistSnapshot implements module.Persistent: series "cpu" and "mem".

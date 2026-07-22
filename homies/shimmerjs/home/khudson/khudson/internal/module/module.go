@@ -80,6 +80,10 @@ type Act struct {
 	Label       string   `json:"label,omitempty"`
 	Argv        []string `json:"argv,omitempty"`
 	Destructive bool     `json:"destructive,omitempty"`
+	// Section groups menu items: the overlay draws a dotted separator where
+	// the section changes and textures the non-empty section's rows
+	// (dock-mirror's minimized-window tier).
+	Section string `json:"section,omitempty"`
 }
 
 // Row is one rendered line.
@@ -92,6 +96,19 @@ type Row struct {
 	Series []float64 `json:"series,omitempty"` // series samples 0..1, oldest first
 	Spans  []Span    `json:"spans,omitempty"`  // spans
 	Style  string    `json:"style,omitempty"`
+	// RawX/RawY are a resource row's raw reading pair beside its percent
+	// (load-over-cores, used/total, free space). RawX tone-ramps by
+	// RawHeat -- 0..1 toward the metric's danger bound, which is FULL for
+	// load/mem and EMPTY free space for disk -- while RawY (separator
+	// included: "/12", " free") renders neutral so the bound column scans
+	// flat. Modules pre-format both; the renderer only styles.
+	RawX    string  `json:"rawX,omitempty"`
+	RawY    string  `json:"rawY,omitempty"`
+	RawHeat float64 `json:"rawHeat,omitempty"`
+	// PctHeat, when set, replaces Frac as the percent's ramp fraction:
+	// disk displays used% but heats by absolute free space (a mostly-full
+	// big disk with plenty of headroom must not read hot).
+	PctHeat float64 `json:"pctHeat,omitempty"`
 	// MinHeight is the row's height in lines; 0 means 1. Chrome widgets
 	// declare taller rows with it.
 	MinHeight int `json:"minHeight,omitempty"`

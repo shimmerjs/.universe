@@ -1,0 +1,47 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 39>
+  +-o AppleT8132USBXHCI@00000000  <class AppleT8132USBXHCI, id 0x100000a11, registered, matched, active, busy 0 (12 ms), retain 58>
+  | {
+  |   "IOClass" = "AppleT8132USBXHCI"
+  |   "locationID" = 0
+  | }
+  |
+  +-o USB 2.0 Hub@02100000  <class IOUSBHostDevice, id 0x10006e7a0, registered, matched, active, busy 0 (31 ms), retain 30>
+  | | {
+  | |   "USB Product Name" = "USB 2.0 Hub"
+  | |   "idVendor" = 6720
+  | |   "idProduct" = 2049
+  | |   "locationID" = 34603008
+  | | }
+  | |
+  | +-o Moonlander Mark I@02110000  <class IOUSBHostDevice, id 0x10006e7d9, registered, matched, active, busy 0 (74 ms), retain 44>
+  | |   {
+  | |     "kUSBSerialNumberString" = "bqMJp/9DYwNW"
+  | |     "bDeviceClass" = 0
+  | |     "iSerialNumber" = 3
+  | |     "USB Serial Number" = "bqMJp/9DYwNW"
+  | |     "USB Vendor Name" = "ZSA Technology Labs"
+  | |     "kUSBProductString" = "Moonlander Mark I"
+  | |     "USB Product Name" = "Moonlander Mark I"
+  | |     "idVendor" = 12951
+  | |     "idProduct" = 6505
+  | |     "UsbDeviceSignature" = <97326919010062714d4a702f394459774e57000000030101030000>
+  | |     "sessionID" = 23749460730405
+  | |     "locationID" = 34672640
+  | |   }
+  | |
+  | +-o XENEON EDGE@02120000  <class IOUSBHostDevice, id 0x10006e801, registered, matched, active, busy 0 (52 ms), retain 36>
+  |     {
+  |       "USB Serial Number" = "003326155698"
+  |       "USB Product Name" = "XENEON EDGE"
+  |       "idVendor" = 6940
+  |       "idProduct" = 7437
+  |       "locationID" = 34738176
+  |     }
+  |
+  +-o USB4216 Smart Hub@01200000  <class IOUSBHostDevice, id 0x10006e6aa, registered, matched, active, busy 0 (44 ms), retain 33>
+      {
+        "USB Product Name" = "USB4216 Smart Hub"
+        "idVendor" = 1060
+        "idProduct" = 16918
+        "locationID" = 18874368
+      }

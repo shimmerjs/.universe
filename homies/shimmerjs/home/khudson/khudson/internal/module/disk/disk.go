@@ -100,25 +100,62 @@ func (m *Mod) Poll(ctx context.Context, params map[string]any) (module.Data, err
 		if st.Total > 0 {
 			frac = float64(used) / float64(st.Total)
 		}
-		// rings still hold the window (hist-snapshot persistence keeps
-		// working, and re-enabling display is a one-line revert), but no
-		// Series is EMITTED: a disk-usage history spark is not interesting
-		// on this glass -- the current gauge suffices, and the freed line
-		// helps the tight left-column resources box
 		m.mu.Lock()
 		r := module.ResizeRing(m.hist[vol], histCap)
 		m.hist[vol] = r
 		r.Push(frac)
+		// the ring keeps recording used-fraction (stable persisted unit);
+		// the EMITTED series is the free-floor danger derived from it, so
+		// the card's dot grid heats on the same rule as the row's numbers.
+		// The historical transform only knows superuser-free (avail is not
+		// in the ring); close enough for a trend line.
+		floor := float64(module.IntParam(params, "free-floor", defaultFreeFloorGiB))
+		totalGiB := float64(st.Total) / gibF
+		series := module.BucketMax(r.Samples(), module.MaxSeries)
+		for i, s := range series {
+			series[i] = freeFloorDanger((1-s)*totalGiB, floor)
+		}
 		now := time.Now
 		if m.now != nil {
 			now = m.now
 		}
 		m.last[vol] = now().Unix()
 		m.mu.Unlock()
-		rows = append(rows, module.Resource(vol+" "+hint, frac, nil,
-			fmt.Sprintf("%s/%s free %s", human(used), human(st.Total), human(st.Avail))))
+		row := module.Resource(vol+" "+hint, frac, series,
+			fmt.Sprintf("%s/%s free %s", human(used), human(st.Total), human(st.Avail)))
+		// the whole row heats by ABSOLUTE free space (user-available):
+		// neutral above the floor, warming below it, loud toward empty. A
+		// mostly-full big disk with real headroom stays quiet; the percent
+		// column still DISPLAYS used-fraction, it just ramps by PctHeat.
+		danger := freeFloorDanger(float64(st.Avail)/gibF, floor)
+		row.RawHeat, row.PctHeat = danger, danger
+		row.RawX, row.RawY = human(st.Avail), " free"
+		rows = append(rows, row)
 	}
 	return module.Data{Title: "disk", Rows: rows}, nil
+}
+
+// defaultFreeFloorGiB is the free-space floor (params "free-floor", GiB):
+// the volume reads neutral until free space drops toward it.
+const defaultFreeFloorGiB = 40
+
+// gibF converts statfs bytes to GiB for the danger math (the test file
+// owns the package's `gib` name).
+const gibF = float64(1 << 30)
+
+// freeFloorDanger maps free GiB to the 0..1 ramp fraction: NEUTRAL at and
+// above the floor (peaking just under the warn threshold, decaying toward
+// zero with headroom), then warm-to-loud climbing linearly to 1.0 at empty
+// below it -- "not hot until under the floor", boundary included. A
+// non-positive floor disables the ramp entirely.
+func freeFloorDanger(freeGiB, floorGiB float64) float64 {
+	if floorGiB <= 0 {
+		return 0
+	}
+	if freeGiB >= floorGiB {
+		return 0.55 * floorGiB / max(freeGiB, floorGiB)
+	}
+	return min(0.6+0.4*(1-max(freeGiB, 0)/floorGiB), 1)
 }
 
 // histPrefix namespaces disk series in the shared snapshot: "disk/<vol>".

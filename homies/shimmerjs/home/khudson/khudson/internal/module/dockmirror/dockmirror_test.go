@@ -116,8 +116,8 @@ const lsappinfoList = `34 app(s):
 // lsappinfo entry carried a bundle id.
 func quitMenu(id string) []module.Act {
 	return []module.Act{
-		{Label: "Quit", Argv: []string{fakeExe, "ax", "quit", "--bundle", id}},
-		{Label: "Force Quit", Argv: []string{fakeExe, "ax", "force-quit", "--bundle", id}, Destructive: true},
+		{Label: "quit", Argv: []string{fakeExe, "ax", "quit", "--bundle", id}},
+		{Label: "force quit", Argv: []string{fakeExe, "ax", "force-quit", "--bundle", id}, Destructive: true},
 	}
 }
 

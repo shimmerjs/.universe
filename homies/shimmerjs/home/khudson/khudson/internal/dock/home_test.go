@@ -98,11 +98,11 @@ func TestHomeRegionGeometry(t *testing.T) {
 
 	// hit table order: regions in peel order, chrome tiles ahead of their
 	// region's consume-all area. Rail tiles are a two-column bordered grid:
-	// width (20-1)/2 = 9, one gap column between, railTileH rows tall. The
+	// width 20/2 = 10, zero gap (borders touch), railTileH rows tall. The
 	// caffeinate cup toggle pins to the tray bottom (17-row tray: y 14).
 	want := []rect{
-		{0, 0, 9, 3},      // rail button: Safari (col 0)
-		{10, 0, 9, 3},     // rail button: Mail (col 1)
+		{0, 0, 10, 3},     // rail button: Safari (col 0)
+		{10, 0, 10, 3},    // rail button: Mail (col 1)
 		{0, 0, 20, 17},    // rail area
 		{308, 0, 12, 3},   // tray: home
 		{308, 3, 12, 3},   // tray: hub
@@ -163,7 +163,7 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 		widgetData: map[string]module.Data{},
 		widgetErr:  map[string]string{},
 		sty:        buildStyles(day),
-		kbLoaded:   true, // board deliberately absent: kb-live renders the sync hint
+		kbLoader:   kbInertLoader(t), // board deliberately absent: kb-live renders the hint
 	}
 	hasHit := func(r rect) bool {
 		for _, h := range m.hits {
@@ -180,8 +180,8 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 	if lines := strings.Split(v.Content, "\n"); len(lines) != 24 {
 		t.Fatalf("home view lines = %d, want 24", len(lines))
 	}
-	kbRegion := rect{121, 0, 75, 22}
-	claudeExpanded := rect{48, 0, 73, 22}
+	kbRegion := rect{121, 0, 75, 23}
+	claudeExpanded := rect{48, 0, 73, 23}
 	if !hasHit(kbRegion) {
 		t.Fatalf("expanded home missing the kb region rect %+v", kbRegion)
 	}
@@ -202,7 +202,7 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 			t.Errorf("line %d width = %d, want 196", i, w)
 		}
 	}
-	claudeCollapsed := rect{48, 0, 148, 22}
+	claudeCollapsed := rect{48, 0, 148, 23}
 	if !hasHit(claudeCollapsed) {
 		t.Fatalf("home-no-kb missing the widened claude rect %+v", claudeCollapsed)
 	}
@@ -250,7 +250,7 @@ func TestHomeTapRailTileSendsRowAct(t *testing.T) {
 }
 
 // widenRail grows the fixture rail region so full names fit a tile
-// (width (size-1)/2).
+// (width size/2).
 func widenRail(m *model, size int) {
 	l := m.cfg.Layouts["home"]
 	l.Regions[0].Size = size
@@ -272,7 +272,7 @@ func TestRailTwoColumnBands(t *testing.T) {
 	if strings.Contains(ansi.Strip(lines[0]), "safari") {
 		t.Error("name leaked onto the button's border row")
 	}
-	if !strings.Contains(lines[0], lipgloss.RoundedBorder().TopLeft) {
+	if !strings.Contains(lines[0], lipgloss.NormalBorder().TopLeft) {
 		t.Error("band 0 border row missing the button frame")
 	}
 }
@@ -304,11 +304,11 @@ func TestRailNicknameAndLowercase(t *testing.T) {
 	}
 }
 
-// A rail button is railTileH lines of exactly w cells: rounded border rows
+// A rail button is railTileH lines of exactly w cells: square border rows
 // top and bottom, the name centered on the middle row -- the frame is the
 // button read, with no padding beyond it.
 func TestRailTilePlacement(t *testing.T) {
-	lines := railTile("safari", 8, chromeFG)
+	lines := railTile("safari", 8, chromeDim, chromeFG)
 	if len(lines) != railTileH {
 		t.Fatalf("lines = %d, want %d", len(lines), railTileH)
 	}
@@ -320,12 +320,12 @@ func TestRailTilePlacement(t *testing.T) {
 	if !strings.Contains(ansi.Strip(lines[1]), "safari") {
 		t.Error("name not on the button's middle row")
 	}
-	if !strings.Contains(lines[0], lipgloss.RoundedBorder().TopLeft) ||
-		!strings.Contains(lines[2], lipgloss.RoundedBorder().BottomLeft) {
+	if !strings.Contains(lines[0], lipgloss.NormalBorder().TopLeft) ||
+		!strings.Contains(lines[2], lipgloss.NormalBorder().BottomLeft) {
 		t.Error("button frame missing")
 	}
 	// long names truncate inside the button, never widen it
-	long := railTile("verylongname", 8, chromeFG)
+	long := railTile("verylongname", 8, chromeDim, chromeFG)
 	for i, l := range long {
 		if w := lipgloss.Width(l); w != 8 {
 			t.Errorf("long-name line %d width = %d, want 8", i, w)
@@ -356,7 +356,7 @@ func TestRailOverflowCell(t *testing.T) {
 	}
 	buttons := 0
 	for _, h := range m.hits {
-		if h.area.w == 10 && h.area.h == railTileH {
+		if h.area.w == 11 && h.area.h == railTileH {
 			buttons++
 		}
 	}
@@ -402,11 +402,11 @@ func TestRail24RowsFitsSixteenApps(t *testing.T) {
 }
 
 // A 46x8 rail scales columns to the width instead of stretching two tiles:
-// 4 columns of 10-wide bordered buttons in 2 bands (capacity 8), and "+N"
+// 5 columns of 9-wide bordered buttons in 2 bands (capacity 10), and "+N"
 // appears only past a genuine overflow.
 func TestRail46x8WidthScaledColumns(t *testing.T) {
 	m := newHomeModel(320, 18)
-	rows := make([]module.Row, 0, 9)
+	rows := make([]module.Row, 0, 11)
 	for i := range 8 {
 		name := fmt.Sprintf("app%02d", i)
 		rows = append(rows, module.Row{Kind: module.RowText, Text: name, Act: []string{"open", "-a", name}})
@@ -425,17 +425,18 @@ func TestRail46x8WidthScaledColumns(t *testing.T) {
 	}
 	var buttons []rect
 	for _, h := range m.hits {
-		if h.area.w == 10 && h.area.h == railTileH {
+		if h.area.w == 9 && h.area.h == railTileH {
 			buttons = append(buttons, h.area)
 		}
 	}
 	if len(buttons) != 8 {
 		t.Fatalf("tile hits = %d, want 8", len(buttons))
 	}
-	// 4 columns: lpad (46-43)/2 = 1, columns at x 1, 12, 23, 34; 3-row bands
+	// 5 columns, zero gap: lpad (46-45)/2 = 0, columns at x 0, 9, 18, 27,
+	// 36; 3-row bands
 	want := []rect{
-		{1, 0, 10, 3}, {12, 0, 10, 3}, {23, 0, 10, 3}, {34, 0, 10, 3},
-		{1, 3, 10, 3}, {12, 3, 10, 3}, {23, 3, 10, 3}, {34, 3, 10, 3},
+		{0, 0, 9, 3}, {9, 0, 9, 3}, {18, 0, 9, 3}, {27, 0, 9, 3}, {36, 0, 9, 3},
+		{0, 3, 9, 3}, {9, 3, 9, 3}, {18, 3, 9, 3},
 	}
 	for i, w := range want {
 		if buttons[i] != w {
@@ -443,8 +444,11 @@ func TestRail46x8WidthScaledColumns(t *testing.T) {
 		}
 	}
 
-	// one past capacity: 7 buttons plus a "+2" cell, never silently
-	rows = append(rows, module.Row{Kind: module.RowText, Text: "app08", Act: []string{"open", "-a", "app08"}})
+	// one past capacity (10): 9 buttons plus a "+2" cell, never silently
+	for i := 8; i < 11; i++ {
+		rows = append(rows, module.Row{Kind: module.RowText,
+			Text: fmt.Sprintf("app%02d", i), Act: []string{"open", "-a", fmt.Sprintf("app%02d", i)}})
+	}
 	m.widgetData["dock-rail"] = module.Data{Rows: rows}
 	m.resetHits()
 	out = m.renderRail(m.cfg.Widgets["dock-rail"], rect{0, 0, 46, 8})
@@ -452,7 +456,7 @@ func TestRail46x8WidthScaledColumns(t *testing.T) {
 	if !strings.Contains(plain, "+2") {
 		t.Error("overflow cell missing")
 	}
-	if strings.Contains(plain, "app07") {
+	if strings.Contains(plain, "app09") {
 		t.Error("truncated app still rendered")
 	}
 }
@@ -500,14 +504,14 @@ func TestRailMinimizedSectionAndNote(t *testing.T) {
 	// hit rects: exactly three tiles, the minimized one at band 1 col 0
 	var buttons []rect
 	for _, h := range m.hits {
-		if h.area.w == 10 && h.area.h == railTileH {
+		if h.area.w == 11 && h.area.h == railTileH {
 			buttons = append(buttons, h.area)
 		}
 	}
 	if len(buttons) != 3 {
 		t.Fatalf("tile hits = %d, want 3 (note row is not a tile)", len(buttons))
 	}
-	if want := (rect{0, 3, 10, 3}); buttons[2] != want {
+	if want := (rect{0, 3, 11, 3}); buttons[2] != want {
 		t.Fatalf("minimized tile rect = %+v, want %+v", buttons[2], want)
 	}
 
@@ -1185,7 +1189,7 @@ func TestChromeLinesSurviveWideGlyphs(t *testing.T) {
 					}
 				}
 			}
-			check("railTile", railTile(s, w, chromeFG))
+			check("railTile", railTile(s, w, chromeDim, chromeFG))
 			check("trayButton", trayButton(s, false, false, w))
 			check("renderTitledBox", strings.Split(renderTitledBox(s, nil, w, 4), "\n"))
 		}
@@ -1242,6 +1246,44 @@ func TestResourceRowsStructurallyIdentical(t *testing.T) {
 func attentionData() module.Data {
 	return module.Data{Title: "claude 1/1", Attention: true,
 		Rows: []module.Row{{Kind: module.RowText, Text: "needs input"}}}
+}
+
+// A FULL-HEIGHT panel carries attention on its header instead of the
+// marching box: the title sits on the steady warn wash, the header's empty
+// trailing cells march the ramp (shifting between ticks), and no frame
+// glyphs appear -- the borderless idiom survives the signal.
+func TestAttentionSidePanelHeaderMarch(t *testing.T) {
+	m := newHomeModel(196, 24)
+	m.handleBusMsg(proto.Msg{Type: proto.TypeTheme, Theme: "day", Palette: busPalette()})
+	lines := []string{"row one", "row two"}
+	a := m.renderSidePanel("clod 2/5", lines, 73, 23, true, true)
+	m.now = m.now.Add(time.Second)
+	b := m.renderSidePanel("clod 2/5", lines, 73, 23, true, true)
+	if a == b {
+		t.Fatal("attention header did not shift between two ticks")
+	}
+	aLines := strings.Split(a, "\n")
+	if !strings.Contains(aLines[0], "48;2;") {
+		t.Error("attention header carries no wash/ramp backgrounds")
+	}
+	if strings.ContainsAny(ansi.Strip(a), "┌┐└┘─┬┴") {
+		t.Error("attention side panel regrew frame glyphs")
+	}
+	// body rows are untouched by the header treatment
+	if !strings.Contains(ansi.Strip(aLines[1]), "row one") {
+		t.Error("attention shifted the body rows")
+	}
+
+	// palette-less: the warn/dim alternation, still frameless, still ticking
+	m2 := newHomeModel(196, 24)
+	a2 := m2.renderSidePanel("clod", lines, 73, 23, false, true)
+	m2.now = m2.now.Add(time.Second)
+	if b2 := m2.renderSidePanel("clod", lines, 73, 23, false, true); a2 == b2 {
+		t.Fatal("indexed attention header did not shift between ticks")
+	}
+	if !strings.Contains(a2, chromeWarn.Reverse(true).Render(" ")) {
+		t.Error("indexed attention header carries no warn cells")
+	}
 }
 
 // The attention border marches: one tick apart the border cells carry

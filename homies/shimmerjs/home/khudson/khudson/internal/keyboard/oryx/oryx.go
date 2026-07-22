@@ -18,12 +18,21 @@ import (
 // DefaultEndpoint is the public Oryx GraphQL endpoint (no auth).
 const DefaultEndpoint = "https://oryx.zsa.io/graphql"
 
-// Geometry and revision are pinned: this is the Moonlander foundation, and
-// revisionId "latest" tracks the live editor state without needing a compile.
-const (
-	geometry   = "moonlander"
-	revisionID = "latest"
-)
+// FirmwareURL is where Oryx serves a revision's compiled firmware binary --
+// the exact bytes the revision's md5 field hashes (verified 2026-07-21).
+// Same unofficial, unversioned surface as the GraphQL endpoint.
+func FirmwareURL(hashID, revisionID string) string {
+	return fmt.Sprintf("https://oryx.zsa.io/%s/%s/binary", hashID, revisionID)
+}
+
+// Geometry is pinned: this is the Moonlander foundation. Revisions are
+// caller-chosen -- the flash loop fetches the exact hash the board's serial
+// reports, and RevisionLatest tracks the live editor state (the response
+// names the concrete revision it resolved to).
+const geometry = "moonlander"
+
+// RevisionLatest asks Oryx for the newest revision of a layout.
+const RevisionLatest = "latest"
 
 // Full layouts run ~100KB; the cap guards a misbehaving server.
 const maxResponseBytes = 4 << 20
@@ -111,11 +120,13 @@ type Combo struct {
 	Trigger    *Action `json:"trigger,omitempty"`
 }
 
-// FetchLayout pulls hashID's latest Moonlander revision from Oryx and writes
-// it through to the disk cache. On a cache-write failure the fetched layout
-// is still returned, alongside the error.
-func FetchLayout(ctx context.Context, hashID string) (*Layout, error) {
-	l, err := fetchLayout(ctx, http.DefaultClient, DefaultEndpoint, hashID)
+// FetchLayout pulls one Moonlander revision of hashID from Oryx and writes
+// it through to the disk cache (keyed by layout: the cache is the current
+// board snapshot). revisionID is an exact hash or RevisionLatest; the
+// returned Layout.RevisionID names what it resolved to. On a cache-write
+// failure the fetched layout is still returned, alongside the error.
+func FetchLayout(ctx context.Context, hashID, revisionID string) (*Layout, error) {
+	l, err := fetchLayout(ctx, http.DefaultClient, DefaultEndpoint, hashID, revisionID)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +140,17 @@ func FetchLayout(ctx context.Context, hashID string) (*Layout, error) {
 	return l, nil
 }
 
-func fetchLayout(ctx context.Context, hc *http.Client, endpoint, hashID string) (*Layout, error) {
+// FetchLayoutMeta fetches a revision without touching the disk cache:
+// update polling asks for latest, and caching an undeployed revision would
+// clobber the snapshot the board loader renders from.
+func FetchLayoutMeta(ctx context.Context, hashID, revisionID string) (*Layout, error) {
+	return fetchLayout(ctx, http.DefaultClient, DefaultEndpoint, hashID, revisionID)
+}
+
+func fetchLayout(ctx context.Context, hc *http.Client, endpoint, hashID, revisionID string) (*Layout, error) {
+	if revisionID == "" {
+		return nil, errors.New("oryx: empty revision id")
+	}
 	body, err := json.Marshal(map[string]any{
 		"query": getLayoutQuery,
 		"variables": map[string]string{
@@ -154,9 +175,13 @@ func fetchLayout(ctx context.Context, hc *http.Client, endpoint, hashID string) 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("oryx: %s", resp.Status)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("oryx: read response: %w", err)
+	}
+	if len(raw) > maxResponseBytes {
+		// reject, never truncate into a misleading decode error
+		return nil, errors.New("oryx: response exceeds the size cap")
 	}
 	return decodeResponse(raw)
 }

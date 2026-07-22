@@ -70,6 +70,21 @@ The decided seam survives intact: **single 0xFF43 vendor node over direct BT, no
 
 **New consumers, zero touchd change:** per-app profile switcher (NSWorkspace watcher), actions/macros engine, Actions Ring overlay [15][U97].
 
+**logiretch viewer (REGISTERED 2026-07-22, user):** a kuiboard-analog for
+the mouse -- see the current mappings and watch them activate in real
+time. Two halves with different dependencies:
+- mapping view: render the asserted capability state (DPI, SmartShift,
+  hi-res wheel, thumbwheel, haptic level, 1B04 remaps) from the CUE
+  config channel + the retained lines on logiretch.sock. Buildable
+  against phase 5/5b as shipped -- no divert engine needed.
+- live activation view: light a mapping as it fires. Needs phase 6a's
+  diverted-button/rawXY event lines on logiretch.sock (plain
+  un-diverted presses never reach the host as HID++ events), so this
+  half is gated on un-deferring 6a; the viewer is new demand against
+  that deferral. Until then a partial fallback could mirror scroll /
+  pointer activity from host-side observation, but button/gesture
+  activation is 6a-only.
+
 ## Transport rules for the Go module (source-verified against pinned go-hid v0.15.0 [17])
 
 - `hid.Init()` BEFORE `SetOpenExclusive(false)`: pre-init the setter is silently clobbered and the first open would SEIZE the mouse (hid_init sets exclusive=1 for backward compat) [19]. Correction: touchd already calls hid.Init() deliberately at main.go:117 -- not "safe by accident" -- but the ordering rule must be stated for the logiretch module.

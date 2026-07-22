@@ -47,11 +47,13 @@ type Hit struct {
 // Theme is the host capability set the render needs. FG/Dim are the chrome
 // styles; Background is the theme background (nil when no palette has been
 // broadcast -- the core then renders the flat palette-less board the golden
-// pins); Hue maps an identity key to a stable hue.
+// pins); Accent is the house accent the tab band tints toward (nil = the
+// neutral lift); Hue maps an identity key to a stable hue.
 type Theme struct {
 	FG         lipgloss.Style
 	Dim        lipgloss.Style
 	Background color.Color
+	Accent     color.Color
 	Hue        func(string) color.Color
 }
 
@@ -67,14 +69,19 @@ const (
 	keyWMin = 4
 	colGap  = 1
 	halfGap = 5
-	// FullLines is the full render's body line count; a region shorter than
-	// this auto-engages the compact render. Exported so a host can size.
-	FullLines = 15
+	// fullLines is the full render's grid line count; a region shorter than
+	// this auto-engages the compact render. The tab bar is not part of the
+	// grid -- it rides the box's bottom row (TitledBox bar).
+	fullLines = 14
 	chipBlend = 0.06
 	oryxLabel = "oryx"
-	OryxPad   = 2
-	speckLift = 0.10
-	gridLift  = 0.06
+	// bandShift is the tab bar band's distance off the body tone: toward
+	// the host accent when the theme carries one (the strip band's family),
+	// else the neutral lift.
+	bandShift       = 0.35
+	bandAccentBlend = 0.22
+	speckLift       = 0.10
+	gridLift        = 0.06
 )
 
 // ApplyKey folds one key event into the board+layer view state, mutating
@@ -115,92 +122,134 @@ func ApplyKey(board *keyboard.Board, layer int, ev *proto.KeyEvent) (newLayer in
 	return layer, false
 }
 
-// LayerCount reports the board's layer count (0 for a nil/empty board).
-func LayerCount(board *keyboard.Board) int {
-	if board == nil {
-		return 0
-	}
-	return len(board.Layers)
-}
-
 // Empty reports whether the board is missing/unreadable/layerless, so the
 // host knows to render the sync hint and skip the layer-cycle hit.
 func Empty(board *keyboard.Board, err string) bool {
 	return err != "" || board == nil || len(board.Layers) == 0
 }
 
-// Body renders the keyboard region core shared by every host: the selector
-// strip plus the active layer grid laid out for rr, or the sync hint when
-// the board is empty/unreadable. It returns the body lines and the tap hits
-// it produced (selector jumps, offset to rr, and the oryx link) -- the host
-// owns resetting its table, the layer-cycle hit, and any error-branch
-// consume. mode is "full", "compact", or "" (auto: compact when rr.H cannot
-// hold the full render). texture names the fill texture ("" or "none" = plain).
-// noRevisionErr is the sentinel error string that should NOT show as a hard
-// db error (it degrades to the calm sync hint).
-func Body(board *keyboard.Board, err string, layer int, rr Rect, mode, texture, noRevisionErr string, th Theme) (lines []string, hits []Hit) {
+// Body renders the keyboard grid core shared by every host: the active
+// layer laid out for a w x h region, or the plug-in hint when the board is
+// empty/unreadable. The layer tab bar is NOT part of the body -- it is the
+// box's cap row (Bar). mode is "full", "compact", or "" (auto: compact
+// when h cannot hold the full grid). texture names the fill texture ("" or
+// "none" = plain). noBoardErr is the sentinel error string that should NOT
+// show as a hard load error (it degrades to the calm plug-in hint).
+func Body(board *keyboard.Board, err string, layer, w, h int, mode, texture, noBoardErr string, th Theme) []string {
 	if Empty(board, err) {
-		msg := " open Keymapp and connect your board to sync the layout"
-		if err != "" && err != noRevisionErr {
-			msg = " keymapp db: " + err
+		msg := " plug in the board to fetch its layout from oryx"
+		if err != "" && err != noBoardErr {
+			msg = " board: " + err
 		}
-		return []string{"", th.Dim.Render(msg)}, nil
+		return []string{"", th.Dim.Render(msg)}
 	}
 	if layer >= len(board.Layers) || layer < 0 {
 		layer = 0
 	}
-	compact := mode == "compact" || (mode != "full" && rr.H < FullLines)
+	compact := mode == "compact" || (mode != "full" && h < fullLines)
 	chip := LayerChip(board, layer, th)
-	fill := makeFill(chip, texture)
-	lines = make([]string, 0, rr.H)
-	sel, selHits := selector(board, layer, rr, chip, th)
-	hits = append(hits, selHits...)
-	if compact {
-		lines = append(lines, sel)
-	} else {
-		lines = append(lines, sel, "")
-	}
-	grid := layerGrid(board.Layers[layer], rr.W, board.Held, compact, chip, fill, len(lines), th)
-	lines = append(lines, grid...)
+	lines, fill := layerGrid(board.Layers[layer], w, board.Held, compact, chip, texture, th)
 	for i, l := range lines {
-		if w := lipgloss.Width(l); w < rr.W {
-			lines[i] = l + fill(w, i, rr.W-w)
+		if lw := lipgloss.Width(l); lw < w {
+			lines[i] = l + fill(lw, i, w-lw)
 		}
 	}
-	gridLines := len(lines)
-	for len(lines) < rr.H {
-		lines = append(lines, fill(0, len(lines), rr.W))
+	for len(lines) < h {
+		lines = append(lines, fill(0, len(lines), w))
 	}
-	if h, ok := oryxOverlay(board, layer, lines, rr, gridLines, chip, fill, th); ok {
-		hits = append(hits, h)
+	if len(lines) > h {
+		// a region shorter than even the compact grid crops rather than
+		// overflowing a host that joins without a fixed block
+		lines = lines[:max(h, 0)]
 	}
-	return lines, hits
+	return lines
 }
 
-// selector renders one line of layer-name buttons, the active one accented
-// and identity-tinted, and returns the per-button jump hits (offset to box).
-func selector(board *keyboard.Board, layer int, box Rect, chip color.Color, th Theme) (string, []Hit) {
+// Bar renders the tab-bar row at the view's FULL width w: layer tabs flush
+// against the left edge on a contrasting band, the active tab carrying the
+// body's own background so it reads as the view notching through the bar
+// (a bubbletea tab strip), and the oryx link as a block button flush
+// against the right edge. A non-empty note renders dim on the band,
+// right-aligned before the button (a host without a title row parks the
+// board title there). The band caps a view edge in place of a border
+// (TitledBox bar / Panel). Hits are bar-local (Y always 0, X from the
+// view's left edge); the host offsets them. Callers gate on Empty.
+func Bar(board *keyboard.Board, layer, w int, note string, th Theme) (string, []Hit) {
+	if layer >= len(board.Layers) || layer < 0 {
+		layer = 0
+	}
+	chip := LayerChip(board, layer, th)
+	if chip == nil {
+		// base layer under a palette: the body tone IS the theme background,
+		// so the notch read survives (nil stays nil palette-less)
+		chip = th.Background
+	}
+	band, tab, active, button := barStyles(board, layer, chip, th)
+	tag := " " + oryxLabel + " "
+	tagW := lipgloss.Width(tag)
+	u := OryxURL(board, layer)
+	btnX := w - tagW
+	if u == "" {
+		btnX = w
+	}
 	var b strings.Builder
 	var hits []Hit
-	x := box.X
+	x := 0
 	for i, l := range board.Layers {
 		label := " " + l.Title + " "
-		style := th.Dim
-		if i == layer {
-			style = lipgloss.NewStyle().Foreground(th.hue(l.Title)).Bold(true)
-		}
-		if chip != nil {
-			style = style.Background(chip)
-		}
-		b.WriteString(style.Render(label))
-		w := lipgloss.Width(label)
-		if x >= box.X+box.W {
+		lw := lipgloss.Width(label)
+		if x+lw > btnX-1 {
 			break
 		}
-		hits = append(hits, Hit{Kind: HitLayerJump, Layer: i, Area: Rect{x, box.Y, min(w, box.X+box.W-x), 1}})
-		x += w
+		st := tab
+		if i == layer {
+			st = active
+		}
+		b.WriteString(st.Render(label))
+		hits = append(hits, Hit{Kind: HitLayerJump, Layer: i, Area: Rect{x, 0, lw, 1}})
+		x += lw
 	}
-	return fitCell(b.String(), box.W), hits
+	if note != "" {
+		note = " " + note + " "
+		if nw := lipgloss.Width(note); x+nw <= btnX {
+			b.WriteString(band.Render(strings.Repeat(" ", btnX-nw-x)))
+			b.WriteString(tab.Render(note))
+			x = btnX
+		}
+	}
+	if btnX > x {
+		b.WriteString(band.Render(strings.Repeat(" ", btnX-x)))
+	}
+	if u != "" && btnX >= x {
+		b.WriteString(button.Render(tag))
+		hits = append(hits, Hit{Kind: HitOryx, URL: u, Area: Rect{btnX, 0, tagW, 1}})
+	}
+	return b.String(), hits
+}
+
+// barStyles is the tab bar's style set. With a body tone the band shifts
+// off it -- toward the host accent when the theme carries one (matching
+// the strip band's family), with full-contrast foreground labels; the
+// neutral lift keeps body-toned labels. The active tab carries the body
+// tone as its background (the view notching through); palette-less hosts
+// get an indexed band -- plain labels on bright black so the inactive
+// layers stay readable -- with the active tab a bold reverse block and the
+// button a plain one.
+func barStyles(board *keyboard.Board, layer int, chip color.Color, th Theme) (band, tab, active, button lipgloss.Style) {
+	hue := lipgloss.NewStyle().Foreground(th.hue(board.Layers[layer].Title)).Bold(true)
+	if chip != nil {
+		if th.Accent != nil {
+			bandBg := blend(chip, th.Accent, bandAccentBlend)
+			return lipgloss.NewStyle().Background(bandBg), th.FG.Background(bandBg),
+				hue.Background(chip), th.FG.Background(liftTone(bandBg, 0.2)).Bold(true)
+		}
+		bandBg := liftTone(chip, bandShift)
+		return lipgloss.NewStyle().Background(bandBg), th.FG.Foreground(chip).Background(bandBg),
+			hue.Background(chip), th.FG.Foreground(chip).Background(liftTone(bandBg, 0.2)).Bold(true)
+	}
+	return lipgloss.NewStyle().Background(lipgloss.BrightBlack),
+		th.FG.Background(lipgloss.BrightBlack),
+		hue.Reverse(true), th.FG.Reverse(true)
 }
 
 // OryxURL addresses the synced revision at the active layer in the ZSA web
@@ -219,30 +268,9 @@ func OryxURL(board *keyboard.Board, layer int) string {
 		"/" + strconv.Itoa(layer)
 }
 
-// oryxOverlay paints the oryx link over the last body row and returns its hit;
-// ok=false when there is no room / no url (nothing drawn).
-func oryxOverlay(board *keyboard.Board, layer int, lines []string, rr Rect, gridLines int, chip color.Color, fill fillFunc, th Theme) (Hit, bool) {
-	u := OryxURL(board, layer)
-	if u == "" || gridLines >= rr.H || len(lines) != rr.H {
-		return Hit{}, false
-	}
-	tag := " " + oryxLabel + " "
-	lead := rr.W - OryxPad - len(tag)
-	if lead <= 0 {
-		return Hit{}, false
-	}
-	style := th.Dim.Underline(true)
-	if chip != nil {
-		style = style.Background(chip)
-	}
-	y := rr.H - 1
-	lines[y] = fill(0, y, lead) + style.Render(tag) + fill(lead+len(tag), y, OryxPad)
-	return Hit{Kind: HitOryx, URL: u, Area: Rect{rr.X + lead, rr.Y + y, len(tag), 1}}, true
-}
-
 // TitledBox frames the keyboard with square chrome glyphs; the layer signal
-// rides on the border color (edge, nil = dim chrome). Base output is
-// byte-identical to the dock's renderTitledBox.
+// rides on the border color (edge, nil = dim chrome). Byte-identical to
+// the dock's renderTitledBox.
 func TitledBox(title string, body []string, w, h int, edge color.Color, th Theme) string {
 	if w < 3 || h < 2 {
 		return blankBlock(w, h)
@@ -268,6 +296,71 @@ func TitledBox(title string, body []string, w, h int, edge color.Color, th Theme
 		}
 	}
 	lines = append(lines, frame.Render(bd.BottomLeft+strings.Repeat(bd.Bottom, innerW)+bd.BottomRight))
+	return strings.Join(lines, "\n")
+}
+
+// headerLift is the panel header band's distance off the body tone.
+const headerLift = 0.12
+
+// Hairline is the panel separator glyph: a left-eighth block reads as a
+// thin rule hugging the boundary between abutting panels; the full bar is
+// the fallback when a measurer disagrees on its width. Exported so the
+// dock's side panels share the vocabulary.
+func Hairline() string {
+	if g := "▏"; ansi.StringWidth(g) == 1 && lipgloss.Width(g) == 1 {
+		return g
+	}
+	return "│"
+}
+
+// Panel is the side-border panel chrome for full-height hosts: the bar --
+// when present -- IS the header, capping the panel's TOP edge-to-edge (the
+// interactive band replaces the title row; hosts park the title in the
+// bar's note). Without a bar the title rides a lifted header band instead
+// of a top border. The body renders full-bleed below, a hairline separator
+// marks the left edge only when a neighbor abuts (leftEdge -- context
+// decides), and there is no bottom border. edge tints the title and
+// separator (the layer signal; nil = dim separator, plain title).
+func Panel(title string, body []string, w, h int, bar string, leftEdge bool, edge color.Color, th Theme) string {
+	if w < 2 || h < 2 {
+		return blankBlock(w, h)
+	}
+	frame := th.Dim
+	if edge != nil {
+		frame = lipgloss.NewStyle().Foreground(edge)
+	}
+	inset := 0
+	left := ""
+	if leftEdge {
+		inset = 1
+		left = frame.Render(Hairline())
+	}
+	innerW := w - inset
+	lines := make([]string, 0, h)
+	if bar != "" {
+		lines = append(lines, bar)
+	} else {
+		ts := th.FG
+		if edge != nil {
+			// no frame to tint: the layer signal rides the title text
+			ts = frame
+		}
+		pad := lipgloss.NewStyle()
+		headLeft := left
+		if th.Background != nil {
+			hb := liftTone(th.Background, headerLift)
+			ts = ts.Background(hb)
+			pad = pad.Background(hb)
+			if leftEdge {
+				headLeft = frame.Background(hb).Render(Hairline())
+			}
+		}
+		t := fitCell(" "+title, innerW)
+		lines = append(lines, headLeft+ts.Render(t)+pad.Render(strings.Repeat(" ", max(innerW-lipgloss.Width(t), 0))))
+	}
+	for c := range strings.SplitSeq(fixedBlock(body, innerW, h-1), "\n") {
+		lines = append(lines, left+c)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -382,45 +475,49 @@ func makeFill(chip color.Color, texture string) fillFunc {
 	}
 	bg := lipgloss.NewStyle().Background(chip)
 	cell, lift := TexCellFn(texture)
-	if cell == nil {
-		return func(_, _, n int) string {
-			if n <= 0 {
-				return ""
-			}
-			return bg.Render(strings.Repeat(" ", n))
-		}
-	}
 	tex := lipgloss.NewStyle().Background(chip).Foreground(lipgloss.Lighten(chip, lift))
 	return func(x, y, n int) string {
-		if n <= 0 {
-			return ""
-		}
-		var b strings.Builder
-		for i := 0; i < n; {
-			g := cell(x+i, y)
-			j := i + 1
-			if g == "" {
-				for j < n && cell(x+j, y) == "" {
-					j++
-				}
-				b.WriteString(bg.Render(strings.Repeat(" ", j-i)))
-			} else {
-				var run strings.Builder
-				run.WriteString(g)
-				for j < n {
-					ng := cell(x+j, y)
-					if ng == "" {
-						break
-					}
-					run.WriteString(ng)
-					j++
-				}
-				b.WriteString(tex.Render(run.String()))
-			}
-			i = j
-		}
-		return b.String()
+		return TexRun(cell, bg, tex, x, y, n)
 	}
+}
+
+// TexRun renders n cells of textured surface starting at absolute cell
+// (x, y): the cell painter's glyphs in tex, the gaps in blank, adjacent
+// same-style cells batched into one SGR run. A nil painter is all blank.
+// Exported beside TexCellFn so hosts painting their own surfaces (the
+// dock strip band) share one run-batching implementation.
+func TexRun(cell func(x, y int) string, blank, tex lipgloss.Style, x, y, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if cell == nil {
+		return blank.Render(strings.Repeat(" ", n))
+	}
+	var b strings.Builder
+	for i := 0; i < n; {
+		g := cell(x+i, y)
+		j := i + 1
+		if g == "" {
+			for j < n && cell(x+j, y) == "" {
+				j++
+			}
+			b.WriteString(blank.Render(strings.Repeat(" ", j-i)))
+		} else {
+			var run strings.Builder
+			run.WriteString(g)
+			for j < n {
+				ng := cell(x+j, y)
+				if ng == "" {
+					break
+				}
+				run.WriteString(ng)
+				j++
+			}
+			b.WriteString(tex.Render(run.String()))
+		}
+		i = j
+	}
+	return b.String()
 }
 
 func keyW(cols int) int {
@@ -428,7 +525,17 @@ func keyW(cols int) int {
 	return max(keyWMin, min(keyWMax, w))
 }
 
-func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, chip color.Color, fill fillFunc, y0 int, th Theme) []string {
+// liftTone shifts c toward contrast: dark tones lighten, light tones
+// darken, so a derived band/highlight stays visible on either theme.
+func liftTone(c color.Color, t float64) color.Color {
+	r, g, b, _ := c.RGBA()
+	if (299*r+587*g+114*b)/1000 > 0x7fff {
+		return lipgloss.Darken(c, t)
+	}
+	return lipgloss.Lighten(c, t)
+}
+
+func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, chip color.Color, texture string, th Theme) ([]string, fillFunc) {
 	type placed struct {
 		key  keyboard.PlacedKey
 		slot int
@@ -452,6 +559,9 @@ func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, 
 	halfW := keyboard.MainCols*kw + (keyboard.MainCols-1)*colGap
 	pad := max(0, (cols-(halfW*2+halfGap))/2)
 	xL, xR := pad, pad+halfW+halfGap
+
+	arcW := 3*kw + 2*colGap
+	fill := makeFill(chip, texture)
 
 	place := func(cells []placed, left bool) [keyboard.MainCols]*placed {
 		var out [keyboard.MainCols]*placed
@@ -490,7 +600,7 @@ func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, 
 	}
 
 	var lines []string
-	y := y0
+	y := 0
 	for r := range 5 {
 		ls := place(leftMain[r], true)
 		rs := place(rightMain[r], false)
@@ -521,23 +631,72 @@ func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, 
 		return s
 	}
 
-	cluster := func(keys []placed, left bool, x0, yt, yh int) (tap, hold string) {
+	// cluster mirrors the physical thumb shape (QMK zsa/moonlander: left
+	// wide key x=5 w=2 over the arc at x=5,6,7; right mirrored): the wide
+	// 2u "piano" key on its own row directly under the main grid, hugging
+	// the arc's grid-side edge, and the 3-key arc one row below with its
+	// center-side key poking out past the piano key.
+	pianoW := 2*kw + colGap
+	cluster := func(keys []placed, left bool, x0, ypt, yph, yat, yah int) (pt, ph, at, ah string) {
 		var wt, wh string
 		var arcT, arcH []string
 		for _, p := range keys {
-			t, h := keyCell(p.key, kw, held[p.slot], chip, th)
 			if p.key.Slot.ThumbIdx == 0 {
-				wt, wh = t, h
-			} else {
-				arcT = append(arcT, t)
-				arcH = append(arcH, h)
+				wt, wh = keyCell(p.key, pianoW, held[p.slot], chip, th)
+				continue
 			}
+			t, h := keyCell(p.key, kw, held[p.slot], chip, th)
+			arcT = append(arcT, t)
+			arcH = append(arcH, h)
 		}
-		offW := 0
+		offA := 0
 		if left {
-			offW = max(0, halfW-(4*kw+3*colGap))
+			offA = max(0, halfW-arcW)
 		}
-		order := func(wide string, arc []string) []string {
+		offP := offA
+		if !left {
+			offP = offA + arcW - pianoW
+		}
+		arcLine := func(elems []string, y int) string {
+			var b strings.Builder
+			b.WriteString(fill(x0, y, offA))
+			for i, e := range elems {
+				xi := x0 + offA + i*(kw+colGap)
+				if i > 0 {
+					b.WriteString(fill(xi-colGap, y, colGap))
+				}
+				b.WriteString(cell(e, xi, y))
+			}
+			return b.String()
+		}
+		pianoLine := func(e string, y int) string {
+			if e == "" {
+				return fill(x0, y, offP+pianoW)
+			}
+			return fill(x0, y, offP) + e
+		}
+		return pianoLine(wt, ypt), pianoLine(wh, yph), arcLine(arcT, yat), arcLine(arcH, yah)
+	}
+
+	if compact {
+		// compact folds the cluster to a single row -- [arc, wide] left half,
+		// [wide, arc] right, the wide key at the center-side end -- because
+		// compact's contract is minimal height, not physical shape.
+		flat := func(keys []placed, left bool, x0, y int) string {
+			var wide string
+			var arc []string
+			for _, p := range keys {
+				t, _ := keyCell(p.key, kw, held[p.slot], chip, th)
+				if p.key.Slot.ThumbIdx == 0 {
+					wide = t
+				} else {
+					arc = append(arc, t)
+				}
+			}
+			offW := 0
+			if left {
+				offW = max(0, halfW-(4*kw+3*colGap))
+			}
 			elems := make([]string, 4)
 			if left {
 				copy(elems[:3], arc)
@@ -546,9 +705,6 @@ func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, 
 				elems[0] = wide
 				copy(elems[1:], arc)
 			}
-			return elems
-		}
-		line := func(elems []string, y int) string {
 			var b strings.Builder
 			b.WriteString(fill(x0, y, offW))
 			for i, e := range elems {
@@ -560,23 +716,19 @@ func layerGrid(layer keyboard.Layer, cols int, held map[int]bool, compact bool, 
 			}
 			return b.String()
 		}
-		return line(order(wt, arcT), yt), line(order(wh, arcH), yh)
+		return append(lines, join(fit(flat(leftThumb, true, xL, y), xL, y),
+			fit(flat(rightThumb, false, xR, y), xR, y), y)), fill
 	}
 
-	if compact {
-		lt, _ := cluster(leftThumb, true, xL, y, y)
-		rt, _ := cluster(rightThumb, false, xR, y, y)
-		return append(lines, join(fit(lt, xL, y), fit(rt, xR, y), y))
-	}
-
-	lt, lh := cluster(leftThumb, true, xL, y+1, y+2)
-	rt, rh := cluster(rightThumb, false, xR, y+1, y+2)
+	lpt, lph, lat, lah := cluster(leftThumb, true, xL, y, y+1, y+2, y+3)
+	rpt, rph, rat, rah := cluster(rightThumb, false, xR, y, y+1, y+2, y+3)
 	lines = append(lines,
-		fill(0, y, cols),
-		join(fit(lt, xL, y+1), fit(rt, xR, y+1), y+1),
-		join(fit(lh, xL, y+2), fit(rh, xR, y+2), y+2),
+		join(fit(lpt, xL, y), fit(rpt, xR, y), y),
+		join(fit(lph, xL, y+1), fit(rph, xR, y+1), y+1),
+		join(fit(lat, xL, y+2), fit(rat, xR, y+2), y+2),
+		join(fit(lah, xL, y+3), fit(rah, xR, y+3), y+3),
 	)
-	return lines
+	return lines, fill
 }
 
 func keyCell(k keyboard.PlacedKey, w int, held bool, chip color.Color, th Theme) (tap, hold string) {
@@ -588,12 +740,17 @@ func keyCell(k keyboard.PlacedKey, w int, held bool, chip color.Color, th Theme)
 		}
 		style = lipgloss.NewStyle().Foreground(th.hue("L" + strconv.Itoa(layer)))
 	}
+	// the chip rides the HOLD half unconditionally: only the tap cell pops
+	// on a press (glass-reported: gating both halves on !held punched a
+	// bare-background hole under every held key on a filled layer)
 	holdStyle := th.Dim
+	if chip != nil {
+		holdStyle = holdStyle.Background(chip)
+	}
 	if held {
 		style = style.Reverse(true).Bold(true)
 	} else if chip != nil {
 		style = style.Background(chip)
-		holdStyle = holdStyle.Background(chip)
 	}
 	t := fitCell(k.Tap, w)
 	if t == "" && held {
@@ -602,7 +759,7 @@ func keyCell(k keyboard.PlacedKey, w int, held bool, chip color.Color, th Theme)
 	tap = style.Render(padCenter(t, w))
 	if k.Hold != "" {
 		hold = holdStyle.Render(padCenter(fitCell(k.Hold, w), w))
-	} else if chip != nil && !held {
+	} else if chip != nil {
 		hold = lipgloss.NewStyle().Background(chip).Render(strings.Repeat(" ", w))
 	} else {
 		hold = strings.Repeat(" ", w)

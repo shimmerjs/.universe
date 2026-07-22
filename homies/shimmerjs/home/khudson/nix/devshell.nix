@@ -65,9 +65,9 @@ let
   };
 
   # Env-gated live tests. Each gate + its packages:
-  #   KHUDSON_KEYMAPP_DB=1  -> ./internal/dock (real Keymapp layout render) and
-  #                         ./internal/keyboard/keymappdb (reads the sqlite
-  #                         Keymapp store; needs sqlite3).
+  #   KHUDSON_KB_REAL=1     -> ./internal/dock (renders the real deployed
+  #                         layout through the loader; wants the board or
+  #                         its local caches present).
   #   KHUDSON_CLAUDE_LIVE=1 -> ./internal/module/claudesessions (live host poll).
   #   KHUDSON_SPIKE1=1      -> ./internal/bus (spawns a GUI kitty + btop; the
   #                         busdock/spike1 live e2e).
@@ -81,7 +81,7 @@ let
     runtimeInputs = [ pkgs.go ];
     text = ''
       cd ${khudsonRootExpr}
-      export KHUDSON_KEYMAPP_DB=1
+      export KHUDSON_KB_REAL=1
       export KHUDSON_CLAUDE_LIVE=1
       export KHUDSON_SPIKE1=1
       export KHUDSON_AX=1
@@ -89,7 +89,6 @@ let
       exec go test -v "$@" \
         ./internal/ax/ \
         ./internal/dock/ \
-        ./internal/keyboard/keymappdb/ \
         ./internal/module/claudesessions/ \
         ./internal/bus/
     '';
@@ -215,7 +214,7 @@ pkgs.mkShell {
       khudson-race        go test -race          (./internal/bus ./internal/dock)
       khudson-build       go build -> /tmp/khudson/khudson
       khudson-vet         build + go vet ./...
-      khudson-live        env-gated live tests   (KHUDSON_KEYMAPP_DB/CLAUDE_LIVE/SPIKE1/AX)
+      khudson-live        env-gated live tests   (KHUDSON_KB_REAL/CLAUDE_LIVE/SPIKE1/AX)
       khudson-vendorhash  recompute khudson + touchd vendorHash (after a dep bump)
       khudson-dock-dev    working-tree dock in THIS window against the live bus
       khudson-glass-dev   working-tree dock ON THE GLASS (launcher dev override, 6h expiry)

@@ -1,0 +1,15 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 39>
+  +-o AppleT8132USBXHCI@00000000  <class AppleT8132USBXHCI, id 0x100000a11, registered, matched, active, busy 0 (12 ms), retain 58>
+  | {
+  |   "IOClass" = "AppleT8132USBXHCI"
+  |   "locationID" = 0
+  | }
+  |
+  +-o XENEON EDGE@02120000  <class IOUSBHostDevice, id 0x10006e801, registered, matched, active, busy 0 (52 ms), retain 36>
+      {
+        "USB Serial Number" = "003326155698"
+        "USB Product Name" = "XENEON EDGE"
+        "idVendor" = 6940
+        "idProduct" = 7437
+        "locationID" = 34738176
+      }

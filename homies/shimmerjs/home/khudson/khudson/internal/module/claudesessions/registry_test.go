@@ -415,3 +415,36 @@ func TestPanelWashFollowsRegistryWaiting(t *testing.T) {
 		}
 	}
 }
+
+// A user-opened dialog ("waiting" + waitingFor "dialog open" -- the /btw
+// aside, /config) is NOT needs-user: no row wash, no Data.Attention. The
+// user raised the dialog themselves; only prompts the SESSION raises may
+// wear the prompting chrome.
+func TestDialogOpenWaitDoesNotWash(t *testing.T) {
+	projects := t.TempDir()
+	sessionsDir := t.TempDir()
+	now := time.Now()
+	dialog := "cccccccc-1111-2222-3333-444444444444"
+
+	p := filepath.Join(projects, "-Users-x-dev-foo")
+	touch(t, filepath.Join(p, dialog+".jsonl"), tsEntry("2026-07-03T11:00:00Z")+"\n", now)
+	touch(t, filepath.Join(sessionsDir, "1.json"),
+		regStatusRecord(dialog, "waiting", "dialog open", now.Add(-time.Minute).UnixMilli()), now)
+
+	panel := NewPanel(New())
+	data, err := panel.Poll(context.Background(), map[string]any{
+		"projectsDir": projects,
+		"sessionsDir": sessionsDir,
+	})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if data.Attention {
+		t.Error("Data.Attention = true for a user-opened dialog")
+	}
+	for _, r := range data.Rows {
+		if r.Attention {
+			t.Error("row washed for a user-opened dialog")
+		}
+	}
+}

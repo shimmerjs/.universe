@@ -127,6 +127,12 @@ func TestPollUtilParam(t *testing.T) {
 	if got := d.Rows[0].Frac; got != 0.42 {
 		t.Errorf("cpu.Frac = %v, want injected 0.42", got)
 	}
+	// the row tones by ONE signal: RawHeat follows the gauge fraction
+	// (measured util here), never the load-over-cores value -- the load
+	// pair is display data with no alarm of its own
+	if got := d.Rows[0].RawHeat; got != 0.42 {
+		t.Errorf("cpu.RawHeat = %v, want the gauge fraction 0.42", got)
+	}
 }
 
 // TestRenderWindowParam pins the window plumbing: params.window sizes the
