@@ -9,6 +9,20 @@ let
   # writeShellApplication-wrapped hook programs (nix-pinned binaries), defined in
   # ./hooks/default.nix alongside the scripts they wrap.
   hooks = import ./hooks { inherit pkgs; };
+  # worktrunk's in-repo claude plugin, re-seated for claude-code's real
+  # discovery rules: the manifest must live at .claude-plugin/plugin.json
+  # (CC ignores the plugin-root copy, so the shipped activity-marker hooks
+  # never loaded), and the relative `skills -> ../../skills` escape symlink
+  # must be materialized -- home-manager's personal-plugin linking
+  # (HM > 2026-07-09 with CC >= 2.1.157) would otherwise leave it dangling
+  # and the two skills vanish. Same flake input as the wt binary so hooks
+  # and CLI never skew.
+  worktrunkPlugin = pkgs.runCommand "worktrunk-claude-plugin" { } ''
+    cp -RL ${inputs.worktrunk}/plugins/worktrunk $out
+    chmod -R u+w $out
+    mkdir $out/.claude-plugin
+    mv $out/plugin.json $out/.claude-plugin/plugin.json
+  '';
   # Agent-panel row renderer (settings.subagentStatusLine). Go: one process per
   # refresh tick regardless of task count; unit tests run in the check phase.
   subagentStatusline = pkgs.buildGoModule {
@@ -111,10 +125,9 @@ in
     };
 
     plugins = [
-      # worktrunk's in-repo claude plugin, pinned to the same flake input as the
-      # wt binary so hooks and CLI never skew. Skips marketplace / mutable plugin
-      # cache by sideloading via --plugin-dir directly from nix inputs.
-      "${inputs.worktrunk}/plugins/worktrunk"
+      # sideloaded from the nix input, no marketplace / mutable plugin cache;
+      # see worktrunkPlugin above for the manifest/skills re-seating
+      worktrunkPlugin
     ];
 
     settings = {

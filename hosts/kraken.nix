@@ -78,12 +78,13 @@
         ];
       };
 
-      # Set up SSH key for github.com authentication
-      programs.ssh.extraConfig = ''
-        Host github.com
-          AddKeysToAgent yes
-          IdentityFile ~/.ssh/id_ed25519
-      '';
+      # Set up SSH key for github.com authentication. settings, not
+      # extraConfig: extraConfig renders after the shared Host * block, so
+      # ssh_config first-match semantics left these directives dead there.
+      programs.ssh.settings."github.com" = {
+        AddKeysToAgent = "yes";
+        IdentityFile = "~/.ssh/id_ed25519";
+      };
 
       # Configure `gh` CLI to use ssh when setting up repositories
       programs.gh = {
