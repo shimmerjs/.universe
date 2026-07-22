@@ -95,6 +95,12 @@ func usage() {
                       vet + stage a demo script on the bus
   reno start|stop|status|next|prev
                       drive the staged demo run (goto <step-id> jumps)
+  reno record         start recording: ad hoc run when nothing is live,
+                      the live run's clip otherwise (arms write-ahead,
+                      then drives OBS over its websocket)
+  reno obs stop|pause|resume|scene <name>
+                      recording transport ops (exec'd as step effects
+                      for scene/record script commands)
   reno focus-session <handle> | launch-session <handle> [--cwd <dir>]
                       [--keep-focus] [-- <argv>...] | open-url <url> |
                       focus-app <bundle-id>

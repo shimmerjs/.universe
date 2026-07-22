@@ -41,6 +41,30 @@ type Run struct {
 	StoppedAt     time.Time    `json:"stoppedAt,omitzero"`
 	Cursor        int          `json:"cursor"`
 	Steps         []StepActual `json:"steps,omitempty"`
+	// Recording is nil until intent lands (write-ahead of StartRecord).
+	Recording *RecordingState `json:"recording,omitempty"`
+}
+
+// RecordingState journals a run's OBS recording lifecycle. IntentAt is
+// WRITE-AHEAD: it lands before StartRecord ever fires, so a crash
+// between the two recovers as "intended but unproven" instead of a
+// recording nobody owns; StartedAt/ObsVersion arrive from the verb's
+// post-start note, Output from the stop note -- the deterministic clip
+// association. Failed carries the arm-or-start failure for reconcile.
+type RecordingState struct {
+	IntentAt   time.Time `json:"intentAt,omitzero"`
+	StartedAt  time.Time `json:"startedAt,omitzero"`
+	StoppedAt  time.Time `json:"stoppedAt,omitzero"`
+	Directory  string    `json:"directory,omitempty"`
+	Scene      string    `json:"scene,omitempty"`
+	Output     string    `json:"output,omitempty"`
+	ObsVersion string    `json:"obsVersion,omitempty"`
+	Failed     string    `json:"failed,omitempty"`
+}
+
+// Active reports a recording believed live: started, not stopped.
+func (r *RecordingState) Active() bool {
+	return r != nil && !r.StartedAt.IsZero() && r.StoppedAt.IsZero()
 }
 
 // StepActual accumulates one step's real time across visits (prev/goto

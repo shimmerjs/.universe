@@ -254,3 +254,103 @@ func (v *RenoVerbs) OpenURL(ctx context.Context, url string, corr RenoCorr) erro
 	}
 	return v.Act(corr, "open-url", url, "ok", "", nil)
 }
+
+// CtlCall sends one reno ctl subverb to the bus and returns its Data --
+// the record verbs' handshake seam (arm before OBS, note after).
+type CtlCall func(args []string) (json.RawMessage, error)
+
+// ArmResult mirrors the module's record-arm payload.
+type ArmResult struct {
+	Run       string `json:"run"`
+	Directory string `json:"directory"`
+	Scene     string `json:"scene,omitempty"`
+}
+
+// Record is the recording start verb: arm over ctl (the module journals
+// intent WRITE-AHEAD and hands back the run's clip directory), then
+// point OBS at it and start. Failures note back so the journal owns the
+// truth; the started note carries the OBS version (recording identity).
+func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr) error {
+	raw, err := ctl([]string{"record-arm"})
+	if err != nil {
+		return v.Act(corr, "record", "", "error", "arm: "+err.Error(), err)
+	}
+	var arm ArmResult
+	if err := json.Unmarshal(raw, &arm); err != nil {
+		return v.Act(corr, "record", "", "error", "arm decode: "+err.Error(), err)
+	}
+	corr.Run = arm.Run
+	failNote := func(stage string, err error) error {
+		if _, nerr := ctl([]string{"record-note", "failed", stage + ": " + err.Error()}); nerr != nil {
+			err = errors.Join(err, nerr)
+		}
+		return v.Act(corr, "record", arm.Run, "error", stage+": "+err.Error(), err)
+	}
+	obs, err := dial()
+	if err != nil {
+		return failNote("dial", err)
+	}
+	defer obs.Close()
+	if err := os.MkdirAll(arm.Directory, 0o700); err != nil {
+		return failNote("workspace", err)
+	}
+	if obs.CanSetRecordDirectory() {
+		if err := obs.SetRecordDirectory(arm.Directory); err != nil {
+			return failNote("record-directory", err)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "khudson reno record: obs lacks SetRecordDirectory; clip lands in the OBS default directory (journal still owns the path at stop)")
+	}
+	if arm.Scene != "" {
+		if err := obs.SetScene(arm.Scene); err != nil {
+			return failNote("scene "+arm.Scene, err)
+		}
+	}
+	if err := obs.StartRecord(); err != nil {
+		return failNote("start", err)
+	}
+	if _, err := ctl([]string{"record-note", "started", obs.Version()}); err != nil {
+		return v.Act(corr, "record", arm.Run, "unconfirmed",
+			"recording live but the started note failed: "+err.Error(), err)
+	}
+	return v.Act(corr, "record", arm.Run, "ok", "obs "+obs.Version()+" -> "+arm.Directory, nil)
+}
+
+// ObsOp runs one transport operation (stop|pause|resume|scene). Stop
+// notes the clip's output path back into the run journal -- the
+// deterministic clip association.
+func (v *RenoVerbs) ObsOp(op, arg string, dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr) error {
+	target := op
+	if arg != "" {
+		target = op + " " + arg
+	}
+	obs, err := dial()
+	if err != nil {
+		return v.Act(corr, "obs", target, "error", err.Error(), err)
+	}
+	defer obs.Close()
+	switch op {
+	case "stop":
+		path, err := obs.StopRecord()
+		if err != nil {
+			return v.Act(corr, "obs", target, "error", err.Error(), err)
+		}
+		if _, err := ctl([]string{"record-note", "stopped", path}); err != nil {
+			return v.Act(corr, "obs", target, "unconfirmed",
+				"recording stopped ("+path+") but the note failed: "+err.Error(), err)
+		}
+		return v.Act(corr, "obs", target, "ok", path, nil)
+	case "pause":
+		err = obs.PauseRecord()
+	case "resume":
+		err = obs.ResumeRecord()
+	case "scene":
+		err = obs.SetScene(arg)
+	default:
+		err = fmt.Errorf("unknown obs op %q", op)
+	}
+	if err != nil {
+		return v.Act(corr, "obs", target, "error", err.Error(), err)
+	}
+	return v.Act(corr, "obs", target, "ok", "", nil)
+}

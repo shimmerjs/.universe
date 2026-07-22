@@ -217,6 +217,15 @@ func Run(ctx context.Context, opts Options) error {
 				<-schedDone
 				<-caffDone
 				b.effects.shutdown()
+				// then release module-held resources (module.Closer --
+				// reno's cached OBS conn; nothing polls anymore)
+				for name, m := range b.mods {
+					if c, ok := m.(module.Closer); ok {
+						if err := c.Close(); err != nil {
+							log.Printf("khudson bus: close module %s: %v", name, err)
+						}
+					}
+				}
 				return nil
 			}
 			return fmt.Errorf("accept: %w", err)

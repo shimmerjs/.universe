@@ -101,8 +101,12 @@ func TestParseVetRules(t *testing.T) {
 		{"no steps", "demo d\n", "no steps"},
 		{"adhoc reserved", "demo adhoc\nstep a\n", "reserved for scriptless"},
 		{"command in header", "demo d\nfocus-session w\nstep a\n", "before the first step"},
-		{"reserved p1", "demo d\nstep a\nwait ok\n", "lands with P1"},
-		{"record reserved", "demo d\nrecord display 1\nstep a\n", "lands with P1"},
+		{"reserved wait", "demo d\nstep a\nwait ok\n", "reserved wait-guard"},
+		{"record header args", "demo d\nrecord display 1\nstep a\n", "takes no arguments"},
+		{"record op bad", "demo d\nrecord\nstep a\nrecord go\n", "pause or resume"},
+		{"scene without record", "demo d\nscene main\nstep a\n", "without a record header"},
+		{"scene cmd without record", "demo d\nstep a\nscene main\n", "never records"},
+		{"dup record", "demo d\nrecord\nrecord\nstep a\n", "duplicate record header"},
 		{"bad arity", "demo d\nstep a\nfocus-session\n", "wrong arity"},
 		{"bad url", "demo d\nstep a\nopen-url ftp://x\n", "http(s) URL"},
 		{"bad handle", "demo d\nstep a\nfocus-session Work!\n", "must match"},
@@ -175,5 +179,30 @@ func TestExampleScriptVets(t *testing.T) {
 	}
 	if len(s.Steps) == 0 {
 		t.Fatal("example has no steps")
+	}
+}
+
+func TestRecordingScript(t *testing.T) {
+	src := `demo rec-tour
+record
+scene main
+
+step intro
+scene closeup
+record pause
+
+step wrap
+record resume
+`
+	s, err := Parse("", []byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !s.Record || s.Scene != "main" {
+		t.Errorf("header: record=%v scene=%q", s.Record, s.Scene)
+	}
+	got := s.Steps[0].Commands
+	if len(got) != 2 || got[0].Name != "scene" || got[1].Name != "record" || got[1].Args[0] != "pause" {
+		t.Errorf("intro commands = %+v", got)
 	}
 }

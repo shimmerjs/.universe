@@ -208,3 +208,96 @@ func TestJournalFailureFailsTheVerb(t *testing.T) {
 		t.Fatalf("journal failure must fail the verb: %v", err)
 	}
 }
+
+// fakeObs records transport ops; scripted failures by op name.
+type fakeObs struct {
+	ops     []string
+	fail    map[string]error
+	canDir  bool
+	version string
+	output  string
+}
+
+func (f *fakeObs) op(name string) error {
+	f.ops = append(f.ops, name)
+	if f.fail != nil {
+		return f.fail[name]
+	}
+	return nil
+}
+func (f *fakeObs) Version() string                    { return f.version }
+func (f *fakeObs) CanSetRecordDirectory() bool        { return f.canDir }
+func (f *fakeObs) SetRecordDirectory(dir string) error { return f.op("dir:" + dir) }
+func (f *fakeObs) SetScene(name string) error          { return f.op("scene:" + name) }
+func (f *fakeObs) StartRecord() error                  { return f.op("start") }
+func (f *fakeObs) StopRecord() (string, error)         { return f.output, f.op("stop") }
+func (f *fakeObs) PauseRecord() error                  { return f.op("pause") }
+func (f *fakeObs) ResumeRecord() error                 { return f.op("resume") }
+func (f *fakeObs) Close() error                        { return f.op("close") }
+
+// scriptedCtl returns arm data then records notes.
+func scriptedCtl(t *testing.T, dir string) (CtlCall, *[][]string) {
+	t.Helper()
+	notes := &[][]string{}
+	return func(args []string) (json.RawMessage, error) {
+		if args[0] == "record-arm" {
+			raw, _ := json.Marshal(ArmResult{Run: "r9", Directory: dir, Scene: "main"})
+			return raw, nil
+		}
+		*notes = append(*notes, args)
+		return nil, nil
+	}, notes
+}
+
+func TestRecordVerbFlow(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	dir := filepath.Join(t.TempDir(), "ws")
+	ctl, notes := scriptedCtl(t, dir)
+	obs := &fakeObs{canDir: true, version: "31.0.2"}
+	if err := v.Record(func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{Step: -1, Act: -1}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	want := []string{"dir:" + dir, "scene:main", "start", "close"}
+	if strings.Join(obs.ops, ",") != strings.Join(want, ",") {
+		t.Errorf("ops = %v, want %v", obs.ops, want)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("workspace dir must exist: %v", err)
+	}
+	if len(*notes) != 1 || (*notes)[0][0] != "record-note" || (*notes)[0][1] != "started" || (*notes)[0][2] != "31.0.2" {
+		t.Errorf("notes = %v", *notes)
+	}
+	ev := readEvents(t, v)
+	if ev[0].Outcome != "ok" || ev[0].Run != "r9" {
+		t.Errorf("event = %+v", ev[0])
+	}
+
+	// start failure notes back as failed and exits nonzero
+	v2, _ := renoTestVerbs(t)
+	ctl2, notes2 := scriptedCtl(t, dir)
+	obs2 := &fakeObs{canDir: true, fail: map[string]error{"start": fmt.Errorf("no output active")}}
+	if err := v2.Record(func() (ObsTransport, error) { return obs2, nil }, ctl2, RenoCorr{}); err == nil {
+		t.Fatal("failed start must fail the verb")
+	}
+	if len(*notes2) != 1 || (*notes2)[0][1] != "failed" {
+		t.Errorf("failure note = %v", *notes2)
+	}
+}
+
+func TestObsOpStopNotesOutput(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	ctl, notes := scriptedCtl(t, "")
+	obs := &fakeObs{output: "/clips/take1.mkv"}
+	if err := v.ObsOp("stop", "", func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{Run: "r9", Step: -1, Act: -1}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if len(*notes) != 1 || (*notes)[0][1] != "stopped" || (*notes)[0][2] != "/clips/take1.mkv" {
+		t.Errorf("notes = %v", *notes)
+	}
+	if err := v.ObsOp("scene", "wide", func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{Step: -1, Act: -1}); err != nil {
+		t.Fatalf("scene: %v", err)
+	}
+	if obs.ops[len(obs.ops)-2] != "scene:wide" {
+		t.Errorf("ops = %v", obs.ops)
+	}
+}

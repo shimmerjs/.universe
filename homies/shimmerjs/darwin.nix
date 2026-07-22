@@ -104,6 +104,7 @@
           "bitwarden" # Bitwarden GUI
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
+          "obs" # khudson reno capture engine (nixpkgs obs-studio is linux-only)
         ];
       };
     };

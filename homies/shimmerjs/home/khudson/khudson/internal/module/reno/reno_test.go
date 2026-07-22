@@ -261,8 +261,14 @@ func TestPresenterView(t *testing.T) {
 	}
 
 	d, _ = m.Poll(context.Background(), map[string]any{"view": "recorder"})
-	if !rowsContain(d.Rows, "transport lands with OBS (P1)") {
-		t.Errorf("recorder shell: %+v", d.Rows)
+	var haveRecordAct bool
+	for _, r := range d.Rows {
+		if r.Key == KeyActRecord && len(r.Act) == 1 && r.Act[0] == actRecord {
+			haveRecordAct = true
+		}
+	}
+	if !haveRecordAct {
+		t.Errorf("recorder transport missing the record act: %+v", d.Rows)
 	}
 }
 

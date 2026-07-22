@@ -143,6 +143,17 @@ type Effect struct {
 	Argv []string
 }
 
+// Closer is an optional Module capability: Close releases resources the
+// module holds across polls (reno's cached OBS connection). The bus
+// calls it once at clean shutdown, after the scheduler drains and the
+// effect runner stops. The lifecycle policy is deliberately narrow --
+// connect-on-demand inside Poll/verbs, idle-close module-side,
+// Close-at-shutdown here -- NOT start-all hooks: a module must never
+// open connections just because it is compiled in.
+type Closer interface {
+	Close() error
+}
+
 // BoundaryKey marks a run boundary in an effect stream: an Effect with
 // this key and no argv tells the bus executor to invalidate every chain
 // queued before it and interrupt the live child -- a stopped run's

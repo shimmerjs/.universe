@@ -159,6 +159,11 @@ func (m *Mod) HandleActEffects(argv []string) (bool, []module.Effect) {
 			return false, nil
 		}
 		return true, m.stopLocked()
+	case actRecord:
+		if len(argv) != 1 {
+			return false, nil
+		}
+		return true, m.handleRecordActLocked()
 	}
 	return false, nil
 }
@@ -209,7 +214,15 @@ func (m *Mod) transition(to int) []module.Effect {
 	if to < len(m.run.Steps) {
 		visit = m.run.Steps[to].Visits
 	}
-	effects := make([]module.Effect, 0, len(step.Commands))
+	effects := make([]module.Effect, 0, len(step.Commands)+1)
+	if m.staged.Record && m.run.Recording == nil {
+		// recording rides the show: intent journals write-ahead here and
+		// the record verb starts OBS before this step's actions run
+		// (ordered executor: the chain is sequential)
+		if _, err := m.armRecordingLocked(); err == nil {
+			effects = append(effects, m.recordEffect())
+		}
+	}
 	for i, c := range step.Commands {
 		effects = append(effects, module.Effect{
 			Key:  fmt.Sprintf("%s/%d/%d/%d", m.run.ID, to, visit, i),
@@ -229,6 +242,10 @@ func (m *Mod) commandArgv(c renocore.Command, step, act int) []string {
 	argv := []string{m.exe, "reno", c.Name}
 	corr := []string{"--run", m.run.ID, "--step", strconv.Itoa(step), "--act", strconv.Itoa(act)}
 	switch c.Name {
+	case "scene":
+		return append([]string{m.exe, "reno", "obs", "scene", c.Args[0]}, corr...)
+	case "record":
+		return append([]string{m.exe, "reno", "obs", c.Args[0]}, corr...)
 	case "launch-session":
 		// correlation flags must precede the -- tail
 		argv = append(argv, c.Args[0])
@@ -273,7 +290,13 @@ func (m *Mod) stopLocked() []module.Effect {
 	m.run.StoppedAt = now
 	m.stale = ""
 	m.journal()
-	return []module.Effect{module.Boundary()}
+	effects := []module.Effect{module.Boundary()}
+	if m.run.Recording.Active() {
+		// the stop verb runs after the boundary cut and notes the output
+		// path back into this (finalized) run's journal
+		effects = append(effects, m.obsStopEffect())
+	}
+	return effects
 }
 
 // HandleCtl is the run-lifecycle control seam behind `khudson reno
@@ -300,6 +323,18 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 		return nil, m.stopLocked(), nil
 	case "status":
 		return m.statusLocked(), nil, nil
+	case "record":
+		// the CLI record verb with nothing armed: arm (ad hoc when no
+		// live run) and hand back the record effect -- the verb itself
+		// then runs as that effect's twin from the shell, so this ctl
+		// path only arms; the caller does the OBS work
+		arm, err := m.armRecordingLocked()
+		return arm, nil, err
+	case "record-arm":
+		arm, err := m.armRecordingLocked()
+		return arm, nil, err
+	case "record-note":
+		return nil, nil, m.noteRecordingLocked(args[1:])
 	case "next":
 		return nil, m.transition(m.cursor() + 1), nil
 	case "prev":

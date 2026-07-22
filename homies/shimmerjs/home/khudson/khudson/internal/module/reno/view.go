@@ -2,7 +2,6 @@ package reno
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
@@ -20,6 +19,7 @@ const (
 	KeyNext        = "next"
 	KeyActNext     = "act:next"
 	KeyActPrev     = "act:prev"
+	KeyActRecord   = "act:record"
 )
 
 // presenterData renders the presenter view. Caller holds mu.
@@ -185,14 +185,18 @@ func (m *Mod) summaryRows() []module.Row {
 	return rows
 }
 
-// recorderData is the P0 recorder shell: run identity + the clip
-// workspace the run keys, with the OBS transport landing in P1. It keeps
-// the layout, tab-flip, and view plumbing complete now so P1 only fills
-// the transport in.
+// recorderData is the recorder view: run identity, the recording
+// transport (one-tap ad hoc record / stop), and the journaled recording
+// state. States are EXPLICIT -- armed intent, live, stopped-with-clip,
+// failed -- never a stale-looking healthy default (the OBS disconnect
+// hazard from the design's P1 preconditions).
 func (m *Mod) recorderData() module.Data {
 	d := module.Data{Title: "reno rec"}
 	if m.journalErr != "" {
 		d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "journal: " + m.journalErr, Style: module.StyleWarn})
+	}
+	if m.run != nil {
+		d.Rows = append(d.Rows, m.recordingRows()...)
 	}
 	switch {
 	case m.run != nil && m.run.Live():
@@ -205,21 +209,43 @@ func (m *Mod) recorderData() module.Data {
 	default:
 		d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "no script, no run", Style: module.StyleDim})
 	}
-	d.Rows = append(d.Rows,
-		module.Row{Kind: module.RowDivider},
-		module.Row{Kind: module.RowText, Text: "transport lands with OBS (P1)", Style: module.StyleDim},
-		module.Row{Kind: module.RowText, Text: "ad hoc record lands with it", Style: module.StyleDim})
+	d.Rows = append(d.Rows, module.Row{Kind: module.RowDivider}, m.recordControlRow())
 	return d
 }
 
-// workspace is where the live run's clips land (P1 creates it; the shell
-// shows intent). Caller holds mu.
-func (m *Mod) workspace() string {
-	if m.runsDir == "" || m.run == nil {
-		return "(no state root)"
+// recordControlRow is the transport's one tap: record (arming an ad hoc
+// run when nothing is live) or stop-recording while one is live.
+func (m *Mod) recordControlRow() module.Row {
+	if m.run != nil && m.run.Recording.Active() {
+		return module.Row{Kind: module.RowText, Key: KeyActRecord, Text: "stop recording",
+			Style: module.StyleWarn, Act: []string{actRecord}}
 	}
-	root := filepath.Dir(m.runsDir) // <state>/reno
-	return filepath.Join(root, "workspace", m.run.Demo, m.run.ID)
+	return module.Row{Kind: module.RowText, Key: KeyActRecord, Text: "record",
+		Style: module.StyleHighlight, Act: []string{actRecord}}
+}
+
+// recordingRows renders the journaled recording state, explicitly per
+// phase. Caller holds mu; m.run is non-nil.
+func (m *Mod) recordingRows() []module.Row {
+	rec := m.run.Recording
+	if rec == nil {
+		return nil
+	}
+	switch {
+	case rec.Failed != "":
+		return []module.Row{{Kind: module.RowText, Text: "recording FAILED: " + rec.Failed, Style: module.StyleWarn}}
+	case rec.Active():
+		return []module.Row{{Kind: module.RowKV, Key: "recording",
+			Value: fmtClock(m.now().Sub(rec.StartedAt)), Style: module.StyleWarn}}
+	case !rec.StoppedAt.IsZero():
+		out := rec.Output
+		if out == "" {
+			out = "(no output path noted)"
+		}
+		return []module.Row{{Kind: module.RowKV, Key: "clip", Value: out, Style: module.StyleAccent}}
+	default:
+		return []module.Row{{Kind: module.RowKV, Key: "recording", Value: "armed (start pending)", Style: module.StyleDim}}
+	}
 }
 
 // heatFrac clamps a budget fraction into PctHeat's live range; PctHeat

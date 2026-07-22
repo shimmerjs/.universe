@@ -85,6 +85,9 @@ let
       export KHUDSON_CLAUDE_LIVE=1
       export KHUDSON_SPIKE1=1
       export KHUDSON_AX=1
+      # reno OBS transport: needs OBS running with the websocket server
+      # enabled; the test self-skips when unset
+      export KHUDSON_OBS_LIVE="''${KHUDSON_OBS_LIVE:-1}"
       export KHUDSON_SPIKE1_BTOP="''${KHUDSON_SPIKE1_BTOP:-${pkgs.btop}/bin/btop}"
       exec go test -v "$@" \
         ./internal/ax/ \

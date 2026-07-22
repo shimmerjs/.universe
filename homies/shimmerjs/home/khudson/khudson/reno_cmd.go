@@ -93,8 +93,85 @@ func cmdReno(args []string) error {
 
 	case "focus-session", "launch-session", "open-url", "focus-app":
 		return renoAction(verb, rest)
+
+	case "record":
+		// start recording: arms over ctl (ad hoc run when nothing is
+		// live; the module journals intent write-ahead), then drives OBS
+		fs := flag.NewFlagSet("reno record", flag.ExitOnError)
+		host := fs.String("obs-host", bus.DefaultObsHost, "obs-websocket host:port")
+		run := fs.String("run", "", "run id (correlation)")
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		v, err := bus.NewRenoVerbs()
+		if err != nil {
+			return err
+		}
+		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
+		return v.Record(dial, renoCtlData, bus.RenoCorr{Run: *run, Step: -1, Act: -1})
+
+	case "obs":
+		// transport ops: stop | pause | resume | scene <name>
+		if len(rest) == 0 {
+			return fmt.Errorf("reno obs: need an op: stop | pause | resume | scene <name>")
+		}
+		op := rest[0]
+		arg := ""
+		flagsAt := 1
+		if op == "scene" {
+			if len(rest) < 2 {
+				return fmt.Errorf("reno obs scene: need a scene name")
+			}
+			arg, flagsAt = rest[1], 2
+		}
+		fs := flag.NewFlagSet("reno obs", flag.ExitOnError)
+		host := fs.String("obs-host", bus.DefaultObsHost, "obs-websocket host:port")
+		run := fs.String("run", "", "run id (correlation)")
+		step := fs.Int("step", -1, "step ordinal (correlation)")
+		act := fs.Int("act", -1, "action index (correlation)")
+		if err := fs.Parse(rest[flagsAt:]); err != nil {
+			return err
+		}
+		v, err := bus.NewRenoVerbs()
+		if err != nil {
+			return err
+		}
+		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
+		return v.ObsOp(op, arg, dial, renoCtlData, bus.RenoCorr{Run: *run, Step: *step, Act: *act})
 	}
 	return fmt.Errorf("reno: unknown verb %q", verb)
+}
+
+// renoCtlData sends one reno ctl subverb and returns the raw Data reply
+// (the record verbs' arm/note handshake).
+func renoCtlData(args []string) (json.RawMessage, error) {
+	p, err := paths.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout("unix", p.BusSocket(), 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("bus not reachable: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, err
+	}
+	enc := json.NewEncoder(conn)
+	if err := enc.Encode(proto.Msg{Type: proto.TypeHello, Role: proto.RoleCtl}); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "reno", Args: args}); err != nil {
+		return nil, err
+	}
+	var resp proto.Msg
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("%s", resp.Error)
+	}
+	return resp.Data, nil
 }
 
 // renoCtlCall sends one reno subverb to the bus and prints the reply

@@ -38,7 +38,13 @@ const AdhocName = "adhoc"
 type Script struct {
 	Name   string
 	Budget time.Duration // whole-talk budget; 0 = none
-	Steps  []Step
+	// Record declares recording intent: the run records from the first
+	// advance, and record/scene step commands become legal.
+	Record bool
+	// Scene is the optional initial OBS scene, set before recording
+	// starts.
+	Scene string
+	Steps []Step
 	// Hash is the sha256 of the raw archive bytes; the run journal pins
 	// it so a reload with an edited script never silently keeps a stale
 	// cursor.
@@ -81,12 +87,27 @@ var commands = map[string]cmdSpec{
 	"launch-session": {minArgs: 1, maxArgs: -1, check: checkLaunch},
 	"focus-app":      {minArgs: 1, maxArgs: 1},
 	"open-url":       {minArgs: 1, maxArgs: 1, check: checkURL},
+	// recording commands are legal only under a `record` header (Parse):
+	// a scene switch in a script that never records is an authoring
+	// error, not a dead op
+	"scene":  {minArgs: 1, maxArgs: 1},
+	"record": {minArgs: 1, maxArgs: 1, check: checkRecordOp},
 }
 
-// reservedP1 names vet loudly as not-yet-landed instead of unknown, so a
+// recordCommands need the header's recording intent to vet.
+var recordCommands = map[string]bool{"scene": true, "record": true}
+
+// reservedP2 names vet loudly as not-yet-landed instead of unknown, so a
 // script written against the full design fails with the real reason.
-var reservedP1 = map[string]bool{
-	"wait": true, "hide": true, "show": true, "record": true, "scene": true,
+var reservedP2 = map[string]bool{
+	"wait": true, "hide": true, "show": true,
+}
+
+func checkRecordOp(args []string) error {
+	if args[0] != "pause" && args[0] != "resume" {
+		return fmt.Errorf("record wants pause or resume as a step command, got %q", args[0])
+	}
+	return nil
 }
 
 func checkHandle(args []string) error {
@@ -193,6 +214,37 @@ func Parse(path string, src []byte) (*Script, error) {
 				continue
 			}
 			s.Name = args[0]
+		case "record":
+			if cur == nil {
+				// header form: bare recording intent
+				if len(args) != 0 {
+					fail(line, "header record takes no arguments (pause/resume are step commands)")
+					continue
+				}
+				if s.Record {
+					fail(line, "duplicate record header")
+					continue
+				}
+				s.Record = true
+				continue
+			}
+			// step form (`record pause|resume`) vets as a command below
+			vetCommand(s, cur, verb, args, line, fail)
+		case "scene":
+			if cur == nil {
+				// header form: the initial scene, set before recording starts
+				if len(args) != 1 {
+					fail(line, "header scene wants exactly one name")
+					continue
+				}
+				if s.Scene != "" {
+					fail(line, "duplicate scene header")
+					continue
+				}
+				s.Scene = args[0]
+				continue
+			}
+			vetCommand(s, cur, verb, args, line, fail)
 		case "step":
 			if len(args) != 1 {
 				fail(line, "step wants exactly one id")
@@ -253,30 +305,15 @@ func Parse(path string, src []byte) (*Script, error) {
 				cur.Budget = d
 			}
 		default:
-			if reservedP1[verb] {
-				fail(line, "%q is reserved recording vocabulary and lands with P1", verb)
+			if reservedP2[verb] {
+				fail(line, "%q is reserved wait-guard vocabulary and has not landed", verb)
 				continue
 			}
 			if cur == nil {
-				fail(line, "command %q before the first step (header takes demo and budget only)", verb)
+				fail(line, "command %q before the first step (header takes demo, budget, record, scene)", verb)
 				continue
 			}
-			spec, ok := commands[verb]
-			if !ok {
-				fail(line, "unknown command %q (registry: %s)", verb, registryNames())
-				continue
-			}
-			if len(args) < spec.minArgs || (spec.maxArgs >= 0 && len(args) > spec.maxArgs) {
-				fail(line, "%s: wrong arity (got %d args)", verb, len(args))
-				continue
-			}
-			if spec.check != nil {
-				if err := spec.check(args); err != nil {
-					fail(line, "%s: %v", verb, err)
-					continue
-				}
-			}
-			cur.Commands = append(cur.Commands, Command{Name: verb, Args: args, Line: line})
+			vetCommand(s, cur, verb, args, line, fail)
 		}
 	}
 	if s.Name == "" {
@@ -285,10 +322,38 @@ func Parse(path string, src []byte) (*Script, error) {
 	if len(s.Steps) == 0 {
 		errs = append(errs, errors.New("script has no steps"))
 	}
+	if s.Scene != "" && !s.Record {
+		errs = append(errs, errors.New("scene header without a record header"))
+	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
 	return s, nil
+}
+
+// vetCommand vets one step command line against the closed registry and
+// appends it to the step.
+func vetCommand(s *Script, cur *Step, verb string, args []string, line int, fail func(int, string, ...any)) {
+	spec, ok := commands[verb]
+	if !ok {
+		fail(line, "unknown command %q (registry: %s)", verb, registryNames())
+		return
+	}
+	if recordCommands[verb] && !s.Record {
+		fail(line, "%s: the script never records (add a `record` header)", verb)
+		return
+	}
+	if len(args) < spec.minArgs || (spec.maxArgs >= 0 && len(args) > spec.maxArgs) {
+		fail(line, "%s: wrong arity (got %d args)", verb, len(args))
+		return
+	}
+	if spec.check != nil {
+		if err := spec.check(args); err != nil {
+			fail(line, "%s: %v", verb, err)
+			return
+		}
+	}
+	cur.Commands = append(cur.Commands, Command{Name: verb, Args: args, Line: line})
 }
 
 // resolveNote finds a note body: an archive file section by exact name,

@@ -120,12 +120,12 @@ func TestRenoFlatViews(t *testing.T) {
 			Params: map[string]any{"view": "recorder"}}}
 	m.widgetData["reno-presenter"] = module.Data{Title: "reno rec", Rows: []module.Row{
 		{Kind: module.RowKV, Key: "run", Value: "r-123"},
-		{Kind: module.RowText, Text: "transport lands with OBS (P1)", Style: module.StyleDim},
+		{Kind: module.RowText, Key: "act:record", Text: "record", Act: []string{"reno:record"}},
 	}}
 	m.invalidateHome("reno-presenter")
 	body = ansi.Strip(m.View().Content)
-	if !strings.Contains(body, "transport lands with OBS (P1)") || !strings.Contains(body, "r-123") {
-		t.Errorf("recorder shell missing rows:\n%s", body)
+	if !strings.Contains(body, "record") || !strings.Contains(body, "r-123") {
+		t.Errorf("recorder view missing rows:\n%s", body)
 	}
 }
 
