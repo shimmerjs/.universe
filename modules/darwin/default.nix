@@ -25,6 +25,18 @@
   nixpkgs.overlays = [
     (final: prev: {
       qemu = inputs.nixpkgs-qemu.legacyPackages.${prev.stdenv.hostPlatform.system}.qemu;
+      # nixos-unstable's vscode 1.129.1 predates the 1.129 asar-layout fix
+      # (patchPhase chmods the pre-1.129 ripgrep path and fails on darwin).
+      # Bridge from the master-tracking nixpkgs-claude input until the channel
+      # catches up, then drop (check: main-nixpkgs vscode builds again).
+      # Shared, not clod-scoped: every homie with programs.vscode hits it.
+      # `import`, not legacyPackages: vscode is unfree and the input's default
+      # package set is free-only.
+      vscode =
+        (import inputs.nixpkgs-claude {
+          inherit (prev.stdenv.hostPlatform) system;
+          config.allowUnfree = true;
+        }).vscode;
     })
   ];
 

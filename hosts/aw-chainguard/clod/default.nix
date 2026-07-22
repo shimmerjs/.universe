@@ -9,14 +9,12 @@ let
   # writeShellApplication-wrapped hook programs (nix-pinned binaries), defined in
   # ./hooks/default.nix alongside the scripts they wrap.
   hooks = import ./hooks { inherit pkgs; };
-  # worktrunk's in-repo claude plugin, re-seated for claude-code's real
-  # discovery rules: the manifest must live at .claude-plugin/plugin.json
-  # (CC ignores the plugin-root copy, so the shipped activity-marker hooks
-  # never loaded), and the relative `skills -> ../../skills` escape symlink
-  # must be materialized -- home-manager's personal-plugin linking
-  # (HM > 2026-07-09 with CC >= 2.1.157) would otherwise leave it dangling
-  # and the two skills vanish. Same flake input as the wt binary so hooks
-  # and CLI never skew.
+  # worktrunk's in-repo claude plugin. Upstream ships the manifest at
+  # .claude-plugin/plugin.json itself as of f14fa69 (2026-07-22) -- the
+  # re-seat this drv used to do -- but cp -RL still materializes any escape
+  # symlinks (home-manager's personal-plugin linking would leave them
+  # dangling). Same flake input as the wt binary so hooks and CLI never
+  # skew.
   # The plugin lives in a named subdir: home-manager keys the installed
   # plugin (and its ~/.claude/skills/<name> link) off the path BASENAME,
   # and a bare $out would leak the hash-prefixed store name.
@@ -24,8 +22,6 @@ let
     mkdir $out
     cp -RL ${inputs.worktrunk}/plugins/worktrunk $out/worktrunk
     chmod -R u+w $out/worktrunk
-    mkdir $out/worktrunk/.claude-plugin
-    mv $out/worktrunk/plugin.json $out/worktrunk/.claude-plugin/plugin.json
   '';
   # Agent-panel row renderer (settings.subagentStatusLine). Go: one process per
   # refresh tick regardless of task count; unit tests run in the check phase.
