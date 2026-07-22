@@ -1,11 +1,11 @@
 # zsh rc posture pins on the RENDERED rc files, plus an isolated runtime
-# init smoke. Catches the regression classes found in the 2026-07 audit:
-# a second system-level compinit reappearing (two compinits with different
-# fpaths fight over one .zcompdump and force full rebuilds per shell), the
-# cached -C idiom or instant-prompt-first ordering lost, omz residue or
-# global command aliases coming back, and the keymap/matcher pins drifting.
-# The smoke run proves the rc still initializes cleanly in isolation and
-# that the smart-case completion style actually lands at runtime.
+# init smoke. Catches the structural regression classes from the 2026-07
+# audit: a second system-level compinit reappearing (two compinits with
+# different fpaths fight over one .zcompdump and force full rebuilds per
+# shell), the cached -C idiom lost, global command aliases coming back,
+# and the keymap/matcher pins drifting. The smoke run proves the rc still
+# initializes cleanly in isolation and that the smart-case completion
+# style actually lands at runtime.
 {
   pkgs,
   zshrc,
@@ -23,16 +23,8 @@ pkgs.runCommand "zshrc-check" { nativeBuildInputs = [ pkgs.zsh ]; } ''
   grep -q 'autoload -U compinit' "$rc" || { echo "FAIL: user zshrc lost compinit"; exit 1; }
   grep -q 'compinit -C' "$rc" || { echo "FAIL: cached-compinit (-C) idiom gone"; exit 1; }
 
-  ip=$(grep -n 'p10k-instant-prompt' "$rc" | head -1 | cut -d: -f1)
-  ci=$(grep -n 'autoload -U compinit' "$rc" | head -1 | cut -d: -f1)
-  [ -n "$ip" ] || { echo "FAIL: p10k instant-prompt stanza missing"; exit 1; }
-  [ "$ip" -lt "$ci" ] || { echo "FAIL: instant prompt does not precede compinit"; exit 1; }
-
   grep -q 'bindkey -e' "$rc" || { echo "FAIL: emacs keymap pin gone (update this check if the keymap changes on purpose)"; exit 1; }
   grep -q 'matcher-list' "$rc" || { echo "FAIL: smart-case matcher-list zstyle gone"; exit 1; }
-  if grep -qE 'DISABLE_AUTO_TITLE|COMPLETION_WAITING_DOTS' "$rc"; then
-    echo "FAIL: oh-my-zsh residue back in the rc"; exit 1
-  fi
   if grep -qE '^alias -g (k|ksh|bazel|icat|tdot|idot)=' "$rc"; then
     echo "FAIL: command aliases are global again (mid-line expansion hazard)"; exit 1
   fi

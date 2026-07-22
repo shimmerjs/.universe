@@ -17,8 +17,8 @@
 #                             rendered ~/.claude/skills (manifests seated,
 #                             pointers resolve, no dangling symlinks).
 #   - zshrc-<host>:           zsh rc posture pins (single compinit, cached
-#                             -C, instant-prompt-first, no omz residue) +
-#                             isolated runtime init smoke.
+#                             -C, keymap/matcher/alias posture) + isolated
+#                             runtime init smoke.
 { inputs }:
 
 let
