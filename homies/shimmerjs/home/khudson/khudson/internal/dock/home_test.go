@@ -333,8 +333,38 @@ func TestRailTilePlacement(t *testing.T) {
 	}
 }
 
-// A 15-row rail holds 5 bands x 2 = 10 bordered buttons: 16 apps truncate
-// to 9 buttons plus a dim "+7" cell, never silently.
+// A pressed tile swaps its frame to the edge-hugging hairline ring: the lit
+// border sits ON the tile's outer cell edge, bounding the fill, instead of
+// the box-drawing line's half-cell inset.
+func TestRailTilePressedHairline(t *testing.T) {
+	press := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ff00ff")).
+		Background(lipgloss.Color("#332233"))
+	lines := railTile("safari", 8, press, press)
+	if !strings.Contains(lines[0], pressBorder.TopLeft) || !strings.Contains(lines[0], pressBorder.Top) {
+		t.Error("pressed roof is not the hairline ring")
+	}
+	if !strings.Contains(lines[1], pressBorder.Left) || !strings.Contains(lines[1], pressBorder.Right) {
+		t.Error("pressed walls are not the hairline ring")
+	}
+	if !strings.Contains(lines[2], pressBorder.BottomLeft) || !strings.Contains(lines[2], pressBorder.Bottom) {
+		t.Error("pressed floor is not the hairline ring")
+	}
+	if strings.Contains(lines[0], lipgloss.NormalBorder().TopLeft) {
+		t.Error("box-drawing frame leaked into the pressed tile")
+	}
+	// the exotic corners must stay width-1 cells (fitCell convention)
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w != 8 {
+			t.Errorf("pressed line %d width = %d, want 8", i, w)
+		}
+	}
+}
+
+// A 15-row rail would hold 5 bands x 2 = 10 bordered buttons, but growth
+// caps at railMaxRows bands: 16 apps truncate to 7 buttons plus a "+9"
+// cell -- never silently, and the cell is a button itself (its tap expands
+// the folded tail as a popover).
 func TestRailOverflowCell(t *testing.T) {
 	m := newHomeModel(320, 18)
 	widenRail(m, 22)
@@ -345,13 +375,13 @@ func TestRailOverflowCell(t *testing.T) {
 	}
 	m.widgetData["dock-rail"] = module.Data{Rows: rows}
 	plain := ansi.Strip(m.renderHome(17))
-	if !strings.Contains(plain, "app08") {
+	if !strings.Contains(plain, "app06") {
 		t.Error("last shown app missing")
 	}
-	if strings.Contains(plain, "app09") {
+	if strings.Contains(plain, "app07") {
 		t.Error("truncated app still rendered")
 	}
-	if !strings.Contains(plain, "+7") {
+	if !strings.Contains(plain, "+9") {
 		t.Error("overflow cell missing")
 	}
 	buttons := 0
@@ -360,14 +390,16 @@ func TestRailOverflowCell(t *testing.T) {
 			buttons++
 		}
 	}
-	if buttons != 9 {
-		t.Errorf("tile hits = %d, want 9 (overflow cell is not a tile)", buttons)
+	if buttons != 8 {
+		t.Errorf("tile hits = %d, want 8 (7 apps + the overflow button)", buttons)
 	}
 }
 
-// Two columns must fit 16 running apps in 24 rows -- the 1-column rail
-// height-truncated the running tail and kitty went silently missing.
-func TestRail24RowsFitsSixteenApps(t *testing.T) {
+// A 24-row rail no longer sprawls to fit every app: growth caps at
+// railMaxRows bands and the tail folds into the +N cell, whose tap opens
+// the folded apps as a popover in the long-press-menu idiom -- kitty (the
+// 16th app) stays reachable through it, never silently missing.
+func TestRailRowCapFoldsTailIntoPopover(t *testing.T) {
 	m := newHomeModel(40, 30)
 	rows := make([]module.Row, 0, 16)
 	for i := range 15 {
@@ -379,25 +411,42 @@ func TestRail24RowsFitsSixteenApps(t *testing.T) {
 	m.resetHits()
 	out := m.renderRail(m.cfg.Widgets["dock-rail"], rect{0, 0, 15, 24})
 	plain := ansi.Strip(out)
-	for i := range 15 {
-		if !strings.Contains(plain, fmt.Sprintf("app%02d", i)) {
-			t.Errorf("app%02d missing from a 24-row rail", i)
-		}
+	if !strings.Contains(plain, "app06") {
+		t.Error("last shown app missing")
 	}
-	if !strings.Contains(plain, "kitty") {
-		t.Error("kitty missing from a 24-row rail")
+	if strings.Contains(plain, "app07") {
+		t.Error("folded app still rendered")
 	}
-	if strings.Contains(plain, "+") {
-		t.Error("16 apps in 24 rows must not overflow")
+	if !strings.Contains(plain, "+9") {
+		t.Error("overflow cell missing")
 	}
+	var over *hitRegion
 	buttons := 0
-	for _, h := range m.hits {
+	for i, h := range m.hits {
 		if h.area.w == 7 && h.area.h == railTileH {
 			buttons++
+			over = &m.hits[i]
 		}
 	}
-	if buttons != 16 {
-		t.Errorf("tile hits = %d, want 16", buttons)
+	if buttons != 8 {
+		t.Fatalf("tile hits = %d, want 8 (7 apps + the overflow button)", buttons)
+	}
+	over.do(over.area.x, over.area.y)
+	o := m.overlay
+	if o == nil {
+		t.Fatal("overflow tap opened no popover")
+	}
+	if len(o.items) != 9 {
+		t.Fatalf("popover items = %d, want 9", len(o.items))
+	}
+	if o.items[len(o.items)-1].label != "kitty" {
+		t.Errorf("last popover item = %q, want kitty", o.items[len(o.items)-1].label)
+	}
+	if o.weld == weldNone {
+		t.Error("overflow popover did not weld to its cell")
+	}
+	if got := o.items[0].argv; len(got) != 3 || got[2] != "app07" {
+		t.Errorf("first popover item argv = %v, want the first folded app's act", got)
 	}
 }
 

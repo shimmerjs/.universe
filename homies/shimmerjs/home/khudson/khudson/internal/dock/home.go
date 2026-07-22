@@ -56,6 +56,7 @@ const (
 	homeTileH    = 3  // tray buttons are 3 lines tall
 	railTileH    = 3  // rail buttons: border + label + border, ~90px touch
 	railTileW    = 11 // rail tiles cap at this width: more columns, not wider tiles
+	railMaxRows  = 4  // rail growth cap in tile rows: the tail folds into the +N popover
 	trayFlashFor = 2 * time.Second
 	// tapFlashFor is the tap-feedback window; one registry (m.trayFlash)
 	// serves both flashes, tap keys namespaced ("tab:kb", "rail:safari",
@@ -486,7 +487,7 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 	colors := railColors(w.Render.Params)
 	cols := max((rr.w+railTileW-1)/railTileW, 1)
 	bw := rr.w / cols
-	capacity := max((rr.h-len(notes))/railTileH, 0) * cols
+	capacity := min(max((rr.h-len(notes))/railTileH, 0), railMaxRows) * cols
 	if bw < 4 || capacity < 1 {
 		// region too small for tiles: a dim name list, never a panic
 		lines := make([]string, 0, len(apps)+len(notes))
@@ -539,7 +540,40 @@ func (m *model) renderRail(w config.Widget, rr rect) string {
 		})
 	}
 	if overflow > 0 {
-		cells = append(cells, railTile(fmt.Sprintf("+%d", overflow), bw, chromeDim, chromeDim))
+		// the +N cell is a button too: tap (or long-press) expands the folded
+		// tail as a popover in the long-press-menu idiom, welded to the cell;
+		// an item fires the same row act the tile's own tap would
+		rest := apps[len(shown):]
+		menu := make([]module.Act, 0, len(rest))
+		for _, r := range rest {
+			menu = append(menu, module.Act{Label: railName(r, nicks), Argv: r.Act})
+		}
+		key := "rail:overflow"
+		border, label := chromeDim, chromeDim
+		if m.flashLive(key) {
+			if b, l, ok := m.pressStyles(); ok {
+				border, label = b, l
+			} else {
+				label = m.tapStyle(label)
+			}
+		}
+		cells = append(cells, railTile(fmt.Sprintf("+%d", overflow), bw, border, label))
+		i := len(shown)
+		area := rect{rr.x + lpad + (i%cols)*bw, rr.y + (i/cols)*railTileH, bw, railTileH}
+		open := func(x, y int) { m.openOverlay(w.ID, menu, x, y) }
+		m.hits = append(m.hits, hitRegion{
+			area: area,
+			do: func(x, y int) {
+				// tap welds like resolveLongPress would: same origin, same box
+				m.flash(key)
+				m.overlayOriginKey = key
+				m.overlayOriginTile = area
+				open(x, y)
+			},
+			longPress: open,
+			pressKey:  key,
+			weldTile:  true,
+		})
 	}
 	pad := strings.Repeat(" ", lpad)
 	blank := strings.Split(blankBlock(bw, railTileH), "\n")
@@ -636,11 +670,30 @@ func borderedTile(label string, w, h int, border, style lipgloss.Style) []string
 		Height(h).
 		Align(lipgloss.Center, lipgloss.Center)
 	// a border carrying a background is the pressed treatment: the fill
-	// backs every cell -- interior padding and the frame ring alike
+	// backs every cell -- interior padding and the frame ring alike -- and
+	// the frame swaps to the edge-hugging hairline ring, so the lit border
+	// sits ON the tile's outer cell edge (box-drawing lines run through cell
+	// centers, floating the ring half a cell inside the fill)
 	if bg := border.GetBackground(); !isNoColor(bg) {
-		box = box.Background(bg).BorderBackground(bg)
+		box = box.Border(pressBorder).Background(bg).BorderBackground(bg)
 	}
 	return strings.Split(box.Render(style.Render(fitCell(label, w-2))), "\n")
+}
+
+// pressBorder is the pressed tile's frame: one-eighth blocks hugging the
+// tile's outer cell edges (the clod card's railGlyph family), corners from
+// Symbols for Legacy Computing (kitty renders both families procedurally,
+// box-drawing-crisp at any size).
+var pressBorder = lipgloss.Border{
+	Top:    "▔",
+	Bottom: "▁",
+	Left:   "▏",
+	Right:  "▕",
+
+	TopLeft:     "\U0001fb7d",
+	TopRight:    "\U0001fb7e",
+	BottomLeft:  "\U0001fb7c",
+	BottomRight: "\U0001fb7f",
 }
 
 // railTile is one grid button: a snug square-border box, the name
