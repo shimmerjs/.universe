@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -91,8 +93,12 @@ func cmdReno(args []string) error {
 		}
 		return renoCtlCall([]string{"goto", rest[0]})
 
-	case "focus-session", "launch-session", "open-url", "focus-app":
+	case "focus-session", "launch-session", "open-url", "focus-app",
+		"chrome-tab", "hide-app", "show-app":
 		return renoAction(verb, rest)
+
+	case "trim", "stitch", "mute", "dub":
+		return renoPost(verb, rest)
 
 	case "record":
 		// start recording: arms over ctl (ad hoc run when nothing is
@@ -247,33 +253,134 @@ func renoAction(verb string, rest []string) error {
 	ctx, cancel := context.WithTimeout(ctx, renoVerbDeadline)
 	defer cancel()
 
-	if verb == "focus-app" {
-		if !ax.Trusted() {
-			return fmt.Errorf("reno focus-app: Accessibility not granted -- grant the installed khudson binary in System Settings > Privacy & Security > Accessibility, then restart the bus")
-		}
-		v, err := bus.NewRenoVerbs()
-		if err != nil {
-			return err
-		}
-		aerr := ax.FocusApp(target)
-		outcome, detail := "ok", ""
-		if aerr != nil {
-			outcome, detail = "error", aerr.Error()
-		}
-		return v.Act(corr, "focus-app", target, outcome, detail, aerr)
-	}
-
 	v, err := bus.NewRenoVerbs()
 	if err != nil {
 		return err
 	}
 	switch verb {
+	case "focus-app", "hide-app", "show-app":
+		if !ax.Trusted() {
+			return fmt.Errorf("reno %s: Accessibility not granted -- grant the installed khudson binary in System Settings > Privacy & Security > Accessibility, then restart the bus", verb)
+		}
+		var aerr error
+		switch verb {
+		case "focus-app":
+			aerr = ax.FocusApp(target)
+		case "hide-app":
+			aerr = ax.SetAppHidden(target, true)
+		case "show-app":
+			// show = unhide + bring to front: the visibility primitive
+			// that replaced spaces switching
+			if aerr = ax.SetAppHidden(target, false); aerr == nil {
+				aerr = ax.FocusApp(target)
+			}
+		}
+		outcome, detail := "ok", ""
+		if aerr != nil {
+			outcome, detail = "error", aerr.Error()
+		}
+		return v.Act(corr, verb, target, outcome, detail, aerr)
 	case "focus-session":
 		return v.FocusSession(ctx, target, corr)
 	case "launch-session":
 		return v.LaunchSession(ctx, target, *cwd, *keepFocus, fs.Args(), corr)
 	case "open-url":
 		return v.OpenURL(ctx, target, corr)
+	case "chrome-tab":
+		return v.ChromeTab(ctx, target, corr)
 	}
 	return fmt.Errorf("reno: unknown action verb %q", verb)
+}
+
+// renoPost runs one ffmpeg clip verb. Argv builders live in
+// internal/reno (pure, unit-tested); this shell resolves defaults and
+// execs. ffmpeg PATH-resolves (nixpkgs darwin ships it); a missing
+// binary is a clear error, not a stack trace.
+func renoPost(verb string, rest []string) error {
+	if len(rest) == 0 {
+		return fmt.Errorf("reno %s: need a clip", verb)
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return fmt.Errorf("reno %s: ffmpeg not on PATH (add pkgs.ffmpeg or nix shell nixpkgs#ffmpeg)", verb)
+	}
+	run := func(argv []string) error {
+		fmt.Fprintln(os.Stderr, "khudson reno "+verb+": "+strings.Join(argv, " "))
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		return cmd.Run()
+	}
+	switch verb {
+	case "trim":
+		clip := rest[0]
+		fs := flag.NewFlagSet("reno trim", flag.ExitOnError)
+		start := fs.Duration("start", 0, "cut start")
+		end := fs.Duration("end", 0, "cut end (required)")
+		out := fs.String("o", "", "output (default <clip>-trim)")
+		exact := fs.Bool("exact", false, "re-encode video for frame-accurate cuts (copy snaps to keyframes)")
+		if err := fs.Parse(rest[1:]); err != nil {
+			return err
+		}
+		if *out == "" {
+			*out = renocore.DefaultOut(clip, "trim")
+		}
+		argv, err := renocore.TrimArgs(clip, *start, *end, *out, *exact)
+		if err != nil {
+			return err
+		}
+		return run(argv)
+	case "stitch":
+		fs := flag.NewFlagSet("reno stitch", flag.ExitOnError)
+		out := fs.String("o", "stitched.mkv", "output")
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		list, err := renocore.ConcatList(fs.Args())
+		if err != nil {
+			return err
+		}
+		lf, err := os.CreateTemp("", "reno-stitch-*.ffconcat")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(lf.Name())
+		if _, err := lf.WriteString(list); err != nil {
+			return err
+		}
+		lf.Close()
+		return run(renocore.StitchArgs(lf.Name(), *out))
+	case "mute":
+		clip := rest[0]
+		fs := flag.NewFlagSet("reno mute", flag.ExitOnError)
+		out := fs.String("o", "", "output (default <clip>-mute)")
+		if err := fs.Parse(rest[1:]); err != nil {
+			return err
+		}
+		if *out == "" {
+			*out = renocore.DefaultOut(clip, "mute")
+		}
+		argv, err := renocore.MuteArgs(clip, *out)
+		if err != nil {
+			return err
+		}
+		return run(argv)
+	case "dub":
+		if len(rest) < 2 {
+			return fmt.Errorf("reno dub: need a clip and an audio file")
+		}
+		clip, audio := rest[0], rest[1]
+		fs := flag.NewFlagSet("reno dub", flag.ExitOnError)
+		out := fs.String("o", "", "output (default <clip>-dub)")
+		if err := fs.Parse(rest[2:]); err != nil {
+			return err
+		}
+		if *out == "" {
+			*out = renocore.DefaultOut(clip, "dub")
+		}
+		argv, err := renocore.DubArgs(clip, audio, *out)
+		if err != nil {
+			return err
+		}
+		return run(argv)
+	}
+	return fmt.Errorf("reno: unknown post verb %q", verb)
 }

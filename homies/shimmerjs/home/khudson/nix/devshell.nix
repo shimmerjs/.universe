@@ -202,6 +202,8 @@ pkgs.mkShell {
     pkgs.gopls
     # runtime tools the modules/tests exec that are NOT macOS builtins
     pkgs.m1ddc
+    pkgs.ffmpeg
+    pkgs.mpv
     pkgs.gh
     pkgs.kitty # provides `kitten`
     pkgs.btop

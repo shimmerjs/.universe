@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
@@ -353,4 +354,60 @@ func (v *RenoVerbs) ObsOp(op, arg string, dial func() (ObsTransport, error), ctl
 		return v.Act(corr, "obs", target, "error", err.Error(), err)
 	}
 	return v.Act(corr, "obs", target, "ok", "", nil)
+}
+
+// chromeTabScript activates the first Chrome tab whose URL or title
+// contains the needle. AppleScript over the Scripting Bridge sdef -- the
+// CDP path died on the daily profile at Chrome 136, and chrome-cli is
+// unpackaged, so osascript is the dispatcher of record (gate 3). Needs
+// the one-time Automation (AppleEvents -> Chrome) grant on the khudson
+// binary.
+const chromeTabScript = `on run argv
+	set needle to item 1 of argv
+	tell application "Google Chrome"
+		set wi to 0
+		repeat with w in windows
+			set wi to wi + 1
+			set ti to 0
+			repeat with t in tabs of w
+				set ti to ti + 1
+				if (URL of t contains needle) or (title of t contains needle) then
+					set active tab index of w to ti
+					set index of w to 1
+					activate
+					return "window " & wi & " tab " & ti
+				end if
+			end repeat
+		end repeat
+	end tell
+	error "no chrome tab matches " & needle
+end run`
+
+// osaRun execs one osascript program with args; seam for tests.
+var osaRun = func(ctx context.Context, script string, args ...string) (string, error) {
+	argv := append([]string{"-e", script, "-"}, args...)
+	out, err := exec.CommandContext(ctx, "osascript", argv...).Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			msg, _, _ := strings.Cut(strings.TrimSpace(string(ee.Stderr)), "\n")
+			return "", errors.New(msg)
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ChromeTab activates the first tab matching needle (URL or title
+// substring), journaled like every step action.
+func (v *RenoVerbs) ChromeTab(ctx context.Context, needle string, corr RenoCorr) error {
+	where, err := osaRun(ctx, chromeTabScript, needle)
+	if err != nil {
+		outcome := "error"
+		if strings.Contains(err.Error(), "no chrome tab matches") {
+			outcome = "miss"
+		}
+		return v.Act(corr, "chrome-tab", needle, outcome, err.Error(), err)
+	}
+	return v.Act(corr, "chrome-tab", needle, "ok", where, nil)
 }

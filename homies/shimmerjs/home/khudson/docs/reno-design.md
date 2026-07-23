@@ -137,14 +137,14 @@ One engine-owned stopwatch, N read-outs: bubbles timer stops dead at zero and ca
 3. CDP-on-daily-profile death on the installed Chrome version (decides the P2 chrome dispatcher) -- RESOLVED 2026-07-22: Chrome 150 installed, well past the 136 cutoff, and chrome-cli is unpackaged in nixpkgs; dispatcher = osascript AppleScript direct.
 4. RETIRED (user 2026-07-22): no spaces machinery at all -- window hide/show/focus verbs instead; nothing to spike.
 
-## phasing (each deployable alone)
+## phasing (each deployable alone; LANDED marks 2026-07-22 arc state)
 
-1. P0 script + presenter: txtar format + `khudson reno vet` (command registry, name slug, workspace containment), effectful-transition protocol + effect executor (per-transition debounce keys, process-group ownership), run lifecycle (load/start/stop + journal), reno CLI wrapper with kitty focus/launch (structured confirmation events) + the new ax focus verb + open-url, the reno strip tab with the presenter layout (wrapped notes, heat-ramped timer chips, windowed goto). Rehearsable live demos end-to-end, no OBS. The largest phase: bus protocol and dock rendering work, not just a module.
-2. P1 OBS transport: goobs client behind module Start/Close hooks, record start/stop + scene switch as step actions and panel verbs, recording config in the script, StopRecord outputPath -> demo-named clip dirs, ad hoc scriptless runs (`khudson reno record` + record-with-nothing-loaded from the recorder view).
-3. P2 chrome + window visibility: chrome tab dispatcher via osascript (gate 3 resolved); hide-app/show-app verbs on the ax plumbing (spaces retired, user 2026-07-22).
-4. P3 gmeet + webcam FX: vcam per gates 1-2, Move/pixelate one-shots, SerialFrame dynamics.
-5. P4 post: ffconcat/remux verbs, mpv-IPC scrub surface; moviemaker surfaces (reno-tab touch view + main-display app over one core) last.
-6. couch client: standalone presenter TUI over the module core (notes-file seam first).
+1. P0 script + presenter: LANDED (commits ab25171 + 2448fc5). txtar format + `khudson reno vet`, EffectHandler + ordered effect executor, run lifecycle + journal, kitty focus/launch verbs + ax focus-app + open-url, reno strip tab (alt-pair flip) + presenter renderer + recorder shell.
+2. P1 OBS transport: LANDED (code + seams; LIVE VERIFICATION OWED -- OBS arrives as a cask on the next switch, then enable its websocket server and run khudson-live). goobs per-verb connections (capability-probed), record/scene script vocabulary, write-ahead recording intent + identity notes in the journal, ad hoc scriptless runs (`khudson reno record` + the recorder view's one-tap record), module.Closer.
+3. P2 chrome + window visibility: LANDED (same live-verification caveat for the Automation grant). chrome-tab via osascript (gate 3: Chrome 150, chrome-cli unpackaged); hide-app/show-app on kAXHidden + the focus raise (spaces retired, user 2026-07-22).
+4. P3 gmeet + webcam FX: NOT STARTED -- gates 1-2 are user/external (MDM camera-extension approval; Meet Workspace edition).
+5. P4 post: clip verbs LANDED (`khudson reno trim|stitch|mute|dub`, copy-fast + --exact re-encode; ffmpeg/mpv ride home.packages). OWED: mpv-IPC scrub surface + the moviemaker surfaces (reno-tab touch view + main-display app over one core).
+6. couch client: NOT STARTED -- standalone presenter TUI over the module core (notes-file seam first).
 
 ## open questions
 

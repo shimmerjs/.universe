@@ -301,3 +301,39 @@ func TestObsOpStopNotesOutput(t *testing.T) {
 		t.Errorf("ops = %v", obs.ops)
 	}
 }
+
+func TestChromeTab(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	restore := osaRun
+	t.Cleanup(func() { osaRun = restore })
+
+	var gotArgs []string
+	osaRun = func(_ context.Context, script string, args ...string) (string, error) {
+		if !strings.Contains(script, "active tab index") {
+			t.Errorf("unexpected script: %.60s", script)
+		}
+		gotArgs = args
+		return "window 2 tab 5", nil
+	}
+	if err := v.ChromeTab(context.Background(), "slides.example", RenoCorr{Step: -1, Act: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "slides.example" {
+		t.Errorf("args = %v", gotArgs)
+	}
+	ev := readEvents(t, v)
+	if ev[0].Outcome != "ok" || ev[0].Detail != "window 2 tab 5" {
+		t.Errorf("event = %+v", ev[0])
+	}
+
+	osaRun = func(context.Context, string, ...string) (string, error) {
+		return "", fmt.Errorf("execution error: no chrome tab matches nope (-2700)")
+	}
+	err := v.ChromeTab(context.Background(), "nope", RenoCorr{})
+	if err == nil {
+		t.Fatal("miss must fail the verb")
+	}
+	if ev := readEvents(t, v); ev[len(ev)-1].Outcome != "miss" {
+		t.Errorf("miss event = %+v", ev[len(ev)-1])
+	}
+}

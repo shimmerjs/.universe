@@ -101,6 +101,18 @@ func usage() {
   reno obs stop|pause|resume|scene <name>
                       recording transport ops (exec'd as step effects
                       for scene/record script commands)
+  reno chrome-tab <match>
+                      activate the first Chrome tab whose URL or title
+                      contains match (AppleScript; needs the Automation
+                      grant toward Chrome)
+  reno hide-app <bundle-id> | show-app <bundle-id>
+                      window visibility (AX hide/unhide+raise) -- the
+                      make-the-right-windows-visible primitive
+  reno trim <clip> --end <dur> [--start <dur>] [--exact] [-o out]
+  reno stitch [-o out] <clips...>
+  reno mute <clip> [-o out] | dub <clip> <audio> [-o out]
+                      ffmpeg clip post ops (copy-fast; trim --exact
+                      re-encodes for frame-accurate cuts)
   reno focus-session <handle> | launch-session <handle> [--cwd <dir>]
                       [--keep-focus] [-- <argv>...] | open-url <url> |
                       focus-app <bundle-id>

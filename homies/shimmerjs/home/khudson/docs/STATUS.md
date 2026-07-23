@@ -81,6 +81,18 @@ The 07-10 batch:
 - This ledger + DESIGN.md + main-kitty-integration.md +
   edge-host.md consolidated (5-mapper + 2-verifier pass).
 
+## reno (demo presenter/recorder), landed 2026-07-22
+
+P0+P1+P2+P4-clip-verbs live in tree (reno-design.md phasing carries the
+LANDED/OWED map; reno-p0-spec.md carries the two design-review rounds'
+dispositions). Two aw-design-review rounds ran pre/mid-implementation
+(11 confirmed each; all fixed, mitigated-with-rationale, or folded into
+P1 preconditions). Owed: OBS live verification (cask lands next switch;
+enable View > Docks... obs-websocket server, optional password to
+<state>/reno/obs-password, then khudson-live), the Automation grant
+toward Chrome on first chrome-tab use, mpv-IPC scrub + moviemaker
+surfaces (P4 tail), P3 gmeet/vcam (user gates 1-2), couch client.
+
 ## Owed manual steps (next switch or after)
 
 - Quit + relaunch the daily kitty ONCE: RC posture binds at

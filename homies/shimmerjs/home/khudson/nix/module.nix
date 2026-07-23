@@ -270,7 +270,14 @@ in
       }
     ];
 
-    home.packages = [ khudson ];
+    # ffmpeg backs the reno clip verbs (trim/stitch/mute/dub); mpv is the
+    # scrub/review surface. Both PATH-resolve from the profile (nixpkgs
+    # darwin ships them; OBS itself is a homebrew cask).
+    home.packages = [
+      khudson
+      pkgs.ffmpeg
+      pkgs.mpv
+    ];
 
     # hud kitty instance config; khudson-scoped so the daily kitty config is
     # untouched. The main-kitty side (fixed RC socket, passwordless

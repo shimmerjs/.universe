@@ -121,3 +121,49 @@ func pickWindow(app C.AXUIElementRef) (C.AXUIElementRef, bool) {
 	C.CFRetain(C.CFTypeRef(win))
 	return win, true
 }
+
+// attrHidden is the app-level kAXHidden attribute (cmd-H visibility).
+var attrHidden = cfStr("AXHidden")
+
+// SetAppHidden hides or unhides every process of the bundle: the demo
+// verbs' window-visibility primitive (spaces machinery was retired in
+// favor of hide/show/focus -- user decision 2026-07-22). Write + read
+// back per house style; a no-effect write is an error, not a success.
+func SetAppHidden(bundleID string, hidden bool) error {
+	if !Trusted() {
+		return ErrUntrusted
+	}
+	boundMessaging()
+	pids, err := resolveBundlePids(bundleID)
+	if err != nil {
+		return err
+	}
+	if len(pids) == 0 {
+		return notFound(fmt.Sprintf("running bundle %q", bundleID))
+	}
+	val := C.CFTypeRef(C.kCFBooleanFalse)
+	if hidden {
+		val = C.CFTypeRef(C.kCFBooleanTrue)
+	}
+	var lastErr error
+	for _, pid := range pids {
+		app := C.AXUIElementCreateApplication(C.pid_t(pid))
+		if code := C.AXUIElementSetAttributeValue(app, attrHidden, val); code != C.kAXErrorSuccess {
+			lastErr = mapAXError("set AXHidden", int(code))
+			release(C.CFTypeRef(app))
+			continue
+		}
+		still, berr := boolAttr(app, attrHidden, "AXHidden readback")
+		release(C.CFTypeRef(app))
+		if berr != nil {
+			lastErr = berr
+			continue
+		}
+		if still != hidden {
+			lastErr = &AXError{Op: "set AXHidden (readback unchanged)", Code: 0}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
