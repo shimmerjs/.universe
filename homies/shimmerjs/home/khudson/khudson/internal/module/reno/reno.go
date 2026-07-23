@@ -129,12 +129,12 @@ func (m *Mod) HandleActEffects(argv []string) (bool, []module.Effect) {
 		if len(argv) != 1 {
 			return false, nil
 		}
-		return true, m.transition(m.cursor() + 1)
+		return true, m.transition(m.cursor()+1, true)
 	case actPrev:
 		if len(argv) != 1 {
 			return false, nil
 		}
-		return true, m.transition(m.cursor() - 1)
+		return true, m.transition(m.cursor()-1, true)
 	case actGoto:
 		if len(argv) != 2 || m.staged == nil {
 			return false, nil
@@ -143,7 +143,7 @@ func (m *Mod) HandleActEffects(argv []string) (bool, []module.Effect) {
 		if idx < 0 {
 			return true, nil // stale menu against a reloaded script: ignore loudly enough via no-op
 		}
-		return true, m.transition(idx)
+		return true, m.transition(idx, true)
 	case actGotoWindow:
 		if len(argv) != 2 {
 			return false, nil
@@ -176,8 +176,11 @@ func (m *Mod) cursor() int {
 }
 
 // transition moves the cursor to step `to` and returns the entered
-// step's effects. Caller holds mu.
-func (m *Mod) transition(to int) []module.Effect {
+// step's effects. viaGlass applies the retap gap: glass taps can double
+// -fire (lagging panel, multiple docks resolving one gesture), while a
+// ctl-driven transition is one deliberate invocation and must never be
+// silently swallowed with an ok. Caller holds mu.
+func (m *Mod) transition(to int, viaGlass bool) []module.Effect {
 	if m.run == nil || !m.run.Live() || m.staged == nil || m.stale != "" {
 		return nil
 	}
@@ -185,7 +188,7 @@ func (m *Mod) transition(to int) []module.Effect {
 		return nil // walking off either end is a no-op, not a crash on stage
 	}
 	now := m.now()
-	if !m.lastAct.IsZero() && now.Sub(m.lastAct) < transitionGap {
+	if viaGlass && !m.lastAct.IsZero() && now.Sub(m.lastAct) < transitionGap {
 		return nil // lagging-panel retap; the first tap already landed
 	}
 	m.lastAct = now
@@ -215,12 +218,18 @@ func (m *Mod) transition(to int) []module.Effect {
 		visit = m.run.Steps[to].Visits
 	}
 	effects := make([]module.Effect, 0, len(step.Commands)+1)
-	if m.staged.Record && m.run.Recording == nil {
+	rec := m.run.Recording
+	if m.staged.Record && (rec == nil || (rec.Failed != "" && rec.StartedAt.IsZero())) {
 		// recording rides the show: intent journals write-ahead here and
 		// the record verb starts OBS before this step's actions run
-		// (ordered executor: the chain is sequential)
-		if _, err := m.armRecordingLocked(); err == nil {
+		// (ordered executor: the chain is sequential). A failed start
+		// re-arms so a transient OBS error does not kill the whole run's
+		// recording.
+		if _, err := m.armRecordingLocked(""); err == nil {
 			effects = append(effects, m.recordEffect())
+		} else {
+			m.journalErr = err.Error()
+			log.Printf("khudson reno: scripted record arm: %v", err)
 		}
 	}
 	for i, c := range step.Commands {
@@ -323,22 +332,22 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 		return nil, m.stopLocked(), nil
 	case "status":
 		return m.statusLocked(), nil, nil
-	case "record":
-		// the CLI record verb with nothing armed: arm (ad hoc when no
-		// live run) and hand back the record effect -- the verb itself
-		// then runs as that effect's twin from the shell, so this ctl
-		// path only arms; the caller does the OBS work
-		arm, err := m.armRecordingLocked()
-		return arm, nil, err
 	case "record-arm":
-		arm, err := m.armRecordingLocked()
+		runID := ""
+		if len(args) > 1 {
+			runID = args[1]
+		}
+		arm, err := m.armRecordingLocked(runID)
 		return arm, nil, err
 	case "record-note":
-		return nil, nil, m.noteRecordingLocked(args[1:])
+		if len(args) < 2 {
+			return nil, nil, errors.New("reno record-note: need a run id")
+		}
+		return nil, nil, m.noteRecordingLocked(args[1], args[2:])
 	case "next":
-		return nil, m.transition(m.cursor() + 1), nil
+		return nil, m.transition(m.cursor()+1, false), nil
 	case "prev":
-		return nil, m.transition(m.cursor() - 1), nil
+		return nil, m.transition(m.cursor()-1, false), nil
 	case "goto":
 		if len(args) != 2 || m.staged == nil {
 			return nil, nil, errors.New("reno goto: need a step id of the loaded script")
@@ -347,7 +356,7 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 		if idx < 0 {
 			return nil, nil, fmt.Errorf("reno goto: no step %q", args[1])
 		}
-		return nil, m.transition(idx), nil
+		return nil, m.transition(idx, false), nil
 	}
 	return nil, nil, fmt.Errorf("reno: unknown subverb %q", args[0])
 }
@@ -368,6 +377,13 @@ func (m *Mod) loadLocked(args []string) ([]module.Effect, error) {
 	if path == "" {
 		return nil, errors.New("reno load: need a script path")
 	}
+	// vet BEFORE touching the live run: a --replace with a broken script
+	// must leave the current run untouched instead of stopping it and
+	// then failing to stage the replacement
+	s, err := renocore.Load(path)
+	if err != nil {
+		return nil, err
+	}
 	var effects []module.Effect
 	if m.run != nil && m.run.Live() {
 		if !replace {
@@ -375,11 +391,6 @@ func (m *Mod) loadLocked(args []string) ([]module.Effect, error) {
 		}
 		effects = m.stopLocked()
 	}
-	s, err := renocore.Load(path)
-	if err != nil {
-		return effects, err
-	}
-	// staging is atomic: nothing above mutated until the script vetted
 	m.staged = s
 	m.stale = ""
 	m.gotoOff = 0

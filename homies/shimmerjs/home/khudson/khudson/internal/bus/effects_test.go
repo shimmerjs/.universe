@@ -298,3 +298,47 @@ func TestDispatchAfterShutdownDoesNotPanic(t *testing.T) {
 		t.Fatalf("post-shutdown dispatch must be refused: %v", rec.all())
 	}
 }
+
+// A boundary landing mid-chain drops the chain's REMAINING effects; a
+// Final effect (the recording stop) survives any boundary.
+func TestEffectBoundaryMidChainAndFinal(t *testing.T) {
+	b, _ := inputTestBus()
+	b.effects = newEffectRunner()
+	rec := &execRecorder{}
+	gate := make(chan struct{})
+	first := true
+	b.execStart = func(argv []string) (func() error, error) {
+		rec.mu.Lock()
+		rec.starts = append(rec.starts, argv)
+		rec.mu.Unlock()
+		if first {
+			first = false
+			return func() error { <-gate; return nil }, nil
+		}
+		return func() error { return nil }, nil
+	}
+	b.dispatchEffects("reno", []module.Effect{
+		{Key: "runA/0/1/0", Argv: []string{"khudson", "reno", "focus-session", "a"}},
+		{Key: "runA/0/1/1", Argv: []string{"khudson", "reno", "focus-session", "b"}},
+		{Key: "runA/stop/1", Argv: []string{"khudson", "reno", "obs", "stop"}, Final: true},
+	})
+	go b.runEffects()
+	t.Cleanup(b.effects.shutdown)
+	// wait for effect 1 to start, then cut the run while it is live
+	for range 100 {
+		if len(rec.all()) == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	b.dispatchEffects("reno", []module.Effect{module.Boundary()})
+	close(gate)
+	b.effects.flush()
+	starts := rec.all()
+	if len(starts) != 2 {
+		t.Fatalf("mid-chain boundary must drop the plain remainder but keep the Final stop: %v", starts)
+	}
+	if starts[1][2] != "obs" {
+		t.Fatalf("the surviving effect must be the Final stop: %v", starts[1])
+	}
+}

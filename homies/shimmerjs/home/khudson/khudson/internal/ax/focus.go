@@ -145,7 +145,10 @@ func SetAppHidden(bundleID string, hidden bool) error {
 	if hidden {
 		val = C.CFTypeRef(C.kCFBooleanTrue)
 	}
+	// every matching pid, not first-success: a bundle can own several
+	// UI-bearing processes and half-hiding it reads as a broken verb
 	var lastErr error
+	hid := 0
 	for _, pid := range pids {
 		app := C.AXUIElementCreateApplication(C.pid_t(pid))
 		if code := C.AXUIElementSetAttributeValue(app, attrHidden, val); code != C.kAXErrorSuccess {
@@ -163,7 +166,10 @@ func SetAppHidden(bundleID string, hidden bool) error {
 			lastErr = &AXError{Op: "set AXHidden (readback unchanged)", Code: 0}
 			continue
 		}
-		return nil
+		hid++
 	}
-	return lastErr
+	if hid == 0 {
+		return lastErr
+	}
+	return nil
 }

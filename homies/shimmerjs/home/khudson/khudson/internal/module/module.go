@@ -137,10 +137,14 @@ type ActHandler interface {
 // Effect is one exec side effect of an in-process act: argv plus the
 // debounce key the bus records it under. Consecutive demo steps legally
 // repeat identical argvs, so the key (run id + step + visit + action
-// index for reno), not the argv, is the retap identity.
+// index for reno), not the argv, is the retap identity. Final marks
+// cleanup effects (reno's recording stop) that must survive run
+// boundaries: the executor never drops them as stale when a later
+// boundary invalidates their epoch.
 type Effect struct {
-	Key  string
-	Argv []string
+	Key   string
+	Argv  []string
+	Final bool
 }
 
 // Closer is an optional Module capability: Close releases resources the

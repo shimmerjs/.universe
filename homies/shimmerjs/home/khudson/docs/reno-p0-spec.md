@@ -143,6 +143,13 @@ Round 2 (rekicked feasibility/scale legs reviewed the implementation; 2 fatal re
 - (M6, runtime pin preflight) P1: `reno vet --live` grows kitty version + socket + handle preflight beside the OBS referent pass.
 - (M7, workspace GC) P1: SweepRuns extends to workspace dirs of finalized runs past the horizon, with an explicit keep-mark; boot-only work.
 
+Round 3 (arc-end aw-review over a2409ae..HEAD, 29 confirmed after 3-vote refutation; fixed in 5ef93f3 unless noted):
+
+- FIXED: per-effect epoch re-check + Final (boundary-immune, uniquely-keyed) recording stop; ctl effect delivery on error + vet-before-stop in load --replace; chrome-tab osascript "-" argv bug; P2 verbs restored to the script registry (a silent no-op edit had dropped them); run-scoped record-arm/note with journal-file reconcile for late stop notes; failed-start re-arm; ctl transitions bypass the retap gap; recorder row acts tappable; hide-app hides all bundle pids; verb watchdog hard-exit; presenter surfaces keyless warn rows.
+- ACCEPTED: a SIGTERM landing between StartRecord and the started note leaves intent-without-started -- visible as "armed (start pending)" on the recorder view, reconciled manually (the two-phase journal's honest window).
+- NOT RENO'S: darwin.nix assigns universe.home.rectangle.signingIdentity which HEAD's rectangle.nix does not declare -- the committed tree does not evaluate without the in-flight rectangle work sitting dirty; owner: the rectangle arc.
+- RE-RAISED, DISPOSITIONS STAND: multi-dock gesture dedup (transitionGap) and SIGKILL orphan reaping (self-terminating verbs, now watchdog-enforced).
+
 ## P0 milestones
 
 1. script package: txtar parse, registry, vet + `khudson reno vet` + testdata example script.

@@ -113,6 +113,7 @@ func cmdReno(args []string) error {
 		if err != nil {
 			return err
 		}
+		defer renoWatchdog()()
 		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
 		return v.Record(dial, renoCtlData, bus.RenoCorr{Run: *run, Step: -1, Act: -1})
 
@@ -142,10 +143,23 @@ func cmdReno(args []string) error {
 		if err != nil {
 			return err
 		}
+		defer renoWatchdog()()
 		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
 		return v.ObsOp(op, arg, dial, renoCtlData, bus.RenoCorr{Run: *run, Step: *step, Act: *act})
 	}
 	return fmt.Errorf("reno: unknown verb %q", verb)
+}
+
+// renoWatchdog hard-bounds a verb process: goobs and cgo AX calls take
+// no context, and the effect executor's shutdown story leans on every
+// verb self-terminating -- so outliving the deadline exits loudly
+// instead of hanging as an unkillable orphan.
+func renoWatchdog() func() {
+	t := time.AfterFunc(renoVerbDeadline, func() {
+		fmt.Fprintln(os.Stderr, "khudson reno: verb exceeded its deadline; hard exit")
+		os.Exit(124)
+	})
+	return func() { t.Stop() }
 }
 
 // renoCtlData sends one reno ctl subverb and returns the raw Data reply
@@ -243,6 +257,7 @@ func renoAction(verb string, rest []string) error {
 		return err
 	}
 	corr := bus.RenoCorr{Run: *run, Step: *step, Act: *act}
+	defer renoWatchdog()()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

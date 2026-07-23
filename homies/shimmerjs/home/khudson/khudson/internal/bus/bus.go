@@ -487,11 +487,15 @@ func (b *Bus) handleCtl(m proto.Msg) proto.Msg {
 			return proto.Msg{Type: proto.TypeResp, Error: "reno module not registered"}
 		}
 		data, effects, err := h.HandleCtl(m.Args)
+		// effects dispatch even on error: loadLocked's --replace path can
+		// stop a live run (boundary + recording stop) and STILL fail on
+		// the new script -- dropping those effects would leave OBS
+		// recording with no owner and the dead run's chains executable
+		b.dispatchEffects("reno", effects)
+		b.repollMatching("reno")
 		if err != nil {
 			return proto.Msg{Type: proto.TypeResp, Error: err.Error()}
 		}
-		b.dispatchEffects("reno", effects)
-		b.repollMatching("reno")
 		resp := proto.Msg{Type: proto.TypeResp, OK: true}
 		if data != nil {
 			raw, err := json.Marshal(data)

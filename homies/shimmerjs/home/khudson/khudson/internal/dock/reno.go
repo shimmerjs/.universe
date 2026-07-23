@@ -37,21 +37,35 @@ func (m *model) renderReno(w config.Widget, rr rect) string {
 		return renderTitledBox(w.Title, []string{chromeDim.Render(" ...")}, rr.w, rr.h)
 	}
 	if view, _ := w.Render.Params["view"].(string); view == "recorder" {
-		return m.renderRenoFlat(d, rr)
+		return m.renderRenoFlat(w.ID, d, rr)
 	}
 	return m.renderRenoPresenter(w.ID, d, rr)
 }
 
-// renderRenoFlat is the generic keyed-row view: the recorder shell (P0)
-// and the presenter's off-show states (empty/loaded/stopped) render their
-// rows through the shared row renderer under a title line -- structure
-// straight from the module, no geometry games.
-func (m *model) renderRenoFlat(d module.Data, rr rect) string {
+// renderRenoFlat is the generic keyed-row view: the recorder transport
+// and the presenter's off-show states (empty/loaded/stopped) render
+// their rows through the shared row renderer under a title line. Row
+// acts stay live -- the recorder's one-tap record control resolves by
+// row geometry exactly like a home widget (the review caught the first
+// cut painting the control but consuming every tap).
+func (m *model) renderRenoFlat(id string, d module.Data, rr rect) string {
 	ss := m.rowStyles()
 	lines := []string{fitCellPad(chromeAccent.Bold(true).Render(" "+d.Title), rr.w)}
-	body, _, _ := renderChromeRows(d, rr.w, rr.h-1, ss)
+	body, acts, menus := renderChromeRows(d, rr.w, rr.h-1, ss)
 	lines = append(lines, body...)
-	m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
+	m.hits = append(m.hits, hitRegion{
+		area: rr,
+		do: func(_, y int) {
+			if i := y - rr.y - 1; i >= 0 && i < len(acts) && len(acts[i]) > 0 {
+				m.sendRowAct(id, acts[i])
+			}
+		},
+		longPress: func(x, y int) {
+			if i := y - rr.y - 1; i >= 0 && i < len(menus) && len(menus[i]) > 0 {
+				m.menuOpener(id, menus[i])(x, y)
+			}
+		},
+	})
 	return fixedBlock(lines, rr.w, rr.h)
 }
 
@@ -60,6 +74,7 @@ type renoPieces struct {
 	step, elapsed, inStep *module.Row
 	next                  string
 	note                  []string
+	warn                  []string
 	actNext, actPrev      []string
 	menu                  []module.Act
 }
@@ -84,6 +99,12 @@ func splitRenoRows(d module.Data) renoPieces {
 			p.actNext = r.Act
 		case reno.KeyActPrev:
 			p.actPrev = r.Act
+		case "":
+			if r.Style == module.StyleWarn && r.Text != "" {
+				// keyless module alarms (stale recovery, journal failure)
+				// must not vanish behind the live layout
+				p.warn = append(p.warn, r.Text)
+			}
 		}
 	}
 	return p
@@ -94,7 +115,7 @@ func splitRenoRows(d module.Data) renoPieces {
 func (m *model) renderRenoPresenter(id string, d module.Data, rr rect) string {
 	p := splitRenoRows(d)
 	if p.actNext == nil || p.step == nil {
-		return m.renderRenoFlat(d, rr)
+		return m.renderRenoFlat(id, d, rr)
 	}
 	ss := m.rowStyles()
 
@@ -111,7 +132,11 @@ func (m *model) renderRenoPresenter(id string, d module.Data, rr rect) string {
 	// body: prev band | note wrapped to the middle | next band
 	bodyH := rr.h - 1
 	noteW := max(rr.w-renoPrevBandW-renoNextBandW-2, 1)
-	wrapped := renoWrap(p.note, noteW)
+	var wrapped []string
+	for _, wline := range renoWrap(p.warn, noteW) {
+		wrapped = append(wrapped, chromeWarn.Render(wline))
+	}
+	wrapped = append(wrapped, renoWrap(p.note, noteW)...)
 	prev := renoBand("<", renoPrevBandW, bodyH, chromeDim)
 	next := renoBand(">", renoNextBandW, bodyH, chromeHighlight.Bold(true))
 	lines := make([]string, 0, bodyH)

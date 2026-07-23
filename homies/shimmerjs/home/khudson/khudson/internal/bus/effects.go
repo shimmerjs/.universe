@@ -175,14 +175,18 @@ func (b *Bus) runEffects() {
 			close(chain.ack)
 			continue
 		}
-		r.mu.Lock()
-		stale := chain.epoch != r.epoch
-		r.mu.Unlock()
-		if stale {
-			log.Printf("khudson bus: %s: dropped %d effects from a finished run", chain.source, len(chain.effects))
-			continue
-		}
 		for _, e := range chain.effects {
+			// re-check the boundary epoch PER EFFECT, not per chain: a
+			// stop landing mid-chain must drop the remainder of the
+			// invalidated step, not just future chains. Final effects
+			// (the recording stop) are cleanup and survive boundaries.
+			r.mu.Lock()
+			stale := chain.epoch != r.epoch
+			r.mu.Unlock()
+			if stale && !e.Final {
+				log.Printf("khudson bus: %s: dropped effect %s from a finished run: %v", chain.source, e.Key, e.Argv)
+				continue
+			}
 			if r.debounce(e.Key) {
 				log.Printf("khudson bus: %s: debounced repeat effect %s: %v", chain.source, e.Key, e.Argv)
 				b.broadcast(proto.Msg{Type: proto.TypeNotice,

@@ -92,6 +92,20 @@ var commands = map[string]cmdSpec{
 	// error, not a dead op
 	"scene":  {minArgs: 1, maxArgs: 1},
 	"record": {minArgs: 1, maxArgs: 1, check: checkRecordOp},
+	// window visibility (spaces retired, user 2026-07-22) + chrome tabs
+	"chrome-tab": {minArgs: 1, maxArgs: 1},
+	"hide-app":   {minArgs: 1, maxArgs: 1, check: checkBundleID},
+	"show-app":   {minArgs: 1, maxArgs: 1, check: checkBundleID},
+}
+
+// checkBundleID rejects the obvious non-bundle shapes (paths, bare
+// words); real resolution happens at exec via lsappinfo.
+func checkBundleID(args []string) error {
+	b := args[0]
+	if strings.ContainsAny(b, "/ ") || !strings.Contains(b, ".") {
+		return fmt.Errorf("%q does not look like a bundle id (com.vendor.App)", b)
+	}
+	return nil
 }
 
 // recordCommands need the header's recording intent to vet.

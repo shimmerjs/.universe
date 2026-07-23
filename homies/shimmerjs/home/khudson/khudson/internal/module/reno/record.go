@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
@@ -23,16 +24,32 @@ type ArmResult struct {
 	Scene     string `json:"scene,omitempty"`
 }
 
+// wantRun rejects a verb note aimed at a different run than the module
+// holds: a stale effect from a previous run must never arm or annotate
+// the current one. Empty means unscoped (hand-run verbs).
+func (m *Mod) wantRun(runID string) error {
+	if runID == "" || (m.run != nil && m.run.ID == runID) {
+		return nil
+	}
+	return fmt.Errorf("reno: run %s is not current", runID)
+}
+
 // armRecordingLocked journals recording intent WRITE-AHEAD of any OBS
 // call, creating an ad hoc run when nothing is live. Idempotent while
 // the intent is unproven (the glass act arms in-process and the exec'd
 // verb re-arms over ctl -- both must land on one intent). Caller holds
 // mu.
-func (m *Mod) armRecordingLocked() (ArmResult, error) {
+func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 	if m.runsDir == "" {
 		return ArmResult{}, errors.New("reno record: no state root")
 	}
+	if err := m.wantRun(runID); err != nil {
+		return ArmResult{}, err
+	}
 	if m.run == nil || !m.run.Live() {
+		if runID != "" {
+			return ArmResult{}, fmt.Errorf("reno record: run %s already finished", runID)
+		}
 		now := m.now()
 		m.run = &renocore.Run{
 			Version:   1,
@@ -53,6 +70,11 @@ func (m *Mod) armRecordingLocked() (ArmResult, error) {
 		m.run.Recording = rec
 	case rec.Active():
 		return ArmResult{}, fmt.Errorf("reno record: run %s is already recording", m.run.ID)
+	case rec.Failed != "" && rec.StartedAt.IsZero():
+		// a failed start is re-armable: reset to a fresh intent so the
+		// next record attempt (tap or scripted transition) can fire
+		rec.Failed = ""
+		rec.IntentAt = m.now()
 	case !rec.StoppedAt.IsZero():
 		return ArmResult{}, fmt.Errorf("reno record: run %s already recorded (one clip per run; stop and re-record ad hoc)", m.run.ID)
 	}
@@ -65,26 +87,56 @@ func (m *Mod) armRecordingLocked() (ArmResult, error) {
 	return ArmResult{Run: m.run.ID, Directory: rec.Directory, Scene: rec.Scene}, nil
 }
 
-// noteRecordingLocked applies a record verb's outcome note. Accepted for
-// the current run even after it finalized (the stop note races the run
-// stop). Caller holds mu.
-func (m *Mod) noteRecordingLocked(args []string) error {
+// noteRecordingLocked applies a record verb's outcome note to the run it
+// names. The current run takes it in memory (even after finalizing --
+// the stop note races the run stop); a note for an OLDER run reconciles
+// straight into that run's journal file, so a new take can never absorb
+// the previous take's output path. Caller holds mu.
+func (m *Mod) noteRecordingLocked(runID string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("reno record-note: need started|stopped|failed")
 	}
-	if m.run == nil || m.run.Recording == nil {
-		return errors.New("reno record-note: no armed recording")
+	if m.run != nil && (runID == "" || m.run.ID == runID) {
+		if m.run.Recording == nil {
+			return errors.New("reno record-note: no armed recording")
+		}
+		if err := applyRecordNote(m.run.Recording, args, m.now()); err != nil {
+			return err
+		}
+		m.journal()
+		if m.journalErr != "" {
+			return fmt.Errorf("reno record-note: journal: %s", m.journalErr)
+		}
+		return nil
 	}
-	rec := m.run.Recording
+	if runID == "" {
+		return errors.New("reno record-note: no run")
+	}
+	// reconcile path: the named run is no longer current
+	path := filepath.Join(m.runsDir, runID+".json")
+	run, err := renocore.ReadRun(path)
+	if err != nil {
+		return fmt.Errorf("reno record-note: run %s: %w", runID, err)
+	}
+	if run.Recording == nil {
+		return fmt.Errorf("reno record-note: run %s never armed a recording", runID)
+	}
+	if err := applyRecordNote(run.Recording, args, m.now()); err != nil {
+		return err
+	}
+	return renocore.WriteRun(m.runsDir, run)
+}
+
+func applyRecordNote(rec *renocore.RecordingState, args []string, now time.Time) error {
 	switch args[0] {
 	case "started":
-		rec.StartedAt = m.now()
+		rec.StartedAt = now
 		if len(args) > 1 {
 			rec.ObsVersion = args[1]
 		}
 		rec.Failed = ""
 	case "stopped":
-		rec.StoppedAt = m.now()
+		rec.StoppedAt = now
 		if len(args) > 1 {
 			rec.Output = args[1]
 		}
@@ -92,10 +144,6 @@ func (m *Mod) noteRecordingLocked(args []string) error {
 		rec.Failed = strings.Join(args[1:], " ")
 	default:
 		return fmt.Errorf("reno record-note: unknown note %q", args[0])
-	}
-	m.journal()
-	if m.journalErr != "" {
-		return fmt.Errorf("reno record-note: journal: %s", m.journalErr)
 	}
 	return nil
 }
@@ -109,10 +157,14 @@ func (m *Mod) recordEffect() module.Effect {
 	}
 }
 
+// obsStopEffect is Final (survives run boundaries -- it IS the cleanup
+// a boundary must not cancel) and uniquely keyed per emission so a
+// retry after a failed stop is never debounce-eaten.
 func (m *Mod) obsStopEffect() module.Effect {
 	return module.Effect{
-		Key:  m.run.ID + "/record-stop",
-		Argv: []string{m.exe, "reno", "obs", "stop", "--run", m.run.ID},
+		Key:   fmt.Sprintf("%s/record-stop/%d", m.run.ID, m.now().UnixNano()),
+		Argv:  []string{m.exe, "reno", "obs", "stop", "--run", m.run.ID},
+		Final: true,
 	}
 }
 
@@ -122,7 +174,7 @@ func (m *Mod) handleRecordActLocked() []module.Effect {
 	if m.run != nil && m.run.Recording.Active() {
 		return []module.Effect{m.obsStopEffect()}
 	}
-	if _, err := m.armRecordingLocked(); err != nil {
+	if _, err := m.armRecordingLocked(""); err != nil {
 		// surface on glass through the status row; no effect fires
 		m.journalErr = err.Error()
 		return nil

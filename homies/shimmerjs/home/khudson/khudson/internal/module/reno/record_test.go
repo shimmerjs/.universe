@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
@@ -51,7 +52,7 @@ func TestAdhocRecordLifecycle(t *testing.T) {
 	if arm.Run != m.run.ID || arm.Directory != rec.Directory {
 		t.Fatalf("re-arm mismatch: %+v", arm)
 	}
-	if _, _, err := m.HandleCtl([]string{"record-note", "started", "31.0.2"}); err != nil {
+	if _, _, err := m.HandleCtl([]string{"record-note", m.run.ID, "started", "31.0.2"}); err != nil {
 		t.Fatal(err)
 	}
 	if !m.run.Recording.Active() || m.run.Recording.ObsVersion != "31.0.2" {
@@ -77,7 +78,7 @@ func TestAdhocRecordLifecycle(t *testing.T) {
 	}
 
 	// the stop note lands even though the run finalized
-	if _, _, err := m.HandleCtl([]string{"record-note", "stopped", "/clips/x.mkv"}); err != nil {
+	if _, _, err := m.HandleCtl([]string{"record-note", m.run.ID, "stopped", "/clips/x.mkv"}); err != nil {
 		t.Fatal(err)
 	}
 	if m.run.Recording.Output != "/clips/x.mkv" || m.run.Recording.Active() {
@@ -146,18 +147,18 @@ func TestRecorderViewStates(t *testing.T) {
 	if rows = mustRows(t, m, "recorder"); !rowsContain(rows, "armed (start pending)") {
 		t.Errorf("armed state: %+v", rows)
 	}
-	ctl(t, m, "record-note", "started", "31")
+	ctl(t, m, "record-note", m.run.ID, "started", "31")
 	if rows = mustRows(t, m, "recorder"); !actRowPresent(rows, "stop recording") {
 		t.Errorf("live state needs the stop act: %+v", rows)
 	}
-	ctl(t, m, "record-note", "stopped", "/clips/a.mkv")
+	ctl(t, m, "record-note", m.run.ID, "stopped", "/clips/a.mkv")
 	if rows = mustRows(t, m, "recorder"); !rowsContain(rows, "/clips/a.mkv") {
 		t.Errorf("stopped state shows the clip: %+v", rows)
 	}
 
 	m2, _ := testMod(t)
 	m2.HandleActEffects([]string{actRecord})
-	ctl(t, m2, "record-note", "failed", "dial: connection refused")
+	ctl(t, m2, "record-note", m2.run.ID, "failed", "dial: connection refused")
 	if rows = mustRows(t, m2, "recorder"); !rowsContain(rows, "recording FAILED") {
 		t.Errorf("failed state: %+v", rows)
 	}
@@ -193,5 +194,57 @@ func TestArmResultWire(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &arm); err != nil || arm.Run == "" || arm.Directory == "" {
 		t.Fatalf("wire shape: %s (%v)", raw, err)
+	}
+}
+
+// A stop note for a run that is no longer current reconciles into that
+// run's journal file instead of contaminating the new take.
+func TestRecordNoteReconcilesOldRun(t *testing.T) {
+	m, path := testMod(t)
+	m.HandleActEffects([]string{actRecord})
+	oldID := m.run.ID
+	ctl(t, m, "record-note", oldID, "started", "31")
+	ctl(t, m, "stop")
+
+	// a scripted run replaces m.run before the old stop note lands
+	ctl(t, m, "load", path)
+	ctl(t, m, "start")
+	newID := m.run.ID
+	if newID == oldID {
+		t.Fatal("expected a fresh run")
+	}
+	ctl(t, m, "record-note", oldID, "stopped", "/clips/old.mkv")
+	if m.run.Recording != nil && m.run.Recording.Output != "" {
+		t.Fatalf("new run absorbed the old clip: %+v", m.run.Recording)
+	}
+	old, err := renocore.ReadRun(m.runsDir + "/" + oldID + ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Recording.Output != "/clips/old.mkv" {
+		t.Fatalf("old journal not reconciled: %+v", old.Recording)
+	}
+
+	// arm scoped to a stale run refuses instead of hijacking the current
+	if _, _, err := m.HandleCtl([]string{"record-arm", oldID}); err == nil {
+		t.Fatal("stale-run arm must refuse")
+	}
+}
+
+// ctl transitions are deliberate: the glass retap gap must not swallow
+// them into a silent ok.
+func TestCtlTransitionsBypassGap(t *testing.T) {
+	m, path := testMod(t)
+	ctl(t, m, "load", path)
+	ctl(t, m, "start")
+	m.HandleActEffects([]string{actNext})
+	frozen := m.lastAct
+	m.now = func() time.Time { return frozen.Add(100 * time.Millisecond) }
+	if _, effects := ctl(t, m, "next"); len(effects) == 0 || m.run.Cursor != 1 {
+		t.Fatalf("ctl next inside the gap must land: cursor=%d", m.run.Cursor)
+	}
+	// glass tap right after is still gap-guarded
+	if _, effects := m.HandleActEffects([]string{actNext}); len(effects) != 0 || m.run.Cursor != 1 {
+		t.Fatalf("glass retap must stay guarded: cursor=%d", m.run.Cursor)
 	}
 }

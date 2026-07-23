@@ -272,7 +272,7 @@ type ArmResult struct {
 // point OBS at it and start. Failures note back so the journal owns the
 // truth; the started note carries the OBS version (recording identity).
 func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr) error {
-	raw, err := ctl([]string{"record-arm"})
+	raw, err := ctl([]string{"record-arm", corr.Run})
 	if err != nil {
 		return v.Act(corr, "record", "", "error", "arm: "+err.Error(), err)
 	}
@@ -282,7 +282,7 @@ func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr 
 	}
 	corr.Run = arm.Run
 	failNote := func(stage string, err error) error {
-		if _, nerr := ctl([]string{"record-note", "failed", stage + ": " + err.Error()}); nerr != nil {
+		if _, nerr := ctl([]string{"record-note", arm.Run, "failed", stage + ": " + err.Error()}); nerr != nil {
 			err = errors.Join(err, nerr)
 		}
 		return v.Act(corr, "record", arm.Run, "error", stage+": "+err.Error(), err)
@@ -310,7 +310,7 @@ func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr 
 	if err := obs.StartRecord(); err != nil {
 		return failNote("start", err)
 	}
-	if _, err := ctl([]string{"record-note", "started", obs.Version()}); err != nil {
+	if _, err := ctl([]string{"record-note", arm.Run, "started", obs.Version()}); err != nil {
 		return v.Act(corr, "record", arm.Run, "unconfirmed",
 			"recording live but the started note failed: "+err.Error(), err)
 	}
@@ -336,7 +336,7 @@ func (v *RenoVerbs) ObsOp(op, arg string, dial func() (ObsTransport, error), ctl
 		if err != nil {
 			return v.Act(corr, "obs", target, "error", err.Error(), err)
 		}
-		if _, err := ctl([]string{"record-note", "stopped", path}); err != nil {
+		if _, err := ctl([]string{"record-note", corr.Run, "stopped", path}); err != nil {
 			return v.Act(corr, "obs", target, "unconfirmed",
 				"recording stopped ("+path+") but the note failed: "+err.Error(), err)
 		}
@@ -383,9 +383,13 @@ const chromeTabScript = `on run argv
 	error "no chrome tab matches " & needle
 end run`
 
-// osaRun execs one osascript program with args; seam for tests.
+// osaRun execs one osascript program with args; seam for tests. NO "-"
+// separator: with -e, osascript hands every remaining argument to the
+// run handler as-is, and a literal "-" would land as item 1 of argv
+// (shadowing the real needle -- caught by the arc review, verified
+// on-machine).
 var osaRun = func(ctx context.Context, script string, args ...string) (string, error) {
-	argv := append([]string{"-e", script, "-"}, args...)
+	argv := append([]string{"-e", script}, args...)
 	out, err := exec.CommandContext(ctx, "osascript", argv...).Output()
 	if err != nil {
 		var ee *exec.ExitError

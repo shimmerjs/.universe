@@ -264,7 +264,7 @@ func TestRecordVerbFlow(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("workspace dir must exist: %v", err)
 	}
-	if len(*notes) != 1 || (*notes)[0][0] != "record-note" || (*notes)[0][1] != "started" || (*notes)[0][2] != "31.0.2" {
+	if len(*notes) != 1 || (*notes)[0][0] != "record-note" || (*notes)[0][1] != "r9" || (*notes)[0][2] != "started" || (*notes)[0][3] != "31.0.2" {
 		t.Errorf("notes = %v", *notes)
 	}
 	ev := readEvents(t, v)
@@ -279,7 +279,7 @@ func TestRecordVerbFlow(t *testing.T) {
 	if err := v2.Record(func() (ObsTransport, error) { return obs2, nil }, ctl2, RenoCorr{}); err == nil {
 		t.Fatal("failed start must fail the verb")
 	}
-	if len(*notes2) != 1 || (*notes2)[0][1] != "failed" {
+	if len(*notes2) != 1 || (*notes2)[0][1] != "r9" || (*notes2)[0][2] != "failed" {
 		t.Errorf("failure note = %v", *notes2)
 	}
 }
@@ -291,7 +291,7 @@ func TestObsOpStopNotesOutput(t *testing.T) {
 	if err := v.ObsOp("stop", "", func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{Run: "r9", Step: -1, Act: -1}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if len(*notes) != 1 || (*notes)[0][1] != "stopped" || (*notes)[0][2] != "/clips/take1.mkv" {
+	if len(*notes) != 1 || (*notes)[0][1] != "r9" || (*notes)[0][2] != "stopped" || (*notes)[0][3] != "/clips/take1.mkv" {
 		t.Errorf("notes = %v", *notes)
 	}
 	if err := v.ObsOp("scene", "wide", func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{Step: -1, Act: -1}); err != nil {
