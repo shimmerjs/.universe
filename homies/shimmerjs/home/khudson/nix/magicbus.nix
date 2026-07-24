@@ -201,9 +201,12 @@ in
 
     # logiretch device settings. All optional: an unset (null) field is
     # dropped from the exported config, and the module leaves that capability
-    # alone (absent = do not touch the device). Meaningful only after Options+
-    # is uninstalled -- with it installed both HID++ masters share the node and
-    # Options+ re-diverts.
+    # alone (absent = do not touch the device). Prefer the friendly
+    # universe.home.mxMaster block over setting these raw. Options+ was
+    # uninstalled 2026-07-24, so logiretch owns the device outright now --
+    # takeoverReset resets to this config's baseline with no second master
+    # fighting it (on-device effect still wants a touchd.log confirmation
+    # pass after a switch).
     logiretch =
       let
         nullInt = lib.mkOption {

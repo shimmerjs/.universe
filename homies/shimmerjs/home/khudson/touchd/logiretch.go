@@ -5,14 +5,14 @@
 // takeover. It NEVER seizes (shared open only, Options+/Keymapp-style
 // coexistence) and owns no backoff of its own -- the shared scanner does.
 //
-// ON-DEVICE EFFECT IS UNVERIFIED. The setters (DPI, SmartShift, hi-res wheel,
-// thumbwheel, haptic, button remaps) build frames from Solaar/logiops-sourced
-// function ids (cited in hidpp.go), but nothing here has been confirmed to
-// change the physical device: with Options+ installed both HID++ masters share
-// the vendor node and Options+ will re-divert, so takeoverReset is only
-// meaningful AFTER Options+ is uninstalled (logi-replacement-design.md:20,94).
-// The module logs every setter it sends plus the read-back echo so the effect
-// can be confirmed from touchd.log post-Options+-removal.
+// Options+ was uninstalled 2026-07-24 (user), so logiretch is now the SOLE
+// HID++ master on the vendor node: takeoverReset resets 1B04 to this config's
+// baseline with nothing re-diverting behind it, and the config setters (DPI,
+// SmartShift, hi-res wheel, thumbwheel, haptic, button remaps) own the device.
+// On-device EFFECT still wants one confirmation pass -- every setter logs the
+// frame it sends plus the read-back echo, so a touchd.log read after a switch
+// verifies the physical change (the setters build frames from Solaar/logiops-
+// sourced function ids cited in hidpp.go).
 package main
 
 import (

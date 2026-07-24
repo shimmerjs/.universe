@@ -78,10 +78,11 @@
       # the user to tune; the setters are on-device UNVERIFIED and takeoverReset
       # is meaningful only after Options+ is uninstalled (with it installed both
       # HID++ masters share the vendor node and it will re-divert).
-      universe.home.magicbus.modules.logiretch = true;
-      universe.home.magicbus.logiretch = {
+      universe.home.mxMaster = {
+        enable = true;
         dpi = 1600;
-        takeoverReset = true;
+        # example: swap the rear thumb button to a middle-click
+        # buttons.back = "middle-click";
       };
 
       # The screensaver hazard's second leg (edge-host.md): idleTime is a

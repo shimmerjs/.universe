@@ -137,6 +137,8 @@
       universe.home.rectangle = {
         enable = true;
         configFile = ./home/prefs/com.knollsoft.Rectangle.plist;
+        # the magicbus author cert: one stable TCC identity story per machine
+        signingIdentity = "shimmerjs";
       };
     };
 }
