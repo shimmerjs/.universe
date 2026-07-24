@@ -124,6 +124,39 @@ bus/dock dependency):
   link + staleness on the status row. Mouse-taps only; ctrl+c quits.
   Controls invisible to 0x02 render with a dim "6a" tag.
 
+## standalone stack: magicbus naive, logiretch installs without khudson (2026-07-24, user)
+
+The layering is a stack of thin pieces, khudson optional at every rung:
+
+- **magicbus = naive transport backbone.** It owns which modules run, the
+  daemon, and the sockets -- NOT any device's option surface. Its nix
+  module exposes a generic `moduleConfig` passthrough (opaque per-module
+  JSON, keyed by module name, merged verbatim into the daemon config); it
+  never names a DPI or a keybind. LANDED 2026-07-24 (magicbus.nix +
+  magicbus-config.cue naive-ified; emitted daemon JSON unchanged).
+- **logiretch app config** lives in mxmaster.nix (the friendly
+  `universe.home.mxMaster` surface: named buttons -> named functions, dpi/
+  smartShift/haptic as human numbers, its own bounds). It writes
+  `magicbus.moduleConfig.logiretch`. Imported by the host directly, NOT
+  through khudson -- a non-khudson host installs the mouse via
+  magicbus.nix + mxmaster.nix alone. LANDED 2026-07-24.
+- **the action engine (keybind -> action) is a DEDICATED STANDALONE agent,
+  not a khudson bus consumer** (revises the doc's original 6b, which put it
+  in the bus). It reads logiretch.sock, applies the diverted-button->action
+  map, holds its OWN Accessibility grant. This is what makes
+  "button -> Mission Control / keystroke" work with zero khudson. NOT BUILT
+  -- gated on the 6a divert leg (below) plus a user go.
+- **khudson is purely additive**: the strip battery icon + the on-glass
+  logiretch widget + (later) custom controls. Never required for the
+  device, the config, or keybinds.
+
+OPEN (user's call): the physical relocation -- the daemon source and the
+nix modules still sit under homies/shimmerjs/home/khudson/ and the state
+root is ~/Library/Application Support/khudson. A truly shared module wants
+the source + state root out of the khudson/shimmerjs tree (the naming
+debt, design open question 1). The ownership split above is done; the
+physical move is not.
+
 ## Transport rules for the Go module (source-verified against pinned go-hid v0.15.0 [17])
 
 - `hid.Init()` BEFORE `SetOpenExclusive(false)`: pre-init the setter is silently clobbered and the first open would SEIZE the mouse (hid_init sets exclusive=1 for backward compat) [19]. Correction: touchd already calls hid.Init() deliberately at main.go:117 -- not "safe by accident" -- but the ordering rule must be stated for the logiretch module.
