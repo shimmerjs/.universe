@@ -166,12 +166,6 @@ in
       "cmd+0" = "change_font_size all 0";
     };
 
-    # Mouse summon for the krib palette: right-press while the program has
-    # not grabbed the mouse.
-    mouseBindings = {
-      "right press" = "ungrabbed launch --type=overlay --allow-remote-control ${lib.getExe krib-palette} @active-kitty-window-id";
-    };
-
     settings = {
       # Ensure that Nix-managed binaries are available to kitty actions
       env = "PATH=${config.home.profileDirectory}/bin:/run/current-system/sw/bin:$PATH";
