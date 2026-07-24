@@ -18,9 +18,14 @@ import (
 
 	"github.com/andreykaipov/goobs"
 	"github.com/andreykaipov/goobs/api/requests/config"
+	"github.com/andreykaipov/goobs/api/requests/inputs"
+	"github.com/andreykaipov/goobs/api/requests/sceneitems"
 	"github.com/andreykaipov/goobs/api/requests/scenes"
+	"github.com/andreykaipov/goobs/api/requests/ui"
+	"github.com/andreykaipov/goobs/api/typedefs"
 
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
+	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
 // ObsTransport is the operation seam; goobsTransport is the real one,
@@ -39,6 +44,32 @@ type ObsTransport interface {
 	PauseRecord() error
 	ResumeRecord() error
 	Close() error
+
+	// Scene-plan surface (the ad hoc expansion): enumeration plus the
+	// minimal mutations BuildScenePlan's executor needs.
+	InputKinds() ([]string, error)
+	Monitors() ([]renocore.Monitor, error)
+	Canvas() (w, h float64, err error)
+	Scenes() ([]string, error)
+	CreateScene(name string) error
+	// Inputs maps input name -> kind for every OBS input.
+	Inputs() (map[string]string, error)
+	// CreateInput creates an input as a scene item; settings may be nil.
+	CreateInput(scene, name, kind string, settings map[string]any, enabled bool) error
+	SetInputSettings(name string, settings map[string]any) error
+	SetInputMute(name string, muted bool) error
+	RemoveInput(name string) error
+	// PropertyItems enumerates a list-property's items (displays,
+	// devices), values stringified.
+	PropertyItems(input, prop string) ([]renocore.PropertyItem, error)
+	// SceneItemID resolves source's item in scene; ensure=true adds the
+	// existing input to the scene when it is not yet an item there.
+	SceneItemID(scene, source string, ensure bool) (int, error)
+	SetSceneItemEnabled(scene string, id int, enabled bool) error
+	// ItemSourceSize reads the item's source dimensions (0,0 while the
+	// source is not yet streaming, e.g. pre-TCC).
+	ItemSourceSize(scene string, id int) (w, h int, err error)
+	SetSceneItemTransform(scene string, id int, t renocore.Transform) error
 }
 
 // DefaultObsHost is the obs-websocket default on this machine.
@@ -125,3 +156,160 @@ func (t *goobsTransport) ResumeRecord() error {
 }
 
 func (t *goobsTransport) Close() error { return t.c.Disconnect() }
+
+func (t *goobsTransport) InputKinds() ([]string, error) {
+	resp, err := t.c.Inputs.GetInputKindList(inputs.NewGetInputKindListParams())
+	if err != nil {
+		return nil, err
+	}
+	return resp.InputKinds, nil
+}
+
+func (t *goobsTransport) Monitors() ([]renocore.Monitor, error) {
+	resp, err := t.c.Ui.GetMonitorList(&ui.GetMonitorListParams{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]renocore.Monitor, 0, len(resp.Monitors))
+	for _, m := range resp.Monitors {
+		out = append(out, renocore.Monitor{
+			Index: m.MonitorIndex, Name: m.MonitorName,
+			Width: m.MonitorWidth, Height: m.MonitorHeight,
+		})
+	}
+	return out, nil
+}
+
+func (t *goobsTransport) Canvas() (float64, float64, error) {
+	resp, err := t.c.Config.GetVideoSettings()
+	if err != nil {
+		return 0, 0, err
+	}
+	return resp.BaseWidth, resp.BaseHeight, nil
+}
+
+func (t *goobsTransport) Scenes() ([]string, error) {
+	resp, err := t.c.Scenes.GetSceneList()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(resp.Scenes))
+	for _, s := range resp.Scenes {
+		out = append(out, s.SceneName)
+	}
+	return out, nil
+}
+
+func (t *goobsTransport) CreateScene(name string) error {
+	_, err := t.c.Scenes.CreateScene(scenes.NewCreateSceneParams().WithSceneName(name))
+	return err
+}
+
+func (t *goobsTransport) Inputs() (map[string]string, error) {
+	resp, err := t.c.Inputs.GetInputList(inputs.NewGetInputListParams())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(resp.Inputs))
+	for _, in := range resp.Inputs {
+		out[in.InputName] = in.InputKind
+	}
+	return out, nil
+}
+
+func (t *goobsTransport) CreateInput(scene, name, kind string, settings map[string]any, enabled bool) error {
+	p := inputs.NewCreateInputParams().
+		WithSceneName(scene).WithInputName(name).WithInputKind(kind).
+		WithSceneItemEnabled(enabled)
+	if settings != nil {
+		p = p.WithInputSettings(settings)
+	}
+	_, err := t.c.Inputs.CreateInput(p)
+	return err
+}
+
+func (t *goobsTransport) SetInputSettings(name string, settings map[string]any) error {
+	_, err := t.c.Inputs.SetInputSettings(inputs.NewSetInputSettingsParams().
+		WithInputName(name).WithInputSettings(settings).WithOverlay(true))
+	return err
+}
+
+func (t *goobsTransport) SetInputMute(name string, muted bool) error {
+	_, err := t.c.Inputs.SetInputMute(inputs.NewSetInputMuteParams().
+		WithInputName(name).WithInputMuted(muted))
+	return err
+}
+
+func (t *goobsTransport) RemoveInput(name string) error {
+	_, err := t.c.Inputs.RemoveInput(inputs.NewRemoveInputParams().WithInputName(name))
+	return err
+}
+
+func (t *goobsTransport) PropertyItems(input, prop string) ([]renocore.PropertyItem, error) {
+	resp, err := t.c.Inputs.GetInputPropertiesListPropertyItems(
+		inputs.NewGetInputPropertiesListPropertyItemsParams().
+			WithInputName(input).WithPropertyName(prop))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]renocore.PropertyItem, 0, len(resp.PropertyItems))
+	for _, it := range resp.PropertyItems {
+		out = append(out, renocore.PropertyItem{
+			Name:  it.ItemName,
+			Value: fmt.Sprint(it.ItemValue),
+		})
+	}
+	return out, nil
+}
+
+func (t *goobsTransport) SceneItemID(scene, source string, ensure bool) (int, error) {
+	resp, err := t.c.SceneItems.GetSceneItemId(sceneitems.NewGetSceneItemIdParams().
+		WithSceneName(scene).WithSourceName(source))
+	if err == nil {
+		return int(resp.SceneItemId), nil
+	}
+	if !ensure {
+		return 0, err
+	}
+	created, cerr := t.c.SceneItems.CreateSceneItem(sceneitems.NewCreateSceneItemParams().
+		WithSceneName(scene).WithSourceName(source).WithSceneItemEnabled(true))
+	if cerr != nil {
+		return 0, fmt.Errorf("item %s in %s: %w (create: %v)", source, scene, err, cerr)
+	}
+	return int(created.SceneItemId), nil
+}
+
+func (t *goobsTransport) SetSceneItemEnabled(scene string, id int, enabled bool) error {
+	_, err := t.c.SceneItems.SetSceneItemEnabled(sceneitems.NewSetSceneItemEnabledParams().
+		WithSceneName(scene).WithSceneItemId(id).WithSceneItemEnabled(enabled))
+	return err
+}
+
+func (t *goobsTransport) ItemSourceSize(scene string, id int) (int, int, error) {
+	resp, err := t.c.SceneItems.GetSceneItemTransform(sceneitems.NewGetSceneItemTransformParams().
+		WithSceneName(scene).WithSceneItemId(id))
+	if err != nil {
+		return 0, 0, err
+	}
+	tf := resp.SceneItemTransform
+	if tf == nil {
+		return 0, 0, nil
+	}
+	return int(tf.SourceWidth), int(tf.SourceHeight), nil
+}
+
+// SetSceneItemTransform anchors top-left (alignment 5) inside a
+// scale-inner bounds box: aspect survives, slots stay put.
+func (t *goobsTransport) SetSceneItemTransform(scene string, id int, tr renocore.Transform) error {
+	_, err := t.c.SceneItems.SetSceneItemTransform(sceneitems.NewSetSceneItemTransformParams().
+		WithSceneName(scene).WithSceneItemId(id).
+		WithSceneItemTransform(&typedefs.SceneItemTransform{
+			PositionX: tr.X, PositionY: tr.Y,
+			Alignment:  5,
+			BoundsType: "OBS_BOUNDS_SCALE_INNER", BoundsAlignment: 0,
+			BoundsWidth: tr.BoundsW, BoundsHeight: tr.BoundsH,
+			CropLeft: float64(tr.CropL), CropTop: float64(tr.CropT),
+			CropRight: float64(tr.CropR), CropBottom: float64(tr.CropB),
+		}))
+	return err
+}

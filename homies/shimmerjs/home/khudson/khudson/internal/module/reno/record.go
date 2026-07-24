@@ -19,9 +19,10 @@ const actRecord = "reno:record"
 
 // ArmResult is the record-arm ctl payload the record verb consumes.
 type ArmResult struct {
-	Run       string `json:"run"`
-	Directory string `json:"directory"`
-	Scene     string `json:"scene,omitempty"`
+	Run       string                 `json:"run"`
+	Directory string                 `json:"directory"`
+	Scene     string                 `json:"scene,omitempty"`
+	Config    *renocore.RecordConfig `json:"config,omitempty"`
 }
 
 // wantRun rejects a verb note aimed at a different run than the module
@@ -67,6 +68,10 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 		if m.staged != nil && m.run.Demo == m.staged.Name {
 			rec.Scene = m.staged.Scene
 		}
+		// the one-core config: the script's for a scripted run, the
+		// pending ad hoc knobs otherwise -- journaled write-ahead with
+		// the rest of the intent
+		rec.Config = m.armConfigLocked()
 		m.run.Recording = rec
 	case rec.Active():
 		return ArmResult{}, fmt.Errorf("reno record: run %s is already recording", m.run.ID)
@@ -84,7 +89,7 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 		// journal cannot own is the crash-recovery hole
 		return ArmResult{}, fmt.Errorf("reno record: journal: %s", m.journalErr)
 	}
-	return ArmResult{Run: m.run.ID, Directory: rec.Directory, Scene: rec.Scene}, nil
+	return ArmResult{Run: m.run.ID, Directory: rec.Directory, Scene: rec.Scene, Config: rec.Config}, nil
 }
 
 // noteRecordingLocked applies a record verb's outcome note to the run it

@@ -25,6 +25,7 @@ import (
 
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	"github.com/shimmerjs/khudson/khudson/internal/rc"
+	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
 // renoHandleVar is the kitty user var planted at launch --var carrying a
@@ -262,9 +263,10 @@ type CtlCall func(args []string) (json.RawMessage, error)
 
 // ArmResult mirrors the module's record-arm payload.
 type ArmResult struct {
-	Run       string `json:"run"`
-	Directory string `json:"directory"`
-	Scene     string `json:"scene,omitempty"`
+	Run       string                 `json:"run"`
+	Directory string                 `json:"directory"`
+	Scene     string                 `json:"scene,omitempty"`
+	Config    *renocore.RecordConfig `json:"config,omitempty"`
 }
 
 // Record is the recording start verb: arm over ctl (the module journals
@@ -302,7 +304,15 @@ func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr 
 	} else {
 		fmt.Fprintln(os.Stderr, "khudson reno record: obs lacks SetRecordDirectory; clip lands in the OBS default directory (journal still owns the path at stop)")
 	}
-	if arm.Scene != "" {
+	switch {
+	case arm.Config != nil && !arm.Config.Empty():
+		// the one-core config path: ensure the reno scene matches and
+		// switch to it (scripted headers, `reno config`, and view taps
+		// all land here identically)
+		if err := ApplyRecordConfig(obs, *arm.Config); err != nil {
+			return failNote("config ("+arm.Config.Summary()+")", err)
+		}
+	case arm.Scene != "":
 		if err := obs.SetScene(arm.Scene); err != nil {
 			return failNote("scene "+arm.Scene, err)
 		}

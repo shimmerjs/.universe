@@ -33,7 +33,7 @@ const renoVerbDeadline = 30 * time.Second
 
 func cmdReno(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("reno: need a verb: vet | load | start | stop | status | next | prev | goto | focus-session | launch-session | open-url | focus-app")
+		return fmt.Errorf("reno: need a verb: vet | load | start | stop | status | next | prev | goto | record | config | notes | obs | trim | stitch | mute | dub | focus-session | launch-session | open-url | focus-app | chrome-tab | hide-app | show-app")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -93,6 +93,63 @@ func cmdReno(args []string) error {
 		}
 		return renoCtlCall([]string{"goto", rest[0]})
 
+	case "notes":
+		// scriptless speaker notes: an absolute path crosses to the bus
+		if len(rest) != 1 {
+			return fmt.Errorf("reno notes: need a markdown path or --clear")
+		}
+		arg := rest[0]
+		if arg != "--clear" {
+			abs, err := filepath.Abs(arg)
+			if err != nil {
+				return err
+			}
+			arg = abs
+		}
+		return renoCtlCall([]string{"notes", arg})
+
+	case "config":
+		// the ad hoc recording config -- same core the script headers and
+		// recorder-view menus drive; applies at the next record arm
+		fs := flag.NewFlagSet("reno config", flag.ExitOnError)
+		var screens stringsFlag
+		fs.Var(&screens, "screen", "display selector, optionally :x,y,WxH (repeatable)")
+		audio := fs.String("audio", "", "audio input device query, or 'none' to mute all")
+		webcam := fs.String("webcam", "", "webcam preset: off|br|tr|bl|tl|big")
+		clear := fs.Bool("clear", false, "reset to 'obs as-is'")
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		if *clear {
+			if len(screens) > 0 || *audio != "" || *webcam != "" {
+				return fmt.Errorf("reno config: --clear takes no other flags")
+			}
+			return renoCtlCall([]string{"record-config", "--clear"})
+		}
+		var cfg renocore.RecordConfig
+		for _, s := range screens {
+			sel, err := renocore.ParseScreenSel(s)
+			if err != nil {
+				return err
+			}
+			cfg.Screens = append(cfg.Screens, sel)
+		}
+		cfg.Audio = *audio
+		if *webcam != "" {
+			if err := renocore.CheckWebcam(*webcam); err != nil {
+				return err
+			}
+			cfg.Webcam = *webcam
+		}
+		if cfg.Empty() {
+			return fmt.Errorf("reno config: nothing set (want --screen/--audio/--webcam, or --clear)")
+		}
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		return renoCtlCall([]string{"record-config", string(raw)})
+
 	case "focus-session", "launch-session", "open-url", "focus-app",
 		"chrome-tab", "hide-app", "show-app":
 		return renoAction(verb, rest)
@@ -103,6 +160,7 @@ func cmdReno(args []string) error {
 	case "record":
 		// start recording: arms over ctl (ad hoc run when nothing is
 		// live; the module journals intent write-ahead), then drives OBS
+		// -- launching it first when the socket is down (ObsBoot)
 		fs := flag.NewFlagSet("reno record", flag.ExitOnError)
 		host := fs.String("obs-host", bus.DefaultObsHost, "obs-websocket host:port")
 		run := fs.String("run", "", "run id (correlation)")
@@ -113,14 +171,15 @@ func cmdReno(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer renoWatchdog()()
-		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
-		return v.Record(dial, renoCtlData, bus.RenoCorr{Run: *run, Step: -1, Act: -1})
+		defer renoWatchdogFor(bus.EnsureDeadline + 30*time.Second)()
+		return v.Record(ensureDial(*host), renoCtlData, bus.RenoCorr{Run: *run, Step: -1, Act: -1})
 
 	case "obs":
-		// transport ops: stop | pause | resume | scene <name>
+		// transport ops: stop | pause | resume | scene <name> stay
+		// dial-only (stopping a recording must never boot OBS); ensure
+		// and probe own the launch path
 		if len(rest) == 0 {
-			return fmt.Errorf("reno obs: need an op: stop | pause | resume | scene <name>")
+			return fmt.Errorf("reno obs: need an op: ensure | probe | stop | pause | resume | scene <name>")
 		}
 		op := rest[0]
 		arg := ""
@@ -139,23 +198,68 @@ func cmdReno(args []string) error {
 		if err := fs.Parse(rest[flagsAt:]); err != nil {
 			return err
 		}
+		corr := bus.RenoCorr{Run: *run, Step: *step, Act: *act}
+		switch op {
+		case "ensure":
+			defer renoWatchdogFor(bus.EnsureDeadline + 30*time.Second)()
+			obs, err := ensureDial(*host)()
+			if err != nil {
+				return err
+			}
+			defer obs.Close()
+			fmt.Printf("obs %s up at %s (SetRecordDirectory=%v)\n", obs.Version(), *host, obs.CanSetRecordDirectory())
+			return nil
+		case "probe":
+			v, err := bus.NewRenoVerbs()
+			if err != nil {
+				return err
+			}
+			defer renoWatchdogFor(bus.EnsureDeadline + 30*time.Second)()
+			return v.Probe(ensureDial(*host), renoCtlData, corr)
+		}
 		v, err := bus.NewRenoVerbs()
 		if err != nil {
 			return err
 		}
 		defer renoWatchdog()()
 		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
-		return v.ObsOp(op, arg, dial, renoCtlData, bus.RenoCorr{Run: *run, Step: *step, Act: *act})
+		return v.ObsOp(op, arg, dial, renoCtlData, corr)
 	}
 	return fmt.Errorf("reno: unknown verb %q", verb)
+}
+
+// ensureDial is the launching dial: seed the websocket config and boot
+// OBS when the socket is down (record/ensure/probe only).
+func ensureDial(host string) func() (bus.ObsTransport, error) {
+	return func() (bus.ObsTransport, error) {
+		boot, err := bus.NewObsBoot(host)
+		if err != nil {
+			return nil, err
+		}
+		return boot.Ensure(bus.EnsureDeadline)
+	}
+}
+
+// stringsFlag is a repeatable string flag (--screen ... --screen ...).
+type stringsFlag []string
+
+func (s *stringsFlag) String() string { return strings.Join(*s, ",") }
+
+func (s *stringsFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
 }
 
 // renoWatchdog hard-bounds a verb process: goobs and cgo AX calls take
 // no context, and the effect executor's shutdown story leans on every
 // verb self-terminating -- so outliving the deadline exits loudly
 // instead of hanging as an unkillable orphan.
-func renoWatchdog() func() {
-	t := time.AfterFunc(renoVerbDeadline, func() {
+func renoWatchdog() func() { return renoWatchdogFor(renoVerbDeadline) }
+
+// renoWatchdogFor is the sized form: verbs that may cold-launch OBS
+// (record, obs ensure, obs probe) run minutes, not seconds.
+func renoWatchdogFor(d time.Duration) func() {
+	t := time.AfterFunc(d, func() {
 		fmt.Fprintln(os.Stderr, "khudson reno: verb exceeded its deadline; hard exit")
 		os.Exit(124)
 	})

@@ -2,9 +2,11 @@ package reno
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
+	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
 // Row key conventions consumed by the dock's reno chrome renderer. The
@@ -20,6 +22,11 @@ const (
 	KeyActNext     = "act:next"
 	KeyActPrev     = "act:prev"
 	KeyActRecord   = "act:record"
+	KeyActProbe    = "act:probe"
+	KeyCfgScreens  = "cfg:screens"
+	KeyCfgAudio    = "cfg:audio"
+	KeyCfgWebcam   = "cfg:webcam"
+	KeyNotes       = "notes"
 )
 
 // presenterData renders the presenter view. Caller holds mu.
@@ -33,6 +40,12 @@ func (m *Mod) presenterData() module.Data {
 	}
 	switch {
 	case m.staged == nil && m.run == nil:
+		if m.notes != "" {
+			// ad hoc notes without a script: the zero-ceremony presenter
+			d.Title = "reno: notes"
+			d.Rows = append(d.Rows, m.notesRows()...)
+			break
+		}
 		d.Rows = append(d.Rows,
 			module.Row{Kind: module.RowText, Text: "no script loaded", Style: module.StyleDim},
 			module.Row{Kind: module.RowText, Text: "khudson reno load <script.txtar>", Style: module.StyleDim})
@@ -49,13 +62,19 @@ func (m *Mod) presenterData() module.Data {
 			d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "khudson reno start to arm", Style: module.StyleDim})
 		}
 	case m.staged == nil || m.stale != "":
-		// a live run with no usable script: a recovered ad hoc journal, or
-		// a script that changed under the run. Every recovery branch must
-		// render -- a panic here crash-loops the bus straight back into
-		// the same journal.
+		// a live run with no usable script: a mid-flight ad hoc run (its
+		// notes render here), a recovered ad hoc journal, or a script
+		// that changed under the run. Every recovery branch must render
+		// -- a panic here crash-loops the bus straight back into the
+		// same journal.
 		d.Title = "reno: " + m.run.Demo
 		d.Rows = append(d.Rows,
-			module.Row{Kind: module.RowKV, Key: "run", Value: m.run.ID, Style: module.StyleAccent},
+			module.Row{Kind: module.RowKV, Key: "run", Value: m.run.ID, Style: module.StyleAccent})
+		if m.stale == "" && m.notes != "" {
+			d.Rows = append(d.Rows, m.notesRows()...)
+			break
+		}
+		d.Rows = append(d.Rows,
 			module.Row{Kind: module.RowText, Text: "live run without a usable script; khudson reno stop to close it", Style: module.StyleDim})
 	default:
 		d.Title = "reno: " + m.run.Demo
@@ -209,8 +228,138 @@ func (m *Mod) recorderData() module.Data {
 	default:
 		d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "no script, no run", Style: module.StyleDim})
 	}
+	d.Rows = append(d.Rows, module.Row{Kind: module.RowDivider})
+	d.Rows = append(d.Rows, m.configRows()...)
 	d.Rows = append(d.Rows, module.Row{Kind: module.RowDivider}, m.recordControlRow())
 	return d
+}
+
+// configRows renders the next run's recording config with the menus
+// that mutate it. Scripted recording runs read their config from the
+// script; the pending knobs then show read-only so a leftover ad hoc
+// config never looks armed.
+func (m *Mod) configRows() []module.Row {
+	if m.staged != nil && m.staged.Record {
+		v := "from script"
+		if !m.staged.RecordCfg.Empty() {
+			v = m.staged.RecordCfg.Summary()
+		} else if m.staged.Scene != "" {
+			v = "scene " + m.staged.Scene
+		}
+		return []module.Row{{Kind: module.RowKV, Key: "config", Value: v, Style: module.StyleDim}}
+	}
+	inv := m.inventory
+	if inv == nil || m.now().Sub(inv.At) > invStale {
+		label := "probe obs devices"
+		if inv != nil {
+			label = "re-probe obs devices (inventory stale)"
+		}
+		rows := m.pendingSummaryRows()
+		return append(rows, module.Row{Kind: module.RowText, Key: KeyActProbe,
+			Text: label, Style: module.StyleHighlight, Act: []string{actProbe}})
+	}
+
+	screens := module.Row{Kind: module.RowKV, Key: KeyCfgScreens, Value: "obs as-is",
+		Menu: m.screenMenu(inv)}
+	if len(m.pending.Screens) > 0 {
+		var sel []string
+		for _, s := range m.pending.Screens {
+			sel = append(sel, screenLabel(inv, s))
+		}
+		screens.Value = strings.Join(sel, " + ")
+		screens.Style = module.StyleAccent
+	}
+	audio := module.Row{Kind: module.RowKV, Key: KeyCfgAudio, Value: "obs as-is",
+		Menu: m.audioMenu(inv)}
+	if m.pending.Audio != "" {
+		audio.Value = audioLabel(inv, m.pending.Audio)
+		audio.Style = module.StyleAccent
+	}
+	webcam := module.Row{Kind: module.RowKV, Key: KeyCfgWebcam, Value: "off",
+		Menu: m.webcamMenu()}
+	if m.pending.Webcam != "" {
+		webcam.Value = m.pending.Webcam
+		webcam.Style = module.StyleAccent
+	}
+	rows := []module.Row{screens, audio, webcam}
+	if m.notesPath != "" {
+		rows = append(rows, module.Row{Kind: module.RowKV, Key: KeyNotes,
+			Value: filepath.Base(m.notesPath), Style: module.StyleDim})
+	}
+	return rows
+}
+
+// pendingSummaryRows shows a config set before any probe (CLI-driven):
+// honest even without menus.
+func (m *Mod) pendingSummaryRows() []module.Row {
+	if m.pending.Empty() {
+		return nil
+	}
+	return []module.Row{{Kind: module.RowKV, Key: "config",
+		Value: m.pending.Summary(), Style: module.StyleAccent}}
+}
+
+func (m *Mod) screenMenu(inv *renocore.ObsInventory) []module.Act {
+	var items []module.Act
+	for _, it := range inv.Screens {
+		label := it.Name
+		for _, s := range m.pending.Screens {
+			if s.Display == it.Value {
+				label = "[x] " + label
+				break
+			}
+		}
+		items = append(items, module.Act{Label: label,
+			Argv: []string{actCfgScreen, it.Value}, Section: "screens"})
+	}
+	return items
+}
+
+func (m *Mod) audioMenu(inv *renocore.ObsInventory) []module.Act {
+	items := []module.Act{
+		{Label: "obs as-is", Argv: []string{actCfgAudio, cfgDefault}, Section: "audio"},
+		{Label: "none (mute all)", Argv: []string{actCfgAudio, renocore.AudioNone}, Section: "audio"},
+	}
+	for _, it := range inv.Mics {
+		items = append(items, module.Act{Label: it.Name,
+			Argv: []string{actCfgAudio, it.Value}, Section: "devices"})
+	}
+	return items
+}
+
+func (m *Mod) webcamMenu() []module.Act {
+	items := []module.Act{{Label: "off", Argv: []string{actCfgWebcam, cfgDefault}, Section: "webcam"}}
+	for _, p := range renocore.WebcamPresets[1:] {
+		items = append(items, module.Act{Label: p,
+			Argv: []string{actCfgWebcam, p}, Section: "webcam"})
+	}
+	return items
+}
+
+// screenLabel resolves a selection back to its display name for the
+// row; the raw value stands in when the inventory moved on.
+func screenLabel(inv *renocore.ObsInventory, s renocore.ScreenSel) string {
+	for _, it := range inv.Screens {
+		if it.Value == s.Display {
+			if s.Region != nil {
+				return it.Name + " (" + s.Region.String() + ")"
+			}
+			return it.Name
+		}
+	}
+	return s.String()
+}
+
+func audioLabel(inv *renocore.ObsInventory, q string) string {
+	if q == renocore.AudioNone {
+		return "none (mute all)"
+	}
+	for _, it := range inv.Mics {
+		if it.Value == q {
+			return it.Name
+		}
+	}
+	return q
 }
 
 // recordControlRow is the transport's one tap: record (arming an ad hoc
@@ -252,6 +401,17 @@ func (m *Mod) recordingRows() []module.Row {
 // zero means unset, so a just-entered step pins to a hair above zero.
 func heatFrac(f float64) float64 {
 	return min(max(f, 0.001), 1)
+}
+
+// notesRows renders the ad hoc notes body as KeyNote rows (the dock
+// wraps them) under their source-file chip. Caller holds mu.
+func (m *Mod) notesRows() []module.Row {
+	rows := []module.Row{{Kind: module.RowKV, Key: KeyNotes,
+		Value: filepath.Base(m.notesPath), Style: module.StyleDim}}
+	for _, line := range noteLines(m.notes) {
+		rows = append(rows, module.Row{Kind: module.RowText, Key: KeyNote, Text: line})
+	}
+	return rows
 }
 
 // noteLines splits a note body for the wire: rows carry no embedded

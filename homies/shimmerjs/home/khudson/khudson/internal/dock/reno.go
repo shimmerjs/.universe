@@ -111,10 +111,15 @@ func splitRenoRows(d module.Data) renoPieces {
 }
 
 // renderRenoPresenter draws the live show view; without published
-// next/prev acts (no live run) it falls back to the flat view.
+// next/prev acts (no live run) it falls back to the notes view when
+// note rows ride the wire (ad hoc notes, no script -- prose still wants
+// wrapping), else the flat view.
 func (m *model) renderRenoPresenter(id string, d module.Data, rr rect) string {
 	p := splitRenoRows(d)
 	if p.actNext == nil || p.step == nil {
+		if len(p.note) > 0 {
+			return m.renderRenoNotes(d, rr)
+		}
 		return m.renderRenoFlat(id, d, rr)
 	}
 	ss := m.rowStyles()
@@ -159,6 +164,32 @@ func (m *model) renderRenoPresenter(id string, d module.Data, rr rect) string {
 		hitRegion{area: rr, do: consumeTap, longPress: openMenu},
 	)
 	return fixedBlock(append([]string{header}, lines...), rr.w, rr.h)
+}
+
+// renderRenoNotes is the scriptless-notes body: title, the non-note
+// rows (run chip, notes-file chip, warnings), then the note text
+// wrapped full-width. No tap bands -- there is no cursor to move.
+func (m *model) renderRenoNotes(d module.Data, rr rect) string {
+	ss := m.rowStyles()
+	lines := []string{fitCellPad(chromeAccent.Bold(true).Render(" "+d.Title), rr.w)}
+	var head module.Data
+	for _, r := range d.Rows {
+		if r.Key != reno.KeyNote {
+			head.Rows = append(head.Rows, r)
+		}
+	}
+	body, _, _ := renderChromeRows(head, rr.w, len(head.Rows), ss)
+	lines = append(lines, body...)
+	p := splitRenoRows(d)
+	noteW := max(rr.w-2, 1)
+	for _, wline := range renoWrap(p.note, noteW) {
+		if len(lines) >= rr.h {
+			break
+		}
+		lines = append(lines, fitCellPad(" "+wline, rr.w))
+	}
+	m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
+	return fixedBlock(lines, rr.w, rr.h)
 }
 
 // renoChip renders one timer chip through the heat ramp: warn style wins

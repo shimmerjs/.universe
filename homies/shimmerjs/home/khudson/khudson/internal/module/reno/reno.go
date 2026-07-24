@@ -9,6 +9,7 @@ package reno
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -58,6 +59,19 @@ type Mod struct {
 	// running (the show must go on) but the failure stays on glass.
 	journalErr string
 	gotoOff    int
+
+	// pending is the NEXT ad hoc run's recording config: mutated by the
+	// record-config ctl and the recorder view's menu acts, copied into
+	// the run journal at arm. Scripted runs take their script's config
+	// instead -- a leftover pending knob must never hijack a show.
+	pending renocore.RecordConfig
+	// inventory is the last obs probe's device enumeration (menu
+	// source); the module never dials OBS itself.
+	inventory *renocore.ObsInventory
+	// notes is the ad hoc speaker-notes body (notes without a script),
+	// with the path it was read from for the status row.
+	notes     string
+	notesPath string
 
 	runsDir string // "" on bare test buses: journal writes error loudly
 	exe     string // os.Executable for TCC-identity argvs (focus-app)
@@ -165,7 +179,7 @@ func (m *Mod) HandleActEffects(argv []string) (bool, []module.Effect) {
 		}
 		return true, m.handleRecordActLocked()
 	}
-	return false, nil
+	return m.handleCfgActLocked(argv)
 }
 
 func (m *Mod) cursor() int {
@@ -344,6 +358,20 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 			return nil, nil, errors.New("reno record-note: need a run id")
 		}
 		return nil, nil, m.noteRecordingLocked(args[1], args[2:])
+	case "record-config":
+		return nil, nil, m.setRecordConfigLocked(args[1:])
+	case "obs-inventory":
+		if len(args) != 2 {
+			return nil, nil, errors.New("reno obs-inventory: need one JSON payload")
+		}
+		var inv renocore.ObsInventory
+		if err := json.Unmarshal([]byte(args[1]), &inv); err != nil {
+			return nil, nil, fmt.Errorf("reno obs-inventory: %w", err)
+		}
+		m.inventory = &inv
+		return nil, nil, nil
+	case "notes":
+		return nil, nil, m.setNotesLocked(args[1:])
 	case "next":
 		return nil, m.transition(m.cursor()+1, false), nil
 	case "prev":
@@ -434,6 +462,12 @@ type Status struct {
 	Script *ScriptStatus `json:"script,omitempty"`
 	Run    *RunStatus    `json:"run,omitempty"`
 	Stale  string        `json:"stale,omitempty"`
+	// Config is the pending ad hoc recording config's summary.
+	Config string `json:"config,omitempty"`
+	// Notes is the loaded scriptless notes path.
+	Notes string `json:"notes,omitempty"`
+	// Inventory summarizes the last obs probe.
+	Inventory string `json:"inventory,omitempty"`
 }
 
 type ScriptStatus struct {
@@ -453,7 +487,15 @@ type RunStatus struct {
 }
 
 func (m *Mod) statusLocked() Status {
-	st := Status{Stale: m.stale}
+	st := Status{Stale: m.stale, Notes: m.notesPath}
+	if !m.pending.Empty() {
+		st.Config = m.pending.Summary()
+	}
+	if inv := m.inventory; inv != nil {
+		st.Inventory = fmt.Sprintf("obs %s: %d displays, %d mics, %d cams (%s old)",
+			inv.ObsVersion, len(inv.Screens), len(inv.Mics), len(inv.Cams),
+			m.now().Sub(inv.At).Round(time.Second))
+	}
 	if m.staged != nil {
 		st.Script = &ScriptStatus{Name: m.staged.Name, Path: m.staged.Path, Hash: m.staged.Hash, Steps: len(m.staged.Steps)}
 	}

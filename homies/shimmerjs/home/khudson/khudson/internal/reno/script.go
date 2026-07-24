@@ -44,7 +44,10 @@ type Script struct {
 	// Scene is the optional initial OBS scene, set before recording
 	// starts.
 	Scene string
-	Steps []Step
+	// RecordCfg is the header recording config (screen/audio/webcam) --
+	// the same core the ad hoc surfaces drive; empty means OBS as-is.
+	RecordCfg RecordConfig
+	Steps     []Step
 	// Hash is the sha256 of the raw archive bytes; the run journal pins
 	// it so a reload with an edited script never silently keeps a stale
 	// cursor.
@@ -259,6 +262,58 @@ func Parse(path string, src []byte) (*Script, error) {
 				continue
 			}
 			vetCommand(s, cur, verb, args, line, fail)
+		case "screen":
+			// header-only recording config: which display(s), optional
+			// region crop in display pixels
+			if cur != nil {
+				fail(line, "screen is a header, not a step command")
+				continue
+			}
+			switch len(args) {
+			case 1:
+				s.RecordCfg.Screens = append(s.RecordCfg.Screens, ScreenSel{Display: args[0]})
+			case 2:
+				r, err := ParseRegion(args[1])
+				if err != nil {
+					fail(line, "screen: %v", err)
+					continue
+				}
+				s.RecordCfg.Screens = append(s.RecordCfg.Screens, ScreenSel{Display: args[0], Region: r})
+			default:
+				fail(line, "screen wants a display selector and an optional x,y,WxH region")
+			}
+		case "audio":
+			if cur != nil {
+				fail(line, "audio is a header, not a step command")
+				continue
+			}
+			if len(args) != 1 {
+				fail(line, "audio wants one device query or %q", AudioNone)
+				continue
+			}
+			if s.RecordCfg.Audio != "" {
+				fail(line, "duplicate audio header")
+				continue
+			}
+			s.RecordCfg.Audio = args[0]
+		case "webcam":
+			if cur != nil {
+				fail(line, "webcam is a header, not a step command")
+				continue
+			}
+			if len(args) != 1 {
+				fail(line, "webcam wants one placement preset")
+				continue
+			}
+			if s.RecordCfg.Webcam != "" {
+				fail(line, "duplicate webcam header")
+				continue
+			}
+			if err := CheckWebcam(args[0]); err != nil {
+				fail(line, "webcam: %v", err)
+				continue
+			}
+			s.RecordCfg.Webcam = args[0]
 		case "step":
 			if len(args) != 1 {
 				fail(line, "step wants exactly one id")
@@ -338,6 +393,12 @@ func Parse(path string, src []byte) (*Script, error) {
 	}
 	if s.Scene != "" && !s.Record {
 		errs = append(errs, errors.New("scene header without a record header"))
+	}
+	if !s.RecordCfg.Empty() && !s.Record {
+		errs = append(errs, errors.New("screen/audio/webcam headers without a record header"))
+	}
+	if s.Scene != "" && !s.RecordCfg.Empty() {
+		errs = append(errs, errors.New("scene header and screen/audio/webcam headers are exclusive: the config path owns the scene"))
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)

@@ -60,6 +60,9 @@ type RecordingState struct {
 	Output     string    `json:"output,omitempty"`
 	ObsVersion string    `json:"obsVersion,omitempty"`
 	Failed     string    `json:"failed,omitempty"`
+	// Config is the recording configuration the record verb applied
+	// (screens/audio/webcam); nil means OBS as-is.
+	Config *RecordConfig `json:"config,omitempty"`
 }
 
 // Active reports a recording believed live: started, not stopped.

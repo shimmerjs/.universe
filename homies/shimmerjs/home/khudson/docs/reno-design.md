@@ -82,9 +82,104 @@ Costs: a new public control surface and persistent run state on the bus.
 
 **webcam FX (P3).** Instant move/scale-huge: stock SetSceneItemTransform; visibility: SetSceneItemEnabled -- no plugin [U]. Eased motion (the bounce): pre-authored exeldro Move filters fired remotely via SetSourceFilterEnabled [U]; pixelate via composite-blur, parameters ordinary filter settings [U]. Fully dynamic paths: SerialFrame RequestBatch with Sleep pseudo-requests, frame-locked in OBS [U]. Advanced Scene Switcher's vendor API would move demo logic into OBS's scene-collection store, where it is stripped if the plugin is absent -- rejected; the script file stays authoritative and OBS is an actuator only [U]. Both plugins move fast: nix pins plus the connect-time probe.
 
-**gmeet (P3, gates 1-2).** OBS virtual cam is a CMIO camera extension (OBS 30+/macOS 13+) with a one-time system-extension approval that MDM can block outright [U, gate 1]. Meet has no camera allowlist (the DAL-era reports are stale), but a normal camera tile's quality ceiling makes terminal text illegible; the target is Meet's "present content from camera" (2025), which takes a camera device as the presentation tile at up to 1080p30 and is Workspace-edition-gated [U, gate 2]. Zero-approval fallback that always works: render the composed scene in a browser page and present-a-tab [U]. Operational pins: OBS output 1920x1080 NV12 (I420+Full range renders black downstream), start the virtual cam before joining, disable macOS Reactions per-app for the virtual cam (default-on; a hand gesture fires fireworks over the demo) [U].
+**gmeet (P3, gates 1-2).** OBS virtual cam is a CMIO camera extension (OBS 30+/macOS 13+) with a one-time system-extension approval that MDM can block outright [U, gate 1]. Live-observed 2026-07-23: OBS 32.2 refuses to install the extension unless the app sits in /Applications -- the cask lands in ~/Applications on this machine, so P3 vcam also needs the install moved or the cask appdir changed. Meet has no camera allowlist (the DAL-era reports are stale), but a normal camera tile's quality ceiling makes terminal text illegible; the target is Meet's "present content from camera" (2025), which takes a camera device as the presentation tile at up to 1080p30 and is Workspace-edition-gated [U, gate 2]. Zero-approval fallback that always works: render the composed scene in a browser page and present-a-tab [U]. Operational pins: OBS output 1920x1080 NV12 (I420+Full range renders black downstream), start the virtual cam before joining, disable macOS Reactions per-app for the virtual cam (default-on; a hand gesture fires fireworks over the demo) [U].
 
 **post (P4).** Clips from one OBS profile are homogeneous, so the concat demuxer stays lossless; the ffconcat list's per-file duration/inpoint/outpoint expresses trim+stitch of N takes in one invocation, with the standard keyframe caveat (copy snaps to keyframes; re-encode per clip for exact cuts -- LosslessCut's smart-cut is unreliable, don't build on it) [U]. Audio drop/replace (`-an`, `-map 0:v -map 1:a -c:v copy`) is pure remux [U]. Scrub/review: mpv JSON IPC over a unix socket (ndjson seek/frame-step/time-pos, no cgo) [U]; LosslessCut stays the manual escape hatch. CLI verbs first (`khudson reno trim|stitch|mute ...`); then the moviemaker core grows BOTH surfaces -- a touch view behind the reno tab and a main-display app -- as thin clients of one core, the standalone-modules shape (annotation round 2: "why not both? should just be a matter of layout and code structure" -- it is, given the core/client split).
+
+## ad hoc expansion (registered 2026-07-23, next arc after the P0-P2/P4 landing)
+
+The register's 07-23 batch, designed against the installed OBS 32.2.0
+(~/Applications/OBS.app, homebrew cask, never launched). Ground truth
+below was pulled from the installed binaries, not docs: obs-websocket
+5.x persists {server_enabled, server_port, server_password,
+auth_required, first_load} in plugin_config/obs-websocket/config.json;
+the CLI flags are exactly --websocket_port / --websocket_password /
+--websocket_debug -- overrides only, NO enable flag -- so seeding
+config.json is the one mechanism that turns the server on. OBS core
+reads global.ini + user.ini; user.ini [General] FirstRun gates the
+first-run wizard.
+
+**khudson-managed obs-websocket (kills the manual enable step).**
+`EnsureOBS`: dial; if down, seed config.json (server on, port 4455,
+auth on with a generated password written to <state>/reno/obs-password
+0600 -- ObsPassword() already reads it), seed user.ini FirstRun=true
+ONLY when user.ini is absent (never clobber a real config), refuse
+loudly if an OBS process is already running with the socket down
+(websocket config binds at launch; quit and re-run), else launch via
+`open -g -a` and poll-dial to a deadline. Only record / obs ensure /
+obs probe may launch OBS (120s watchdog); stop/pause/resume/scene stay
+dial-only under the 30s watchdog -- stopping a recording must never
+boot OBS. Accepted one-times on first launch: Screen Recording +
+Microphone TCC prompts on first source creation. Quarantine
+(live-verified 2026-07-23): on this MDM'd machine the cask-quarantined
+app NEVER gets a Gatekeeper approval dialog -- exec wedges in
+_dyld_start indefinitely, foreground or background -- so first launch
+is user-gated: approve by hand (right-click Open / System Settings) or
+strip the xattr; khudson itself does not strip xattrs, and Ensure's
+timeout error names the hazard.
+
+**RecordConfig, one core for every surface.** A recording config
+{screens (display + optional region), audio (device | none), webcam
+preset} with exactly three producers and one consumer: script headers
+(`screen <sel> [x,y,WxH]` repeatable, `audio <device|none>`,
+`webcam <off|br|tr|bl|tl|big>`, all record-gated like scene), the
+ctl seam (`record-config`, driven by `khudson reno config` flags), and
+recorder-view menu taps (in-process acts mutating the module's pending
+config). Arm copies the config into RecordingState write-ahead; the
+record verb is the single consumer. EMPTY config = OBS untouched
+(today's behavior, scene header still honored); ANY knob set = the
+verb ensures the khudson-owned scene "reno" matches the config and
+switches to it. The scene plan (desired inputs, transforms, crops,
+mutes) is computed PURE in internal/reno from the probed environment
+(monitors, canvas, input kinds, device items) and unit-tested; the
+verb executes it through the extended ObsTransport. Display/device
+selection resolves by index/UID or unique name substring at apply
+time, loud on zero or ambiguous (the handle discipline). audio none
+mutes every audio input reno does not own -- legal because this OBS
+instance is khudson-managed by decision; a user OBS config is exactly
+the empty-config path.
+
+**Probe + inventory.** `khudson reno obs probe` ensures OBS, ensures
+the reno-mic/reno-cam skeleton inputs (created disabled, kind picked
+from GetInputKindList: screen_capture over display_capture,
+macos-avcapture over av_capture_input), enumerates devices, and notes
+the inventory into the module over ctl (`obs-inventory`). Mic/cam
+device items enumerate via GetInputPropertiesListPropertyItems
+(device_id / device, first non-empty wins; nameless entries dropped --
+the cam list leads with one). DISPLAYS DO NOT: enumerating the SCK
+source's display_uuid property SEGVs obs-websocket in OBS 32.2
+(strlen(NULL); crash-verified 2026-07-23, three .ips reports), so
+displays enumerate locally via CoreGraphics (internal/cgdisplay:
+CGGetActiveDisplayList + CGDisplayCreateUUIDFromDisplayID -- khudson
+always runs on the machine OBS captures, and local CG also supplies
+the pixel-space geometry the crop fallback needs). The recorder view
+renders its screens/audio/webcam menus from the stored inventory; a
+missing or stale inventory renders a "probe obs" act row instead of
+dead menus. The module still never dials OBS. Live-verified end to end
+2026-07-23 (TestObsLiveOrchestration): ensure -> probe -> scene build
+(display capture + audio-none mute sweep) -> record -> stop -> real
+clip in the run workspace; StopRecord's output file finalizes
+asynchronously, so consumers poll for the flush.
+
+**Webcam for ad hoc (P3 subset).** Enable + placement presets only
+(off, corner PiP x4, big) via SetSceneItemEnabled +
+SetSceneItemTransform bounds -- no plugins, no eased motion; the P3
+FX vocabulary is untouched.
+
+**Ad hoc notes.** `khudson reno notes <file.md> | --clear` over ctl:
+the module stores the resolved text (absolute path, read at load,
+loud errors) and the presenter renders it whenever no staged script
+claims the view -- idle or mid ad hoc run. A static-notes-only script
+remains the richer path; this is the zero-ceremony one.
+
+**Swipe swaps strip tabs (single-finger).** Multi-finger is
+hardware-refuted (panel firmware is single-contact); the recognizer's
+Swipe(dir) already fires live. The dock routes horizontal swipes to
+strip-tab cycling over the ring [home, entries...] (Alt pairs count
+as one slot, "soon" stubs skipped); swipe left = next tab, right =
+prev. Scope: an open overlay swallows swipes (the menu owns the
+glass), and future drag/wheel consumers opt their regions out via the
+hit table before forwarding lands. Vertical swipes stay unbound.
 
 ## demo script format (txtar + testscript-style commands)
 
@@ -145,6 +240,7 @@ One engine-owned stopwatch, N read-outs: bubbles timer stops dead at zero and ca
 4. P3 gmeet + webcam FX: NOT STARTED -- gates 1-2 are user/external (MDM camera-extension approval; Meet Workspace edition).
 5. P4 post: clip verbs LANDED (`khudson reno trim|stitch|mute|dub`, copy-fast + --exact re-encode; ffmpeg/mpv ride home.packages). OWED: mpv-IPC scrub surface + the moviemaker surfaces (reno-tab touch view + main-display app over one core).
 6. couch client: NOT STARTED -- standalone presenter TUI over the module core (notes-file seam first).
+7. ad hoc expansion (2026-07-23 register): LANDED + LIVE-VERIFIED same day. ObsBoot (seed websocket config + generated password + launch, Ensure short-circuits on a live socket), RecordConfig one-core (script headers screen/audio/webcam == `khudson reno config` == recorder-view menus), scene plan pure in internal/reno + thin executor, local CG display enumeration (internal/cgdisplay, the obs-websocket SEGV workaround), probe/inventory ctl, ad hoc notes (`khudson reno notes`), webcam presets, single-finger swipe tab cycling in the dock. OWED: glass-side eyes-on (swipe + recorder menus render after the next switch + bus/HUD restart); OBS first launch was user-approved by hand (quarantine dialog never fires on this MDM posture -- see the boot section).
 
 ## open questions
 

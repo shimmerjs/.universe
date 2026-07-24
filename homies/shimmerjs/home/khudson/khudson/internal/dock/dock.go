@@ -777,6 +777,13 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 			m.resolveLongPress(g.Col, g.Row)
 		case proto.GestureSwipe:
 			m.lastGst = "swipe-" + g.Dir
+			// single-finger swipe swaps strip tabs (multi-finger is
+			// hardware-refuted: the panel firmware is single-contact). An
+			// open overlay owns the glass -- its drags must not switch
+			// layouts under the menu.
+			if m.overlay == nil {
+				m.swipeTab(g.Dir)
+			}
 		case proto.GestureTwoFingerSwipe:
 			// tray gesture; tray engine is a later milestone
 			m.lastGst = "two-finger-swipe-" + g.Dir + " (tray stub)"
@@ -784,6 +791,49 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 			m.lastGst = fmt.Sprintf("wheel %+d,%+d", g.DX, g.DY)
 		}
 	}
+}
+
+// swipeTab cycles the strip tabs on a horizontal swipe: left = next tab,
+// right = prev, over the ring [home, entries...]. Alt pairs occupy one
+// slot (active on either side, entered on the Target side); stub entries
+// (undefined target layouts) are skipped -- a swipe must land somewhere
+// real, never on a "soon" flash. A layout not on the strip (config
+// default screens) swipes nowhere: jumping to an arbitrary slot mid-
+// glass is worse than a no-op.
+func (m *model) swipeTab(dir string) {
+	if dir != "left" && dir != "right" {
+		return
+	}
+	type slot struct{ target, label string }
+	var ring []slot
+	cur := -1
+	if home, ok := m.homeLayout(); ok {
+		if m.layout == home {
+			cur = 0
+		}
+		ring = append(ring, slot{home, "home"})
+	}
+	if m.cfg != nil && m.cfg.Strip != nil {
+		for _, e := range m.cfg.Strip.Entries {
+			if _, ok := m.cfg.Layouts[e.Target]; !ok {
+				continue // stub tab: nothing to land on
+			}
+			if m.layout == e.Target || (e.Alt != "" && m.layout == e.Alt) {
+				cur = len(ring)
+			}
+			ring = append(ring, slot{e.Target, e.Label})
+		}
+	}
+	if len(ring) < 2 || cur < 0 {
+		return
+	}
+	step := 1
+	if dir == "right" {
+		step = -1
+	}
+	next := ring[(cur+step+len(ring))%len(ring)]
+	m.flash("tab:" + next.label)
+	m.trayActivate(next.target, next.label)
 }
 
 // navigateTo switches to a layout the dock config knows. Bus-connected navs

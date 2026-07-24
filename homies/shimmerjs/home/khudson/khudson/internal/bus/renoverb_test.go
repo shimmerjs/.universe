@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
 // renoLSFixture builds an ls tree: windows[i] = {id, handle, focused}.
@@ -209,13 +211,29 @@ func TestJournalFailureFailsTheVerb(t *testing.T) {
 	}
 }
 
-// fakeObs records transport ops; scripted failures by op name.
+// fakeObs records transport ops; scripted failures by op name. The
+// scene-plan surface serves canned environment data (renoscene_test.go
+// wires it; the base fake answers empty).
 type fakeObs struct {
 	ops     []string
 	fail    map[string]error
 	canDir  bool
 	version string
 	output  string
+
+	kinds    []string
+	monitors []renocore.Monitor
+	canvasW  float64
+	canvasH  float64
+	scenes   []string
+	inputs   map[string]string                  // name -> kind
+	props    map[string][]renocore.PropertyItem // "input/prop" -> items
+	sizes    map[string][2]int                  // input -> source w,h
+	itemIDs  map[string]int                     // "scene/source" -> id
+	enabled  map[int]bool
+	tfs      map[int]renocore.Transform
+	mutes    map[string]bool
+	settings map[string]map[string]any
 }
 
 func (f *fakeObs) op(name string) error {
@@ -225,8 +243,8 @@ func (f *fakeObs) op(name string) error {
 	}
 	return nil
 }
-func (f *fakeObs) Version() string                    { return f.version }
-func (f *fakeObs) CanSetRecordDirectory() bool        { return f.canDir }
+func (f *fakeObs) Version() string                     { return f.version }
+func (f *fakeObs) CanSetRecordDirectory() bool         { return f.canDir }
 func (f *fakeObs) SetRecordDirectory(dir string) error { return f.op("dir:" + dir) }
 func (f *fakeObs) SetScene(name string) error          { return f.op("scene:" + name) }
 func (f *fakeObs) StartRecord() error                  { return f.op("start") }
@@ -234,6 +252,94 @@ func (f *fakeObs) StopRecord() (string, error)         { return f.output, f.op("
 func (f *fakeObs) PauseRecord() error                  { return f.op("pause") }
 func (f *fakeObs) ResumeRecord() error                 { return f.op("resume") }
 func (f *fakeObs) Close() error                        { return f.op("close") }
+
+func (f *fakeObs) InputKinds() ([]string, error) { return f.kinds, f.op("kinds") }
+func (f *fakeObs) Monitors() ([]renocore.Monitor, error) {
+	return f.monitors, f.op("monitors")
+}
+func (f *fakeObs) Canvas() (float64, float64, error) {
+	return f.canvasW, f.canvasH, f.op("canvas")
+}
+func (f *fakeObs) Scenes() ([]string, error) { return f.scenes, f.op("scenes") }
+func (f *fakeObs) CreateScene(name string) error {
+	f.scenes = append(f.scenes, name)
+	return f.op("create-scene:" + name)
+}
+func (f *fakeObs) Inputs() (map[string]string, error) {
+	if f.inputs == nil {
+		f.inputs = map[string]string{}
+	}
+	return f.inputs, f.op("inputs")
+}
+func (f *fakeObs) CreateInput(scene, name, kind string, settings map[string]any, enabled bool) error {
+	if f.inputs == nil {
+		f.inputs = map[string]string{}
+	}
+	f.inputs[name] = kind
+	if f.settings == nil {
+		f.settings = map[string]map[string]any{}
+	}
+	f.settings[name] = settings
+	return f.op("create-input:" + name)
+}
+func (f *fakeObs) SetInputSettings(name string, settings map[string]any) error {
+	if f.settings == nil {
+		f.settings = map[string]map[string]any{}
+	}
+	f.settings[name] = settings
+	return f.op("settings:" + name)
+}
+func (f *fakeObs) SetInputMute(name string, muted bool) error {
+	if f.mutes == nil {
+		f.mutes = map[string]bool{}
+	}
+	f.mutes[name] = muted
+	return f.op(fmt.Sprintf("mute:%s=%v", name, muted))
+}
+func (f *fakeObs) RemoveInput(name string) error {
+	delete(f.inputs, name)
+	return f.op("remove:" + name)
+}
+func (f *fakeObs) PropertyItems(input, prop string) ([]renocore.PropertyItem, error) {
+	return f.props[input+"/"+prop], f.op("props:" + input + "/" + prop)
+}
+func (f *fakeObs) SceneItemID(scene, source string, ensure bool) (int, error) {
+	if id, ok := f.itemIDs[scene+"/"+source]; ok {
+		return id, f.op("item:" + source)
+	}
+	if !ensure {
+		return 0, fmt.Errorf("no item %s in %s", source, scene)
+	}
+	if f.itemIDs == nil {
+		f.itemIDs = map[string]int{}
+	}
+	id := len(f.itemIDs) + 1
+	f.itemIDs[scene+"/"+source] = id
+	return id, f.op("item:" + source)
+}
+func (f *fakeObs) SetSceneItemEnabled(scene string, id int, enabled bool) error {
+	if f.enabled == nil {
+		f.enabled = map[int]bool{}
+	}
+	f.enabled[id] = enabled
+	return f.op(fmt.Sprintf("enable:%d=%v", id, enabled))
+}
+func (f *fakeObs) ItemSourceSize(scene string, id int) (int, int, error) {
+	for src, itemID := range f.itemIDs {
+		if itemID == id {
+			wh := f.sizes[strings.TrimPrefix(src, scene+"/")]
+			return wh[0], wh[1], f.op(fmt.Sprintf("size:%d", id))
+		}
+	}
+	return 0, 0, f.op(fmt.Sprintf("size:%d", id))
+}
+func (f *fakeObs) SetSceneItemTransform(scene string, id int, tr renocore.Transform) error {
+	if f.tfs == nil {
+		f.tfs = map[int]renocore.Transform{}
+	}
+	f.tfs[id] = tr
+	return f.op(fmt.Sprintf("transform:%d", id))
+}
 
 // scriptedCtl returns arm data then records notes.
 func scriptedCtl(t *testing.T, dir string) (CtlCall, *[][]string) {

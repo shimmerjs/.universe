@@ -81,17 +81,37 @@ The 07-10 batch:
 - This ledger + DESIGN.md + main-kitty-integration.md +
   edge-host.md consolidated (5-mapper + 2-verifier pass).
 
-## reno (demo presenter/recorder), landed 2026-07-22
+## reno (demo presenter/recorder), landed 2026-07-22 + 07-23
 
 P0+P1+P2+P4-clip-verbs live in tree (reno-design.md phasing carries the
 LANDED/OWED map; reno-p0-spec.md carries the two design-review rounds'
 dispositions). Two aw-design-review rounds ran pre/mid-implementation
 (11 confirmed each; all fixed, mitigated-with-rationale, or folded into
-P1 preconditions). Owed: OBS live verification (cask lands next switch;
-enable View > Docks... obs-websocket server, optional password to
-<state>/reno/obs-password, then khudson-live), the Automation grant
-toward Chrome on first chrome-tab use, mpv-IPC scrub + moviemaker
-surfaces (P4 tail), P3 gmeet/vcam (user gates 1-2), couch client.
+P1 preconditions).
+
+Ad hoc expansion landed + LIVE-VERIFIED 2026-07-23 (design doc section
+"ad hoc expansion"): khudson now manages the obs-websocket server
+itself (ObsBoot seeds config.json + a generated password at
+<state>/reno/obs-password and launches OBS -- the manual View > Docks
+enable step is DEAD, and the P1 "OBS live verification" debt is PAID:
+TestObsLiveOrchestration produced a real clip through ensure -> probe
+-> scene build -> record -> stop). RecordConfig is the one core:
+script headers screen/audio/webcam == `khudson reno config` ==
+recorder-view menus; scene plans compute pure in internal/reno.
+Displays enumerate locally (internal/cgdisplay) because the SCK
+display_uuid property enumeration SEGVs obs-websocket in OBS 32.2
+(crash-verified). Ad hoc notes: `khudson reno notes <md>` renders on
+the presenter scriptless. Single-finger swipe cycles strip tabs
+(multi-finger hardware-refuted). First OBS launch was user-approved by
+hand: the MDM posture never shows the Gatekeeper dialog, exec wedges
+in _dyld_start until approved (right-click Open); already done on this
+machine.
+
+Owed: glass eyes-on for swipe + recorder menus (next switch + bus/HUD
+restart), the Automation grant toward Chrome on first chrome-tab use,
+mpv-IPC scrub + moviemaker surfaces (P4 tail), P3 gmeet/vcam (user
+gates 1-2; NEW sub-gate: vcam refuses outside /Applications and the
+cask lands in ~/Applications), couch client.
 
 ## Owed manual steps (next switch or after)
 
