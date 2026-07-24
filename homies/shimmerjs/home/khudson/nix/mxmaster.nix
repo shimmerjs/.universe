@@ -42,10 +42,13 @@ let
   buttonNames = builtins.attrNames buttonCID;
   functionNames = builtins.attrNames functionCID;
 
+  # filter to known buttons so an invalid key surfaces via the assertion
+  # (a clear message) instead of throwing on buttonCID.${btn} during eval
+  validButtons = lib.filterAttrs (btn: _: builtins.elem btn buttonNames) cfg.buttons;
   buttonsList = lib.mapAttrsToList (btn: fn: {
     cid = buttonCID.${btn};
     remap = functionCID.${fn};
-  }) cfg.buttons;
+  }) validButtons;
 in
 {
   options.universe.home.mxMaster = {
