@@ -81,6 +81,11 @@ func (m *Mod) setNotesLocked(args []string) error {
 	if err != nil {
 		return fmt.Errorf("reno notes: %w", err)
 	}
+	if !info.Mode().IsRegular() {
+		// the read runs in the bus under the module lock: a FIFO here
+		// would wedge every ctl and act (arc-2 review #18)
+		return fmt.Errorf("reno notes: %s is not a regular file", path)
+	}
 	if info.Size() > maxNotesBytes {
 		return fmt.Errorf("reno notes: %s is %d bytes (cap %d) -- that is not a notes file", path, info.Size(), maxNotesBytes)
 	}
@@ -145,18 +150,27 @@ func (m *Mod) toggleScreenLocked(display string) {
 }
 
 // armConfigLocked picks the config the arm journals: the script's for a
-// scripted recording run, the pending one for ad hoc. Caller holds mu.
+// scripted recording run, the pending one for ad hoc. The returned value
+// is a DEEP snapshot -- a shallow copy would alias the Screens backing
+// array, so a later screen toggle (in-place delete) would corrupt the
+// journaled config and race the post-unlock ArmResult marshal (arc-2
+// review #3). Caller holds mu.
 func (m *Mod) armConfigLocked() *renocore.RecordConfig {
+	src := m.pending
 	if m.staged != nil && m.run != nil && m.run.Demo == m.staged.Name {
-		if m.staged.RecordCfg.Empty() {
-			return nil
-		}
-		cfg := m.staged.RecordCfg
-		return &cfg
+		src = m.staged.RecordCfg
 	}
-	if m.pending.Empty() {
+	if src.Empty() {
 		return nil
 	}
-	cfg := m.pending
+	cfg := src
+	cfg.Screens = make([]renocore.ScreenSel, len(src.Screens))
+	for i, s := range src.Screens {
+		cfg.Screens[i] = s
+		if s.Region != nil {
+			r := *s.Region
+			cfg.Screens[i].Region = &r
+		}
+	}
 	return &cfg
 }

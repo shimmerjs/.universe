@@ -63,13 +63,23 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 		return
 	}
 	if effector != nil {
-		if handled, effects := effector.HandleActEffects(m.Argv); handled {
-			// effectful transitions: cursor moved in-process (repoll like
-			// any handled act, never argv-debounced), machine actions exec
-			// through the effect runner under their own keyed debounce
-			log.Printf("khudson bus: row act %s handled with %d effects: %v", m.Widget, len(effects), m.Argv)
+		handled := false
+		// transition + dispatch run as one unit so a concurrent ctl
+		// boundary cannot slot between the cursor move and the enqueue
+		b.DispatchTransition(m.Widget, func() []module.Effect {
+			var effects []module.Effect
+			if handled, effects = effector.HandleActEffects(m.Argv); handled {
+				// effectful transitions: cursor moved in-process (repoll
+				// like any handled act, never argv-debounced), machine
+				// actions exec through the effect runner under their own
+				// keyed debounce
+				log.Printf("khudson bus: row act %s handled with %d effects: %v", m.Widget, len(effects), m.Argv)
+				return effects
+			}
+			return nil
+		})
+		if handled {
 			b.pokePoll(m.Widget)
-			b.dispatchEffects(m.Widget, effects)
 			return
 		}
 	}

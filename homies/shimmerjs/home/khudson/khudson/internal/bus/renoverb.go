@@ -320,11 +320,30 @@ func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr 
 	if err := obs.StartRecord(); err != nil {
 		return failNote("start", err)
 	}
-	if _, err := ctl([]string{"record-note", arm.Run, "started", obs.Version()}); err != nil {
+	if err := noteWithRetry(ctl, []string{"record-note", arm.Run, "started", obs.Version()}); err != nil {
+		// the run-stop path still owns the orphan (stop-worthy covers
+		// unproven starts), but the failure stays loud
 		return v.Act(corr, "record", arm.Run, "unconfirmed",
 			"recording live but the started note failed: "+err.Error(), err)
 	}
 	return v.Act(corr, "record", arm.Run, "ok", "obs "+obs.Version()+" -> "+arm.Directory, nil)
+}
+
+// noteWithRetry sends one record-note, retrying once after a short
+// pause: the notes are the sole writers of the journal's started/stopped
+// truth, so a transient ctl blip must not orphan a recording (arc-2
+// review #12/#13).
+func noteWithRetry(ctl CtlCall, args []string) error {
+	_, err := ctl(args)
+	if err == nil {
+		return nil
+	}
+	time.Sleep(time.Second)
+	_, err2 := ctl(args)
+	if err2 == nil {
+		return nil
+	}
+	return errors.Join(err, err2)
 }
 
 // ObsOp runs one transport operation (stop|pause|resume|scene). Stop
@@ -344,9 +363,21 @@ func (v *RenoVerbs) ObsOp(op, arg string, dial func() (ObsTransport, error), ctl
 	case "stop":
 		path, err := obs.StopRecord()
 		if err != nil {
+			if isOutputNotRunning(err) {
+				// nothing is recording: a retry after a lost stopped note
+				// lands here forever unless the journal converges -- note
+				// stopped with no path so the run closes honestly (arc-2
+				// review #13; the clip path is gone, and saying so beats
+				// wedging Active forever)
+				if _, nerr := ctl([]string{"record-note", corr.Run, "stopped"}); nerr != nil {
+					return v.Act(corr, "obs", target, "error",
+						"no active recording and the stopped note failed: "+nerr.Error(), errors.Join(err, nerr))
+				}
+				return v.Act(corr, "obs", target, "ok", "no active recording; journal closed without a clip path", nil)
+			}
 			return v.Act(corr, "obs", target, "error", err.Error(), err)
 		}
-		if _, err := ctl([]string{"record-note", corr.Run, "stopped", path}); err != nil {
+		if err := noteWithRetry(ctl, []string{"record-note", corr.Run, "stopped", path}); err != nil {
 			return v.Act(corr, "obs", target, "unconfirmed",
 				"recording stopped ("+path+") but the note failed: "+err.Error(), err)
 		}
@@ -364,6 +395,14 @@ func (v *RenoVerbs) ObsOp(op, arg string, dial func() (ObsTransport, error), ctl
 		return v.Act(corr, "obs", target, "error", err.Error(), err)
 	}
 	return v.Act(corr, "obs", target, "ok", "", nil)
+}
+
+// isOutputNotRunning matches obs-websocket's OutputNotRunning refusal
+// (code 501): StopRecord against an idle OBS. String-matched because
+// goobs surfaces the code only in the message text.
+func isOutputNotRunning(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not running") || strings.Contains(s, "not active") || strings.Contains(s, "501")
 }
 
 // chromeTabScript activates the first Chrome tab whose URL or title

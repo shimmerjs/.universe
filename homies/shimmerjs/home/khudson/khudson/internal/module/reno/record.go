@@ -47,6 +47,10 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 	if err := m.wantRun(runID); err != nil {
 		return ArmResult{}, err
 	}
+	prevRun, prevRec := m.run, (*renocore.RecordingState)(nil)
+	if m.run != nil {
+		prevRec = m.run.Recording
+	}
 	if m.run == nil || !m.run.Live() {
 		if runID != "" {
 			return ArmResult{}, fmt.Errorf("reno record: run %s already finished", runID)
@@ -76,17 +80,31 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 	case rec.Active():
 		return ArmResult{}, fmt.Errorf("reno record: run %s is already recording", m.run.ID)
 	case rec.Failed != "" && rec.StartedAt.IsZero():
-		// a failed start is re-armable: reset to a fresh intent so the
-		// next record attempt (tap or scripted transition) can fire
-		rec.Failed = ""
-		rec.IntentAt = m.now()
+		// a failed start is re-armable: swap in a FRESH intent (never
+		// mutate in place -- a journal failure below must be able to
+		// restore the failed state, arc-2 review #9) and re-snapshot the
+		// config so a fixed pending config actually applies on the retry
+		// (#8: the stale broken config was unrecoverable)
+		fresh := *rec
+		fresh.Failed = ""
+		fresh.IntentAt = m.now()
+		fresh.Config = m.armConfigLocked()
+		rec = &fresh
+		m.run.Recording = rec
 	case !rec.StoppedAt.IsZero():
 		return ArmResult{}, fmt.Errorf("reno record: run %s already recorded (one clip per run; stop and re-record ad hoc)", m.run.ID)
 	}
 	m.journal()
 	if m.journalErr != "" {
 		// intent must land before OBS ever starts: a recording the
-		// journal cannot own is the crash-recovery hole
+		// journal cannot own is the crash-recovery hole. Roll the
+		// in-memory state back to what the journal still holds -- a
+		// phantom ad hoc run or an unjournaled intent left behind would
+		// let later taps act on state recovery cannot see (#9, #10).
+		m.run = prevRun
+		if m.run != nil {
+			m.run.Recording = prevRec
+		}
 		return ArmResult{}, fmt.Errorf("reno record: journal: %s", m.journalErr)
 	}
 	return ArmResult{Run: m.run.ID, Directory: rec.Directory, Scene: rec.Scene, Config: rec.Config}, nil
@@ -104,6 +122,12 @@ func (m *Mod) noteRecordingLocked(runID string, args []string) error {
 	if m.run != nil && (runID == "" || m.run.ID == runID) {
 		if m.run.Recording == nil {
 			return errors.New("reno record-note: no armed recording")
+		}
+		if runID == "" && !m.run.Recording.StoppedAt.IsZero() {
+			// an unscoped note binds to whichever run is current AT
+			// ARRIVAL; over a closed recording that can write run A's
+			// clip into run B (arc-2 review #14) -- demand the run id
+			return fmt.Errorf("reno record-note: run %s's recording is closed; name the run the note belongs to", m.run.ID)
 		}
 		if err := applyRecordNote(m.run.Recording, args, m.now()); err != nil {
 			return err
@@ -154,10 +178,18 @@ func applyRecordNote(rec *renocore.RecordingState, args []string, now time.Time)
 }
 
 // recordEffect is the exec'd record verb; obsEffect the transport ops.
-// Every head is the exe identity (PATH flips mid-switch).
+// Every head is the exe identity (PATH flips mid-switch). The key is
+// per-ARM (IntentAt-stamped), not per-run: a re-arm after a failed
+// start is a fresh attempt the 2s debounce must never eat (arc-2
+// review #11); true tap double-fires still collapse because both taps
+// resolve one arm.
 func (m *Mod) recordEffect() module.Effect {
+	key := m.run.ID + "/record"
+	if rec := m.run.Recording; rec != nil {
+		key = fmt.Sprintf("%s/record/%d", m.run.ID, rec.IntentAt.UnixNano())
+	}
 	return module.Effect{
-		Key:  m.run.ID + "/record",
+		Key:  key,
 		Argv: []string{m.exe, "reno", "record", "--run", m.run.ID},
 	}
 }

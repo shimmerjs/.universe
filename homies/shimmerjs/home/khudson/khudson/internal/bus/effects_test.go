@@ -165,7 +165,7 @@ func TestEffectArgvGate(t *testing.T) {
 func TestEffectShutdownKillsGroups(t *testing.T) {
 	b := &Bus{effects: newEffectRunner()}
 	go b.runEffects()
-	wait, err := b.startEffect([]string{"sleep", "30"})
+	wait, err := b.startEffect([]string{"sleep", "30"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestEffectShutdownKillsGroups(t *testing.T) {
 	if !dead {
 		t.Fatalf("effect group %d still alive", pgid)
 	}
-	if _, err := b.startEffect([]string{"sleep", "30"}); err == nil || !strings.Contains(err.Error(), "shutting down") {
+	if _, err := b.startEffect([]string{"sleep", "30"}, false); err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("post-shutdown start must refuse, got %v", err)
 	}
 }

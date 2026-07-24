@@ -40,3 +40,19 @@
 Fix in dependency order: the ownership/cleanup cluster first (#2, #7, #12, #13, #14, #16 -- these are one design decision: "record intent without proven start/stop is always stop-worthy and cleanup delivery is guaranteed"), then the arm/config-honesty cluster (#3, #4, #6, #8-#11), then scene reconciliation (#5, #17, #21-#23), then hardening (#18-#20, #15, #1's guard). This trades away three things, stated plainly: guaranteed Final delivery means stop can block briefly under a backed-up queue instead of never; deep copies and per-arm keys add small allocations per arm; and the scene fixes (#4, #5, #21) deliberately stop preserving hand-tweaked OBS state in the khudson-owned scene -- recreating kind-mismatched inputs discards manually attached filters. That loss of "leave my hand edits alone" is the real cost, and it is the right trade: the scene is documented as reno-owned, and silent hot-mic/hot-cam capture (#5, #17) is strictly worse than losing a filter.
 
 The 35 below-floor unverified findings were not examined here; if any overlaps the clusters above, triage it during the corresponding fix rather than as a separate pass.
+---
+
+## Dispositions (2026-07-23, same session)
+
+ALL 23 items fixed in the arc-2-fixes commit; every fix cites its
+number in a code comment at the site. Notables: #15 landed as
+Bus.DispatchTransition (one dispatchMu serializing module transition +
+effect dispatch across producers); #2 as a bounded 5s blocking enqueue
+for Final-bearing chains (drop stays possible but only past a wedged
+queue, and the notice names the hand recovery verb); #13 converges a
+lost stopped note by closing the journal pathless when OBS reports
+OutputNotRunning; #23 switched cgdisplay to CGDisplayModeGetPixelWidth/
+Height (CGDisplayPixelsWide returns points on Retina). The scene fixes
+(#4/#5/#17/#21) deliberately stop preserving hand-tweaked OBS state in
+the reno-owned scene, per the synthesis's stated trade. The 35
+below-floor unverified leads remain unexamined.

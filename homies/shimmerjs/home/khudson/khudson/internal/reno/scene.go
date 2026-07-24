@@ -277,12 +277,9 @@ type Plan struct {
 	RemoveInputs []string
 	// Mutes maps audio input name -> muted. Under AudioNone every
 	// non-reno audio input mutes; with a device selected they are left
-	// alone (the khudson mic is additive).
+	// alone (the khudson mic is additive); with no audio knob only the
+	// reno mic mutes (a prior take must not stay hot).
 	Mutes map[string]bool
-	// MicDevice is the resolved device value for MicInput ("" = no mic
-	// wanted: the mic input, if present, mutes and disables).
-	MicDevice string
-	CamDevice string
 }
 
 // BuildScenePlan computes the desired scene state for cfg against env.
@@ -332,7 +329,12 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 
 	switch cfg.Audio {
 	case "":
-		// leave OBS audio alone
+		// leave OBS audio alone -- except reno's own mic: a prior take's
+		// device selection must not stay hot into a config that never
+		// asked for audio (arc-2 review #17)
+		if _, ok := env.Inputs[MicInput]; ok {
+			p.Mutes[MicInput] = true
+		}
 	case AudioNone:
 		for name, kind := range env.Inputs {
 			if isAudioKind(kind) && name != MicInput {
@@ -347,7 +349,6 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.MicDevice = it.Value
 		p.Inputs = append(p.Inputs, PlanInput{
 			Name:     MicInput,
 			Kind:     "coreaudio_input_capture",
@@ -357,7 +358,8 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 		p.Mutes[MicInput] = false
 	}
 
-	if cfg.Webcam != "" {
+	switch {
+	case cfg.Webcam != "":
 		if err := CheckWebcam(cfg.Webcam); err != nil {
 			return nil, err
 		}
@@ -373,9 +375,15 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 		if len(env.Cams) > 0 {
 			// default device: first enumerated; a query knob can come later
 			in.Settings = map[string]any{env.CamProp: env.Cams[0].Value}
-			p.CamDevice = env.Cams[0].Value
 		}
 		p.Inputs = append(p.Inputs, in)
+	default:
+		// Webcam=="" means NO webcam item: a prior take's still-enabled
+		// reno-cam must not ride into this recording (arc-2 review #5 --
+		// the stale-camera mirror of the stale-screen prune)
+		if kind, ok := env.Inputs[CamInput]; ok {
+			p.Inputs = append(p.Inputs, PlanInput{Name: CamInput, Kind: kind, Enabled: false})
+		}
 	}
 	return p, nil
 }

@@ -239,7 +239,12 @@ func (m *Mod) recorderData() module.Data {
 // script; the pending knobs then show read-only so a leftover ad hoc
 // config never looks armed.
 func (m *Mod) configRows() []module.Row {
-	if m.staged != nil && m.staged.Record {
+	// the script's config rows show only while the SCRIPTED run is live:
+	// with no live scripted run, a record tap arms an AD HOC run with the
+	// pending knobs, and displaying the script's config over that would
+	// lie about what is about to record (arc-2 review #6)
+	if m.staged != nil && m.staged.Record &&
+		m.run != nil && m.run.Live() && m.run.Demo == m.staged.Name {
 		v := "from script"
 		if !m.staged.RecordCfg.Empty() {
 			v = m.staged.RecordCfg.Summary()
@@ -275,7 +280,7 @@ func (m *Mod) configRows() []module.Row {
 		audio.Value = audioLabel(inv, m.pending.Audio)
 		audio.Style = module.StyleAccent
 	}
-	webcam := module.Row{Kind: module.RowKV, Key: KeyCfgWebcam, Value: "off",
+	webcam := module.Row{Kind: module.RowKV, Key: KeyCfgWebcam, Value: "obs as-is",
 		Menu: m.webcamMenu()}
 	if m.pending.Webcam != "" {
 		webcam.Value = m.pending.Webcam
@@ -327,9 +332,13 @@ func (m *Mod) audioMenu(inv *renocore.ObsInventory) []module.Act {
 	return items
 }
 
+// webcamMenu: "obs as-is" clears the knob (no scene reconciliation);
+// "off" is a REAL preset that forces the reno-cam item disabled -- the
+// two are different promises and must never share a menu row (arc-2
+// review #4: an "off" that meant as-is could record a hot camera).
 func (m *Mod) webcamMenu() []module.Act {
-	items := []module.Act{{Label: "off", Argv: []string{actCfgWebcam, cfgDefault}, Section: "webcam"}}
-	for _, p := range renocore.WebcamPresets[1:] {
+	items := []module.Act{{Label: "obs as-is", Argv: []string{actCfgWebcam, cfgDefault}, Section: "webcam"}}
+	for _, p := range renocore.WebcamPresets {
 		items = append(items, module.Act{Label: p,
 			Argv: []string{actCfgWebcam, p}, Section: "webcam"})
 	}

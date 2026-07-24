@@ -49,11 +49,19 @@ static void displayBounds(uint32_t id, int *x, int *y, int *w, int *h) {
 
 static int displayIsMain(uint32_t id) { return CGDisplayIsMain(id); }
 
-// pixel dimensions: CGDisplayBounds is in points; capture sources see
-// pixels
+// pixel dimensions: CGDisplayBounds AND CGDisplayPixelsWide are in
+// POINTS on Retina (arc-2 review #23); the display mode carries the
+// real pixel size capture sources see.
 static void displayPixels(uint32_t id, int *w, int *h) {
-	*w = (int)CGDisplayPixelsWide(id);
-	*h = (int)CGDisplayPixelsHigh(id);
+	*w = 0;
+	*h = 0;
+	CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
+	if (mode == NULL) {
+		return;
+	}
+	*w = (int)CGDisplayModeGetPixelWidth(mode);
+	*h = (int)CGDisplayModeGetPixelHeight(mode);
+	CGDisplayModeRelease(mode);
 }
 */
 import "C"

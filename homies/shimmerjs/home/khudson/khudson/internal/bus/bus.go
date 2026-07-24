@@ -486,12 +486,20 @@ func (b *Bus) handleCtl(m proto.Msg) proto.Msg {
 		if !ok {
 			return proto.Msg{Type: proto.TypeResp, Error: "reno module not registered"}
 		}
-		data, effects, err := h.HandleCtl(m.Args)
-		// effects dispatch even on error: loadLocked's --replace path can
-		// stop a live run (boundary + recording stop) and STILL fail on
-		// the new script -- dropping those effects would leave OBS
-		// recording with no owner and the dead run's chains executable
-		b.dispatchEffects("reno", effects)
+		var data any
+		var err error
+		// transition + dispatch as one unit (DispatchTransition): a ctl
+		// boundary interleaving a glass transition's enqueue would stamp
+		// the old run's chain with the new epoch. Effects dispatch even
+		// on error: loadLocked's --replace path can stop a live run
+		// (boundary + recording stop) and STILL fail on the new script --
+		// dropping those effects would leave OBS recording with no owner
+		// and the dead run's chains executable.
+		b.DispatchTransition("reno", func() []module.Effect {
+			var effects []module.Effect
+			data, effects, err = h.HandleCtl(m.Args)
+			return effects
+		})
 		b.repollMatching("reno")
 		if err != nil {
 			return proto.Msg{Type: proto.TypeResp, Error: err.Error()}

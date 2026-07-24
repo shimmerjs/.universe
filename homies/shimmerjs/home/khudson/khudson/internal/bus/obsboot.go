@@ -112,14 +112,18 @@ func (b *ObsBoot) port() int {
 // waits are the slow path (cold start plus one-time Gatekeeper /
 // wizard dialogs), so callers pass minutes, not the 30s verb budget.
 func (b *ObsBoot) Ensure(deadline time.Duration) (ObsTransport, error) {
-	if t, err := b.dial(b.Host, b.password()); err == nil {
+	t, dialErr := b.dial(b.Host, b.password())
+	if dialErr == nil {
 		return t, nil
 	}
+	// dialErr rides every branch below: "auth failed" and "connection
+	// refused" demand different operator moves, and collapsing them to
+	// "down" misdiagnoses a password mismatch (arc-2 review #20)
 	if !b.localhost() {
-		return nil, fmt.Errorf("obs at %s is down and not local -- nothing to launch", b.Host)
+		return nil, fmt.Errorf("obs at %s unreachable and not local -- nothing to launch: %w", b.Host, dialErr)
 	}
 	if b.AppPath == "" {
-		return nil, fmt.Errorf("OBS.app not found under %s (cask not landed?)", strings.Join(obsAppCandidates(), " or "))
+		return nil, fmt.Errorf("OBS.app not found under %s (cask not landed?); dial: %w", strings.Join(obsAppCandidates(), " or "), dialErr)
 	}
 	if err := b.Seed(); err != nil {
 		return nil, err
@@ -127,7 +131,7 @@ func (b *ObsBoot) Ensure(deadline time.Duration) (ObsTransport, error) {
 	if b.running() {
 		// the seeded config binds at launch; a live OBS with the socket
 		// down keeps its dead posture until relaunched
-		return nil, fmt.Errorf("OBS is running but its websocket at %s is down; the seeded config binds at launch -- quit OBS and re-run", b.Host)
+		return nil, fmt.Errorf("OBS is running but its websocket at %s did not answer (%v); the seeded config binds at launch -- quit OBS and re-run", b.Host, dialErr)
 	}
 	if err := b.launch(b.AppPath); err != nil {
 		return nil, fmt.Errorf("launch %s: %w", b.AppPath, err)
@@ -168,6 +172,11 @@ func (b *ObsBoot) Seed() error {
 	if err := writeFileAtomic(cfgPath, mustJSON(cfg), 0o600); err != nil {
 		return err
 	}
+	// obs-websocket 5.x has no loopback-only bind: enabling the server
+	// listens on EVERY interface, auth'd but cleartext ws://, and the
+	// posture persists across khudson (arc-2 review #19). Surfaced here
+	// so the exposure is a stated cost, never a silent one.
+	fmt.Fprintf(os.Stderr, "khudson obs seed: websocket server enabled on port %d -- obs-websocket binds ALL interfaces (auth required, cleartext); firewall the port if the LAN is hostile\n", b.port())
 	userIni := filepath.Join(b.ConfigDir, "user.ini")
 	if _, err := os.Stat(userIni); os.IsNotExist(err) {
 		// virgin install: mark first-run done so the auto-config wizard

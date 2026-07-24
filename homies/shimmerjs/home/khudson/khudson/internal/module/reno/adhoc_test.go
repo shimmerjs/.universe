@@ -242,7 +242,7 @@ func TestRecorderConfigRows(t *testing.T) {
 	if got := rows[KeyCfgAudio].Value; got != "MacBook Pro Microphone" {
 		t.Errorf("audio row = %q", got)
 	}
-	if got := rows[KeyCfgWebcam].Value; got != "off" {
+	if got := rows[KeyCfgWebcam].Value; got != "obs as-is" {
 		t.Errorf("webcam row = %q", got)
 	}
 	// menus: screens toggle marks the selected display
@@ -261,8 +261,23 @@ func TestRecorderConfigRows(t *testing.T) {
 	if n := len(rows[KeyCfgAudio].Menu); n != 3 { // as-is, none, one device
 		t.Errorf("audio menu = %d items", n)
 	}
-	if n := len(rows[KeyCfgWebcam].Menu); n != len(renocore.WebcamPresets) {
+	// "obs as-is" (clear) plus every preset INCLUDING the real "off":
+	// the two are different promises (as-is skips scene reconciliation;
+	// off forces the cam item disabled)
+	if n := len(rows[KeyCfgWebcam].Menu); n != len(renocore.WebcamPresets)+1 {
 		t.Errorf("webcam menu = %d items", n)
+	}
+	var sawAsIs, sawOff bool
+	for _, a := range rows[KeyCfgWebcam].Menu {
+		switch a.Label {
+		case "obs as-is":
+			sawAsIs = a.Argv[1] == cfgDefault
+		case "off":
+			sawOff = a.Argv[1] == "off"
+		}
+	}
+	if !sawAsIs || !sawOff {
+		t.Errorf("webcam menu must carry distinct as-is and off items: %+v", rows[KeyCfgWebcam].Menu)
 	}
 
 	// a stale inventory falls back to the re-probe row
@@ -279,8 +294,10 @@ func TestRecorderConfigRows(t *testing.T) {
 	}
 }
 
-// A loaded recording script shows its config read-only: the pending ad
-// hoc knobs must not look armed under a show.
+// The script's read-only config row shows ONLY while the scripted run
+// is live: with the script merely staged, a record tap arms an AD HOC
+// run with the pending knobs, so the ad hoc menus must show (displaying
+// the script's config there would lie about what is about to record).
 func TestRecorderConfigRowsScripted(t *testing.T) {
 	m, _ := testMod(t)
 	freshInv(t, m)
@@ -290,14 +307,37 @@ func TestRecorderConfigRowsScripted(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctl(t, m, "load", path)
+
+	// staged but not started: the ad hoc config rows show (a tap arms
+	// ad hoc, not the script)
 	d := m.recorderData()
+	sawMenus := false
 	for _, r := range d.Rows {
 		if r.Key == KeyCfgScreens || r.Key == KeyCfgAudio || r.Key == KeyCfgWebcam {
-			t.Errorf("scripted view leaked config menus: %+v", r)
+			sawMenus = true
 		}
-		if r.Key == "config" && !strings.Contains(r.Value, "audio none") {
-			t.Errorf("config row = %+v", r)
+		if r.Key == "config" {
+			t.Errorf("staged-only script leaked its config row: %+v", r)
 		}
+	}
+	if !sawMenus {
+		t.Error("staged-only view must show the ad hoc config menus")
+	}
+
+	// live scripted run: the script's config shows read-only, menus gone
+	ctl(t, m, "start")
+	d = m.recorderData()
+	sawScript := false
+	for _, r := range d.Rows {
+		if r.Key == KeyCfgScreens || r.Key == KeyCfgAudio || r.Key == KeyCfgWebcam {
+			t.Errorf("scripted live view leaked config menus: %+v", r)
+		}
+		if r.Key == "config" && strings.Contains(r.Value, "audio none") {
+			sawScript = true
+		}
+	}
+	if !sawScript {
+		t.Errorf("live scripted view must show the script config: %+v", d.Rows)
 	}
 }
 

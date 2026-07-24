@@ -198,6 +198,12 @@ func (m *Mod) transition(to int, viaGlass bool) []module.Effect {
 	if m.run == nil || !m.run.Live() || m.staged == nil || m.stale != "" {
 		return nil
 	}
+	if m.run.Demo != m.staged.Name {
+		// an AD HOC run with a script merely staged: walking the staged
+		// steps would fire its machine actions under a run that never
+		// vetted them and keeps no step accounting (arc-2 review #1)
+		return nil
+	}
 	if to < 0 || to >= len(m.staged.Steps) {
 		return nil // walking off either end is a no-op, not a crash on stage
 	}
@@ -314,9 +320,14 @@ func (m *Mod) stopLocked() []module.Effect {
 	m.stale = ""
 	m.journal()
 	effects := []module.Effect{module.Boundary()}
-	if m.run.Recording.Active() {
-		// the stop verb runs after the boundary cut and notes the output
-		// path back into this (finalized) run's journal
+	if rec := m.run.Recording; rec != nil && rec.StoppedAt.IsZero() &&
+		(rec.Failed == "" || !rec.StartedAt.IsZero()) {
+		// stop-worthy = any recording intent not yet stopped and not
+		// known-failed-before-start: an UNPROVEN start (intent journaled,
+		// started note lost or verb still in flight) must get the stop
+		// verb too, or OBS records with no owner (arc-2 review #7/#12).
+		// The stop verb runs after the boundary cut and notes the output
+		// path back into this (finalized) run's journal.
 		effects = append(effects, m.obsStopEffect())
 	}
 	return effects

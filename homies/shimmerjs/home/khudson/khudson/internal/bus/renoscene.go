@@ -116,12 +116,20 @@ func ProbeEnv(obs ObsTransport) (renocore.ObsEnv, error) {
 		if env.DisplayNumeric {
 			env.DisplayProp = "display"
 		}
+		seen := map[string]int{}
 		for i, d := range localDisplays() {
 			val := d.UUID
 			if env.DisplayNumeric {
 				val = fmt.Sprint(d.ID)
 			}
 			name := displayLabel(obsMonitors, d, i)
+			// identical monitors match identical OBS names; an ambiguous
+			// label would make ResolveItem capture the wrong one silently
+			// (arc-2 review #22), so repeats get a positional suffix
+			seen[name]++
+			if n := seen[name]; n > 1 {
+				name = fmt.Sprintf("%s (%d)", name, n)
+			}
 			env.Displays = append(env.Displays, renocore.PropertyItem{Name: name, Value: val})
 			env.Monitors = append(env.Monitors, renocore.Monitor{
 				Index: i, Name: name, Width: d.PxW, Height: d.PxH,
@@ -165,7 +173,18 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) error {
 		return err
 	}
 	for _, in := range plan.Inputs {
-		if _, ok := env.Inputs[in.Name]; !ok {
+		existingKind, exists := env.Inputs[in.Name]
+		if exists && existingKind != in.Kind {
+			// a reno-owned input of the wrong kind never converges by
+			// settings writes (display_uuid on a legacy source); recreate
+			// it -- hand-attached filters on it are lost, and that is the
+			// documented cost of the reno-owned scene (arc-2 review #21)
+			if err := obs.RemoveInput(in.Name); err != nil {
+				return fmt.Errorf("recreate %s (kind %s -> %s): %w", in.Name, existingKind, in.Kind, err)
+			}
+			exists = false
+		}
+		if !exists {
 			if err := obs.CreateInput(plan.Scene, in.Name, in.Kind, in.Settings, in.Enabled); err != nil {
 				return fmt.Errorf("create %s: %w", in.Name, err)
 			}

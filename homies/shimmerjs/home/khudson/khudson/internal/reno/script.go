@@ -169,10 +169,27 @@ func checkURL(args []string) error {
 	return nil
 }
 
+// MaxScriptBytes bounds a script read: scripts are prose plus command
+// lines; anything bigger is not a script, and the bus reads this path
+// under the module lock (arc-2 review #18).
+const MaxScriptBytes = 1 << 20
+
 // Load reads and parses the script at path. This is the one vet
 // implementation: `khudson reno vet`, the CLI pre-vet, and the bus load
-// all run through it.
+// all run through it. The path arrives over the ctl wire, so it is
+// stat-vetted (regular file, size cap) before any read -- a FIFO would
+// wedge the reader, /dev/zero would OOM it.
 func Load(path string) (*Script, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Size() > MaxScriptBytes {
+		return nil, fmt.Errorf("%s is %d bytes (cap %d) -- that is not a demo script", path, info.Size(), MaxScriptBytes)
+	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

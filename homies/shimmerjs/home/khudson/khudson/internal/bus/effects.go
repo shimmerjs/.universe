@@ -53,13 +53,22 @@ type effectRunner struct {
 	queue  chan effectChain
 	stopCh chan struct{}
 
-	mu     sync.Mutex
-	last   map[string]time.Time // Effect.Key -> dispatch time
-	group  int                  // live child pgid; 0 = none
-	epoch  int                  // bumped at run boundaries
-	closed bool
-	done   chan struct{}
-	now    func() time.Time
+	// dispatchMu serializes {module transition -> dispatch} as ONE unit
+	// across producers (input worker acts, ctl conns): without it a
+	// boundary from producer B can bump the epoch between producer A's
+	// cursor move and A's enqueue, stamping run A's chain with run B's
+	// epoch -- the exact leak the boundary exists to stop (arc-2 review
+	// #15).
+	dispatchMu sync.Mutex
+
+	mu         sync.Mutex
+	last       map[string]time.Time // Effect.Key -> dispatch time
+	group      int                  // live child pgid; 0 = none
+	groupFinal bool                 // live child runs a Final (cleanup) effect
+	epoch      int                  // bumped at run boundaries
+	closed     bool
+	done       chan struct{}
+	now        func() time.Time
 }
 
 func newEffectRunner() *effectRunner {
@@ -113,24 +122,68 @@ func (b *Bus) dispatchEffects(source string, effects []module.Effect) {
 		log.Printf("khudson bus: %s: shutting down; dropped %d effects", source, len(rest))
 		return
 	}
+	chain := effectChain{source: source, effects: rest, epoch: epoch}
 	select {
-	case r.queue <- effectChain{source: source, effects: rest, epoch: epoch}:
+	case r.queue <- chain:
+		return
 	default:
-		log.Printf("khudson bus: %s: effect queue full; dropped %d effects", source, len(rest))
-		b.broadcast(proto.Msg{Type: proto.TypeNotice,
-			Error: fmt.Sprintf("%s: effect queue full, step actions dropped", source)})
 	}
+	if chainHasFinal(rest) {
+		// Final effects are the recording's stop path: dropping one
+		// finalizes a run while OBS records unowned (arc-2 review #2).
+		// A bounded blocking send trades a short producer stall for
+		// guaranteed cleanup; each queued chain is verb-deadline-bounded,
+		// so a live queue drains well inside the wait.
+		select {
+		case r.queue <- chain:
+			return
+		case <-time.After(finalEnqueueWait):
+			log.Printf("khudson bus: %s: effect queue wedged %s; FINAL cleanup dropped -- stop the recording by hand (khudson reno obs stop)", source, finalEnqueueWait)
+			b.broadcast(proto.Msg{Type: proto.TypeNotice,
+				Error: fmt.Sprintf("%s: cleanup dropped; run `khudson reno obs stop`", source)})
+			return
+		}
+	}
+	log.Printf("khudson bus: %s: effect queue full; dropped %d effects", source, len(rest))
+	b.broadcast(proto.Msg{Type: proto.TypeNotice,
+		Error: fmt.Sprintf("%s: effect queue full, step actions dropped", source)})
+}
+
+// finalEnqueueWait bounds the blocking send for Final-bearing chains.
+const finalEnqueueWait = 5 * time.Second
+
+func chainHasFinal(effects []module.Effect) bool {
+	for _, e := range effects {
+		if e.Final {
+			return true
+		}
+	}
+	return false
+}
+
+// DispatchTransition runs one module transition and its effect dispatch
+// as an atomic unit under dispatchMu -- every effect producer must route
+// through here (see the field comment).
+func (b *Bus) DispatchTransition(source string, fn func() []module.Effect) {
+	if b.effects != nil {
+		b.effects.dispatchMu.Lock()
+		defer b.effects.dispatchMu.Unlock()
+	}
+	b.dispatchEffects(source, fn())
 }
 
 // boundary invalidates every queued chain and interrupts the live
-// child: the run that enqueued them is over.
+// child: the run that enqueued them is over. A live FINAL child is
+// exempt -- it IS the cleanup a boundary must not cancel (a quick
+// stop-then-start would otherwise SIGTERM the in-flight recording stop,
+// arc-2 review #16).
 func (r *effectRunner) boundary(source string) {
 	r.mu.Lock()
 	r.epoch++
-	group := r.group
+	group, final := r.group, r.groupFinal
 	r.mu.Unlock()
 	log.Printf("khudson bus: %s: effect boundary (queued chains invalidated)", source)
-	if group != 0 {
+	if group != 0 && !final {
 		_ = syscall.Kill(-group, syscall.SIGTERM)
 	}
 }
@@ -193,7 +246,7 @@ func (b *Bus) runEffects() {
 					Error: fmt.Sprintf("%s: repeat effect dropped (%s)", chain.source, e.Key)})
 				continue
 			}
-			wait, err := b.startEffect(e.Argv)
+			wait, err := b.startEffect(e.Argv, e.Final)
 			if err != nil {
 				log.Printf("khudson bus: %s effect %v: %v", chain.source, e.Argv, err)
 				b.broadcast(proto.Msg{Type: proto.TypeNotice,
@@ -223,9 +276,10 @@ func (r *effectRunner) debounce(key string) bool {
 }
 
 // startEffect starts one effect child in its own process group so
-// shutdown can kill the whole tree. The execStart test seam (when set)
-// wins: seam-driven tests observe argvs without real processes.
-func (b *Bus) startEffect(argv []string) (wait func() error, err error) {
+// shutdown can kill the whole tree; final marks a cleanup child the
+// boundary kill must spare. The execStart test seam (when set) wins:
+// seam-driven tests observe argvs without real processes.
+func (b *Bus) startEffect(argv []string, final bool) (wait func() error, err error) {
 	if b.execStart != nil {
 		return b.execStart(argv)
 	}
@@ -242,6 +296,7 @@ func (b *Bus) startEffect(argv []string) (wait func() error, err error) {
 		return nil, err
 	}
 	r.group = cmd.Process.Pid // Setpgid: child's pgid == its pid
+	r.groupFinal = final
 	r.mu.Unlock()
 	return cmd.Wait, nil
 }
@@ -249,6 +304,7 @@ func (b *Bus) startEffect(argv []string) (wait func() error, err error) {
 func (r *effectRunner) clearGroup() {
 	r.mu.Lock()
 	r.group = 0
+	r.groupFinal = false
 	r.mu.Unlock()
 }
 
