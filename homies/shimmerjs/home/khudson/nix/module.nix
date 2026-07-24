@@ -220,10 +220,10 @@ let
   };
 in
 {
-  imports = [
-    ./magicbus.nix
-    ./mxmaster.nix
-  ];
+  # khudson depends DOWN on the magicbus fabric (it consumes touch.sock +
+  # keys.sock); it does NOT own any device's app config, so mxmaster.nix is
+  # imported by the host, not here.
+  imports = [ ./magicbus.nix ];
 
   options.universe.home.khudson = {
     enable = lib.mkEnableOption "khudson Edge HUD";

@@ -49,6 +49,24 @@ let
     cid = buttonCID.${btn};
     remap = functionCID.${fn};
   }) validButtons;
+
+  # the daemon logiretch config section (touchd logiConfig shape). This app
+  # owns the surface and its bounds; magicbus ferries this verbatim. Nulls
+  # dropped so an unset knob leaves that capability alone.
+  dropNull = lib.filterAttrs (_: v: v != null);
+  smartShift =
+    if (cfg.smartShift.threshold == null && cfg.smartShift.mode == null && cfg.smartShift.torque == null) then
+      null
+    else
+      dropNull { inherit (cfg.smartShift) mode threshold torque; };
+  logiretchSection = dropNull {
+    dpi = cfg.dpi;
+    thumbwheel = cfg.thumbwheelInvert;
+    haptic = cfg.haptic;
+    takeoverReset = cfg.resetOnTakeover;
+    inherit smartShift;
+    buttons = if cfg.buttons == { } then null else buttonsList;
+  };
 in
 {
   options.universe.home.mxMaster = {
@@ -126,22 +144,11 @@ in
     ];
 
     # enable the daemon + its logiretch source behind the scenes; mkDefault
-    # so a host already running magicbus for the Edge/Moonlander wins.
+    # so a host already running magicbus for the Edge/Moonlander wins. The
+    # device config rides magicbus's opaque per-module passthrough -- the
+    # backbone never sees a DPI or a keybind.
     universe.home.magicbus.enable = lib.mkDefault true;
     universe.home.magicbus.modules.logiretch = true;
-    universe.home.magicbus.logiretch = {
-      dpi = cfg.dpi;
-      thumbwheel = cfg.thumbwheelInvert;
-      haptic = cfg.haptic;
-      smartShift =
-        if (cfg.smartShift.threshold == null && cfg.smartShift.mode == null && cfg.smartShift.torque == null) then
-          null
-        else
-          {
-            inherit (cfg.smartShift) mode threshold torque;
-          };
-      takeoverReset = cfg.resetOnTakeover;
-      buttons = if cfg.buttons == { } then null else buttonsList;
-    };
+    universe.home.magicbus.moduleConfig.logiretch = logiretchSection;
   };
 }

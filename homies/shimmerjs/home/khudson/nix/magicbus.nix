@@ -54,32 +54,18 @@ let
     '';
   };
 
-  # Per-host module config: authored in CUE, vetted against the schema, and
-  # exported to the plain JSON the daemon's -config flag reads (stdlib
-  # encoding/json only -- cuelang.org/go must NOT enter the TCC binary, its
-  # init zeroes stdlib log flags). The daemon fails fast on a bad file, so a
-  # keyboard-only host can never silently reinstate a perpetual Edge poll.
-  # logiretch device settings, nulls dropped so an unset field is absent from
-  # the exported JSON and the daemon leaves that capability alone. Nested
-  # objects (smartShift) drop their own null subfields; emitted as JSON, which
-  # is valid CUE data, so `cue vet` still checks it against #Logiretch.
-  dropNull = lib.filterAttrs (_: v: v != null);
-  logiretchSettings =
-    let
-      lg = cfg.logiretch;
-    in
-    dropNull {
-      inherit (lg)
-        dpi
-        hiresWheel
-        thumbwheel
-        haptic
-        takeoverReset
-        batteryPollSec
-        buttons
-        ;
-      smartShift = if lg.smartShift == null then null else dropNull { inherit (lg.smartShift) mode threshold torque; };
-    };
+  # Per-host daemon config: the module toggles magicbus owns, plus each
+  # app's opaque moduleConfig section spread in verbatim. Authored in CUE,
+  # vetted against the (naive) schema, exported to the plain JSON the
+  # daemon's -config flag reads (stdlib encoding/json only -- cuelang.org/go
+  # must NOT enter the TCC binary, its init zeroes stdlib log flags). The
+  # daemon fails fast on a bad file, so a keyboard-only host can never
+  # silently reinstate a perpetual Edge poll. magicbus's CUE validates only
+  # `modules`; a module-config section is opaque data (the owning app and
+  # the daemon validate it), emitted as JSON, which is valid CUE data.
+  moduleConfigCue = lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (name: v: "config: ${name}: ${builtins.toJSON v}") cfg.moduleConfig
+  );
   magicbusConfigValues = pkgs.writeText "magicbus-config-values.cue" ''
     package magicbus
 
@@ -88,7 +74,7 @@ let
       moonlander: ${lib.boolToString cfg.modules.moonlander}
       logiretch:  ${lib.boolToString cfg.modules.logiretch}
     }
-    ${lib.optionalString (logiretchSettings != { }) "config: logiretch: ${builtins.toJSON logiretchSettings}"}
+    ${moduleConfigCue}
   '';
   touchdConfig =
     pkgs.runCommand "magicbusd-config.json"
@@ -199,76 +185,18 @@ in
       logiretch = lib.mkEnableOption "Logitech MX Master 4 source (logiretch.sock): battery + config-apply + Options+ divert-reset";
     };
 
-    # logiretch device settings. All optional: an unset (null) field is
-    # dropped from the exported config, and the module leaves that capability
-    # alone (absent = do not touch the device). Prefer the friendly
-    # universe.home.mxMaster block over setting these raw. Options+ was
-    # uninstalled 2026-07-24, so logiretch owns the device outright now --
-    # takeoverReset resets to this config's baseline with no second master
-    # fighting it (on-device effect still wants a touchd.log confirmation
-    # pass after a switch).
-    logiretch =
-      let
-        nullInt = lib.mkOption {
-          type = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        nullBool = lib.mkOption {
-          type = lib.types.nullOr lib.types.bool;
-          default = null;
-        };
-      in
-      {
-        dpi = nullInt // {
-          description = "Target DPI (0x2201); snapped to the device's supported step list.";
-        };
-        smartShift = lib.mkOption {
-          type = lib.types.nullOr (
-            lib.types.submodule {
-              options = {
-                mode = nullInt;
-                threshold = nullInt;
-                torque = nullInt;
-              };
-            }
-          );
-          default = null;
-          description = "SmartShift (0x2111): wheel mode / auto-disengage threshold / tunable torque; each subfield optional.";
-        };
-        hiresWheel = nullBool // {
-          description = "Hi-res wheel resolution (0x2121). EXPERIMENTAL on the MX4 (default untouched).";
-        };
-        thumbwheel = nullBool // {
-          description = "Invert the thumbwheel scroll direction (0x2150).";
-        };
-        haptic = lib.mkOption {
-          type = lib.types.nullOr (lib.types.ints.between 0 100);
-          default = null;
-          description = "Haptic feedback level 0-100 (0x19B0).";
-        };
-        buttons = lib.mkOption {
-          type = lib.types.nullOr (
-            lib.types.listOf (
-              lib.types.submodule {
-                options = {
-                  cid = lib.mkOption { type = lib.types.ints.between 0 65535; };
-                  remap = lib.mkOption { type = lib.types.ints.between 0 65535; };
-                };
-              }
-            )
-          );
-          default = null;
-          description = "0x1B04 remaps: each { cid; remap; } is applied (not cleared) on takeover.";
-        };
-        takeoverReset = nullBool // {
-          description = "Clear Options+ 1B04 divert/rawXY residue on takeover (default true in the daemon).";
-        };
-        batteryPollSec = lib.mkOption {
-          type = lib.types.nullOr (lib.types.ints.between 60 300);
-          default = null;
-          description = "Battery poll cadence in seconds (daemon default 120, clamped 60-300).";
-        };
-      };
+    # Per-module device config is OPAQUE to magicbus: it is the transport
+    # backbone (which modules run, the daemon, the sockets), not the owner
+    # of any device's option surface. An app that owns a module writes its
+    # section here (keyed by module name) and magicbus merges it verbatim
+    # into the daemon config; the daemon validates it. Example: the
+    # universe.home.mxMaster module sets moduleConfig.logiretch. magicbus
+    # never names a DPI or a keybind.
+    moduleConfig = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+      default = { };
+      description = "Opaque per-module daemon config, keyed by module name; merged verbatim into the daemon config. magicbus does not interpret it -- the owning app validates.";
+    };
   };
 
   config = lib.mkMerge [

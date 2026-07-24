@@ -63,6 +63,10 @@
         # khudson Edge HUD: host-scoped on purpose (edge-host.md review m2 --
         # this is the only host physically driving the Xeneon Edge).
         ../../homies/shimmerjs/home/khudson/nix/module.nix
+        # MX Master 4 config -- the app surface over the magicbus logiretch
+        # source, imported independent of khudson (a non-khudson host would
+        # import magicbus.nix + mxmaster.nix and skip module.nix entirely).
+        ../../homies/shimmerjs/home/khudson/nix/mxmaster.nix
       ];
 
       universe.home.khudson = {
@@ -73,11 +77,10 @@
         mainKittyIntegration.enable = true;
       };
 
-      # logiretch (MX Master 4) source on the bus: battery on logiretch.sock,
-      # config-apply, and Options+ divert-reset on takeover. Sample config for
-      # the user to tune; the setters are on-device UNVERIFIED and takeoverReset
-      # is meaningful only after Options+ is uninstalled (with it installed both
-      # HID++ masters share the vendor node and it will re-divert).
+      # MX Master 4 self-management (battery on the strip + declarative
+      # device config; enables the magicbus logiretch source behind the
+      # scenes). Options+ uninstalled 2026-07-24, so logiretch is the sole
+      # HID++ master -- dpi confirmed applied on-device (readback 1600).
       universe.home.mxMaster = {
         enable = true;
         dpi = 1600;
