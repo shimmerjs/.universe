@@ -125,11 +125,11 @@ func TestLogiLoopIngestNoClearOnLoss(t *testing.T) {
 	defer src.Close()
 
 	enc := json.NewEncoder(src)
-	if err := enc.Encode(proto.LogiState{TimeNS: 9, Kind: "mx", SoC: 55, Charging: false, State: 1}); err != nil {
+	if err := enc.Encode(proto.LogiState{TimeNS: 9, Kind: "battery", SoC: 55, Charging: false, State: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if st := wantLogiMsg(t, dockCh); st.SoC != 55 || st.Kind != "mx" || st.Charging {
-		t.Fatalf("broadcast = %+v, want soc 55 kind mx not charging", st)
+	if st := wantLogiMsg(t, dockCh); st.SoC != 55 || st.Kind != "battery" || st.Charging {
+		t.Fatalf("broadcast = %+v, want soc 55 kind battery not charging", st)
 	}
 
 	// the cached frame is replayed to a fresh dock (greeting replay path)
@@ -195,11 +195,20 @@ func TestConsumeLogiBadLine(t *testing.T) {
 		server.Close()
 	}()
 
-	if _, err := client.Write([]byte("{\"t\":1,\"kind\":\"mx\",\"soc\":40,\"charging\":false,\"state\":1}\n")); err != nil {
+	// state/input lines share the socket since the logiretch viewer arc:
+	// they must be SKIPPED (no bogus battery broadcast), never poison the
+	// stream
+	if _, err := client.Write([]byte("{\"t\":1,\"kind\":\"state\",\"connected\":true}\n")); err != nil {
 		t.Fatal(err)
 	}
-	if st := wantLogiMsg(t, dockCh); st.SoC != 40 {
-		t.Fatalf("broadcast = %+v, want soc 40", st)
+	if _, err := client.Write([]byte("{\"t\":1,\"kind\":\"input\",\"wheel\":3}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte("{\"t\":1,\"kind\":\"battery\",\"soc\":40,\"charging\":false,\"state\":1}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if st := wantLogiMsg(t, dockCh); st.SoC != 40 || st.Kind != "battery" {
+		t.Fatalf("broadcast = %+v, want the battery line only (soc 40)", st)
 	}
 	if _, err := client.Write([]byte("not json at all\n")); err != nil {
 		t.Fatal(err)

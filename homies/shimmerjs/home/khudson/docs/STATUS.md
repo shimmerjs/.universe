@@ -113,6 +113,23 @@ mpv-IPC scrub + moviemaker surfaces (P4 tail), P3 gmeet/vcam (user
 gates 1-2; NEW sub-gate: vcam refuses outside /Applications and the
 cask lands in ~/Applications), couch client.
 
+## logiretch viewer (kuimouse), landed 2026-07-23
+
+The kuiboard-analog for the MX Master 4 (logi-replacement-design.md
+viewer section carries the full design + as-built notes). touchd:
+broadcaster grew retained lines (replayed at accept -- also fixes the
+bus battery cold-start gap); logiretch publishes retained kind:"state"
+(every applied setting with its device readback, remap walk results,
+pending retries) and kind:"input" activity coalesced from the standard
+0x02 mouse reports on the shared handle -- NOTHING diverted, layout
+pinned from the IORegistry report descriptor. The 6a divert engine
+stays deferred; only gesture-button custom actions remain invisible.
+khudson: cmd/kuimouse TUI (mapping panel + lit controls + battery/link
+status), bus logiLoop now skips non-battery kinds. Owed at next
+switch: kuimouse eyes-on against the new daemon, and one
+`magicbusd logiretch-capture` run (25s, click everything) to label
+report bits 5-6 (gesture/force candidates).
+
 ## Owed manual steps (next switch or after)
 
 - Quit + relaunch the daily kitty ONCE: RC posture binds at

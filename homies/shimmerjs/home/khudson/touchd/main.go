@@ -41,18 +41,19 @@ import (
 )
 
 type options struct {
-	list       bool
-	spike      bool
-	mouse      bool
-	noMode     bool
-	daemon     bool
-	logiretch  bool
-	config     string
-	record     string
-	replay     string
-	socket     string
-	keysSocket string
-	logiSocket string
+	list        bool
+	spike       bool
+	mouse       bool
+	noMode      bool
+	daemon      bool
+	logiretch   bool
+	logiCapture bool
+	config      string
+	record      string
+	replay      string
+	socket      string
+	keysSocket  string
+	logiSocket  string
 }
 
 func main() {
@@ -70,15 +71,19 @@ func main() {
 	flag.StringVar(&opts.logiSocket, "logi-socket", "", "logiretch (MX Master) state socket path (default ~/Library/Application Support/khudson/logiretch.sock)")
 	flag.Parse()
 	if arg := flag.Arg(0); arg != "" {
-		if arg != "logiretch-probe" {
+		switch arg {
+		case "logiretch-probe":
+			opts.logiretch = true
+		case "logiretch-capture":
+			opts.logiCapture = true
+		default:
 			fmt.Fprintf(os.Stderr, "error: unknown subcommand %q\n", arg)
 			os.Exit(2)
 		}
-		opts.logiretch = true
 		// Go flag parsing stops at the first positional, so anything after
 		// the subcommand would otherwise be dropped silently -- reject it.
 		if rest := flag.Args()[1:]; len(rest) > 0 {
-			fmt.Fprintf(os.Stderr, "error: unexpected arguments after logiretch-probe: %v (flags go before the subcommand)\n", rest)
+			fmt.Fprintf(os.Stderr, "error: unexpected arguments after %s: %v (flags go before the subcommand)\n", arg, rest)
 			os.Exit(2)
 		}
 	}
@@ -112,13 +117,16 @@ func run(ctx context.Context, opts options) error {
 	if opts.logiretch && (opts.daemon || opts.replay != "" || opts.list || opts.spike || opts.mouse || opts.noMode || opts.record != "") {
 		return errors.New("logiretch-probe is a one-shot read-only prober; combine with no mode flags")
 	}
+	if opts.logiCapture && (opts.daemon || opts.replay != "" || opts.list || opts.spike || opts.mouse || opts.noMode || opts.record != "" || opts.logiretch) {
+		return errors.New("logiretch-capture is a one-shot read-only listener; combine with no mode flags")
+	}
 	if opts.list && (opts.spike || opts.mouse || opts.noMode || opts.record != "") {
 		return errors.New("-list is a one-shot enumerate-and-exit; spike/daemon flags do not apply")
 	}
 	// a mode is REQUIRED: defaulting bare argv to spike put a flagless
 	// launchd invocation straight onto the hardware-seize crash loop
-	if !opts.daemon && !opts.list && !opts.spike && !opts.mouse && opts.replay == "" && !opts.logiretch {
-		return errors.New("no mode selected: use -daemon (service), -spike (dev frame stream; -mouse implies it), -list, -replay <file>, or the logiretch-probe subcommand")
+	if !opts.daemon && !opts.list && !opts.spike && !opts.mouse && opts.replay == "" && !opts.logiretch && !opts.logiCapture {
+		return errors.New("no mode selected: use -daemon (service), -spike (dev frame stream; -mouse implies it), -list, -replay <file>, or the logiretch-probe/logiretch-capture subcommands")
 	}
 
 	// resolve the module set first: a config problem must exit nonzero
@@ -174,6 +182,9 @@ func run(ctx context.Context, opts options) error {
 
 	if opts.logiretch {
 		return runLogiretchProbe(ctx, os.Stdout)
+	}
+	if opts.logiCapture {
+		return runLogiretchCapture(ctx, os.Stdout)
 	}
 
 	if opts.list {

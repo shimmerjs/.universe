@@ -22,13 +22,24 @@ type Module interface {
 // edge-only recorder tap, and arrival waits backed by the shared scanner --
 // modules never own their own backoff select.
 type Env struct {
-	publish   func(v any)
-	recordTap func(t int64, raw []byte)
-	scan      *scanner
+	publish         func(v any)
+	publishRetained func(key string, v any)
+	recordTap       func(t int64, raw []byte)
+	scan            *scanner
 }
 
 // Publish queues one ndjson line on the module's socket.
 func (e Env) Publish(v any) { e.publish(v) }
+
+// PublishRetained publishes v and retains it under key: a client connecting
+// later receives the last line per key at accept (battery, mapping state).
+func (e Env) PublishRetained(key string, v any) {
+	if e.publishRetained != nil {
+		e.publishRetained(key, v)
+		return
+	}
+	e.publish(v)
+}
 
 // RecordTap feeds the raw-report recorder; a nop unless wired (edge only).
 func (e Env) RecordTap(t int64, raw []byte) {

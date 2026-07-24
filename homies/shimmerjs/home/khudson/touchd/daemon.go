@@ -107,7 +107,7 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 			continue
 		}
 		defer b.close()
-		entries = append(entries, moduleEntry{mod: s.mod, env: Env{publish: b.publishJSON, recordTap: s.tap, scan: sc}})
+		entries = append(entries, moduleEntry{mod: s.mod, env: Env{publish: b.publishJSON, publishRetained: b.publishRetainedJSON, recordTap: s.tap, scan: sc}})
 	}
 	if len(entries) == 0 {
 		return errors.New("no modules running")

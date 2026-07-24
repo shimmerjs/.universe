@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -20,11 +22,15 @@ const (
 
 // broadcaster fans frames out to touch.sock clients as ndjson lines. Each
 // client gets a bounded drop-oldest queue so a slow client never blocks the
-// device read loop; a stuck client is dropped via write deadline.
+// device read loop; a stuck client is dropped via write deadline. Retained
+// lines (last line per key) replay to a new client at accept, so a consumer
+// connecting between publishes still sees current state (battery, mapping
+// state) instead of waiting a poll interval.
 type broadcaster struct {
-	ln      net.Listener
-	mu      sync.Mutex
-	clients map[net.Conn]chan []byte
+	ln       net.Listener
+	mu       sync.Mutex
+	clients  map[net.Conn]chan []byte
+	retained map[string][]byte
 }
 
 // newBroadcaster listens on path, creating the parent dir 0700 and replacing
@@ -56,7 +62,7 @@ func newBroadcaster(path string) (*broadcaster, error) {
 		ln.Close()
 		return nil, fmt.Errorf("tighten socket: %w", err)
 	}
-	b := &broadcaster{ln: ln, clients: map[net.Conn]chan []byte{}}
+	b := &broadcaster{ln: ln, clients: map[net.Conn]chan []byte{}, retained: map[string][]byte{}}
 	go b.accept()
 	return b, nil
 }
@@ -70,6 +76,12 @@ func (b *broadcaster) accept() {
 		ch := make(chan []byte, clientQueueLen)
 		b.mu.Lock()
 		b.clients[conn] = ch
+		// retained replay rides the same critical section as registration:
+		// publishJSON holds mu, so a concurrent publish lands strictly after
+		// the replay -- never reordered, never duplicated-before
+		for _, key := range slices.Sorted(maps.Keys(b.retained)) {
+			offer(ch, b.retained[key])
+		}
 		b.mu.Unlock()
 		go b.writeTo(conn, ch)
 	}
@@ -96,6 +108,16 @@ func (b *broadcaster) writeTo(conn net.Conn, ch chan []byte) {
 // still miss -- the frame is dropped for that client rather than looping.
 // The keys socket shares the fanout.
 func (b *broadcaster) publishJSON(v any) {
+	b.publishLine(v, "")
+}
+
+// publishRetainedJSON publishes v and retains it under key: future clients
+// receive the last line per key at accept.
+func (b *broadcaster) publishRetainedJSON(key string, v any) {
+	b.publishLine(v, key)
+}
+
+func (b *broadcaster) publishLine(v any, retainKey string) {
 	line, err := json.Marshal(v)
 	if err != nil {
 		return
@@ -103,6 +125,9 @@ func (b *broadcaster) publishJSON(v any) {
 	line = append(line, '\n')
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if retainKey != "" {
+		b.retained[retainKey] = line
+	}
 	for _, ch := range b.clients {
 		offer(ch, line)
 	}

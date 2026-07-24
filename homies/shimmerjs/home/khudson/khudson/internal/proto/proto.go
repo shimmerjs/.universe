@@ -198,7 +198,9 @@ type KeyEvent struct {
 }
 
 // LogiState is one line on logiretch.sock and the payload of a TypeLogiState
-// broadcast: an MX-device battery reading. Kind names the device, SoC is
+// broadcast: an MX-device battery reading. Kind is the line discriminator --
+// the daemon pins "battery", and the socket also carries "state"/"input"
+// lines for the logiretch viewer, which the bus skips. SoC is
 // state-of-charge percent (0..100), Charging is the wired/charging flag, and
 // State is the raw HID++ battery-status code. TimeNS is the read wall clock
 // (unix nanoseconds); the dock dims the readout once it goes stale against it.

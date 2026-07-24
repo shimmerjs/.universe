@@ -52,20 +52,58 @@ const (
 // pointer collections, never OpenExclusive).
 var logiMatch = Match{VID: logiVID, PID: logiPID, UsagePage: logiUsagePage, Usage: logiUsage}
 
-// LogiState is one line on logiretch.sock; the bus battery-icon consumer
-// (out of this cut) reads this shape. Wire shape is PINNED:
+// LogiState is the battery line on logiretch.sock; the bus battery-icon
+// consumer reads this shape. Wire shape is PINNED:
 //
 //	{"t": <unix ns>, "kind": "battery", "soc": n, "charging": bool, "state": n}
 //
 // soc is 0-100; charging is derived from the raw charging-state enum; state is
-// that raw enum. Published on connect and on each poll interval; the
-// broadcaster is fire-and-forget with no retained replay.
+// that raw enum. Published on connect and on each poll interval; RETAINED, so
+// a client connecting between polls receives the last reading at accept.
 type LogiState struct {
 	T        int64  `json:"t"`
 	Kind     string `json:"kind"`
 	SoC      int    `json:"soc"`
 	Charging bool   `json:"charging"`
 	State    int    `json:"state"`
+}
+
+// LogiSettingState is one applied setting's disposition on the state line:
+// the configured value, the device's echo where one was read, and the last
+// failure ("" = applied clean).
+type LogiSettingState struct {
+	Want     string `json:"want"`
+	Readback string `json:"readback,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// LogiRemapState is one 1B04 control's disposition after the takeover walk.
+type LogiRemapState struct {
+	CID    string `json:"cid"`
+	Action string `json:"action"` // remap | clear-divert
+	Target string `json:"target,omitempty"`
+	Flags  string `json:"flags,omitempty"`
+}
+
+// LogiViewState is the mapping-state line on logiretch.sock (the logiretch
+// viewer's data source). Wire shape is PINNED and RETAINED under key "state":
+//
+//	{"t": ns, "kind": "state", "connected": bool, "devIdx": n,
+//	 "features": n, "settings": {name: {want, readback, error}},
+//	 "remaps": [{cid, action, target, flags}], "takeover": s, "pending": s}
+//
+// Published at connect-apply completion, after every retry/reapply pass, and
+// as connected:false when the device is lost or the module starts deviceless.
+type LogiViewState struct {
+	T         int64                       `json:"t"`
+	Kind      string                      `json:"kind"`
+	Connected bool                        `json:"connected"`
+	DevIdx    int                         `json:"devIdx,omitempty"`
+	Features  int                         `json:"features,omitempty"`
+	Settings  map[string]LogiSettingState `json:"settings,omitempty"`
+	Remaps    []LogiRemapState            `json:"remaps,omitempty"`
+	Takeover  string                      `json:"takeover,omitempty"`
+	Pending   string                      `json:"pending,omitempty"`
 }
 
 // logiretchModule is one HID source: config is baked at construction (daemon.go
@@ -82,6 +120,7 @@ func (m *logiretchModule) Name() string { return "logiretch" }
 // and each (re)connect are logged.
 func (m *logiretchModule) Run(ctx context.Context, env Env) error {
 	loggedFail := false
+	publishDown(env)
 	for {
 		path, err := env.AwaitDevice(ctx, logiMatch)
 		if err != nil {
@@ -101,11 +140,18 @@ func (m *logiretchModule) Run(ctx context.Context, env Env) error {
 		m.session(ctx, env, conn)
 		conn.close()
 		dev.Close()
+		publishDown(env)
 		if ctx.Err() != nil {
 			return nil
 		}
 		fmt.Fprintln(os.Stderr, "logiretch: device lost, reopening")
 	}
+}
+
+// publishDown retains a link-down state line so a viewer connecting while
+// the mouse naps sees "disconnected", not silence.
+func publishDown(env Env) {
+	env.PublishRetained("state", LogiViewState{T: time.Now().UnixNano(), Kind: "state"})
 }
 
 // session runs one open: the once-per-open connect sequence, then a single
@@ -114,7 +160,11 @@ func (m *logiretchModule) Run(ctx context.Context, env Env) error {
 // (device loss -> reopen). A request timeout on a live reader (sleeping mouse)
 // is non-fatal: log, keep the handle, retry next interval.
 func (m *logiretchModule) session(ctx context.Context, env Env, conn *hidppConn) {
-	s := &logiSession{m: m, env: env, conn: conn}
+	s := &logiSession{m: m, env: env, conn: conn, input: newInputTracker(env)}
+	// input activity flows from the first frame -- it needs no feature
+	// table; the reconf watcher upgrades this handler once features
+	// resolve (watchReconf)
+	conn.setOnEvent(s.input.frame)
 	s.connect(ctx)
 	if conn.readError() != nil {
 		return
@@ -179,6 +229,7 @@ func (s *logiSession) startApply(ctx context.Context) {
 	if s.pending != 0 {
 		fmt.Fprintf(os.Stderr, "logiretch: apply incomplete (%s failed on transport); retrying on up to %d battery ticks\n", s.pending, s.retries)
 	}
+	s.publishState()
 }
 
 // retryApply re-attempts the pending steps on a link-live battery tick. A step
@@ -194,6 +245,7 @@ func (s *logiSession) retryApply(ctx context.Context) {
 	if done := attempt &^ s.pending; done != 0 {
 		fmt.Printf("logiretch: apply retry succeeded: %s\n", done)
 	}
+	defer s.publishState()
 	if s.pending == 0 {
 		return
 	}
@@ -290,6 +342,35 @@ type logiSession struct {
 	watching bool
 	pending  applyStep // apply steps awaiting a transport retry
 	retries  int       // failing link-live ticks left before pending drops
+	// view accumulates the mapping-state line (settings dispositions,
+	// remap walk results); published retained after every apply pass.
+	view LogiViewState
+	// input coalesces 0x02 mouse reports into activity lines (the
+	// viewer's live-activation feed).
+	input *inputTracker
+}
+
+// noteSetting records one setting's disposition for the state line.
+func (s *logiSession) noteSetting(name, want, readback string, err error) {
+	if s.view.Settings == nil {
+		s.view.Settings = map[string]LogiSettingState{}
+	}
+	st := LogiSettingState{Want: want, Readback: readback}
+	if err != nil {
+		st.Error = err.Error()
+	}
+	s.view.Settings[name] = st
+}
+
+// publishState retains the current mapping state on the socket.
+func (s *logiSession) publishState() {
+	s.view.T = time.Now().UnixNano()
+	s.view.Kind = "state"
+	s.view.Pending = ""
+	if s.pending != 0 {
+		s.view.Pending = s.pending.String()
+	}
+	s.env.PublishRetained("state", s.view)
 }
 
 // connect runs the once-per-open sequence in order; each step is logged and a
@@ -302,6 +383,7 @@ func (s *logiSession) connect(ctx context.Context) {
 		return
 	}
 	fmt.Printf("logiretch: connected devIdx=0x%02X, %d features resolved\n", s.devIdx, len(s.feats))
+	s.view = LogiViewState{Connected: true, DevIdx: int(s.devIdx), Features: len(s.feats)}
 	s.startApply(ctx)
 	s.pollBattery(ctx)
 }
@@ -395,6 +477,7 @@ func (s *logiSession) watchReconf(reconf chan struct{}) {
 	s.watching = true
 	devIdx := s.devIdx
 	s.conn.setOnEvent(func(frame []byte) {
+		s.input.frame(frame)
 		if !isWirelessReconf(frame, devIdx, ws.Index) {
 			return
 		}
@@ -437,7 +520,7 @@ func (s *logiSession) pollBattery(ctx context.Context) bool {
 		Charging: st.State == logiStateCharging || st.State == logiStateChargingSlow,
 		State:    int(st.State),
 	}
-	s.env.Publish(state)
+	s.env.PublishRetained("battery", state)
 	fmt.Printf("logiretch: battery %d%% state=%d charging=%v\n", state.SoC, state.State, state.Charging)
 	return true
 }
@@ -453,19 +536,23 @@ func (s *logiSession) pollBattery(ctx context.Context) bool {
 // already cleared is not re-written).
 func (s *logiSession) takeoverReset(ctx context.Context) bool {
 	remaps := s.m.buttonRemaps()
+	s.view.Remaps = nil
 	if !s.m.takeoverResetEnabled() {
 		if len(remaps) > 0 {
 			fmt.Fprintf(os.Stderr, "logiretch: takeoverReset disabled; %d configured button remap(s) not applied (they share the takeoverReset call site)\n", len(remaps))
 		} else {
 			fmt.Println("logiretch: takeoverReset disabled by config")
 		}
+		s.view.Takeover = "disabled by config"
 		return false
 	}
 	e, ok := s.feats[featReprogControls]
 	if !ok {
 		s.skip("takeoverReset", featReprogControls)
+		s.view.Takeover = "1B04 absent"
 		return false
 	}
+	s.view.Takeover = "walked"
 	res, err := s.conn.request(ctx, s.devIdx, e.Index, fnCtrlGetCount)
 	if err != nil {
 		s.stepErr("takeoverReset getControlCount", err)
@@ -505,34 +592,44 @@ func (s *logiSession) takeoverReset(ctx context.Context) bool {
 			continue // stale/malformed: do not attribute divert state
 		}
 		if target, want := remaps[ci.CID]; want {
-			retry = s.setCidReporting(ctx, e.Index, ci.CID, cidRemapParams(ci.CID, target), "remap") || retry
+			retry = s.setCidReporting(ctx, e.Index, ci.CID, target, cidRemapParams(ci.CID, target), "remap") || retry
 			continue
 		}
 		if cr.Flags&(mapDiverted|mapRawXY) == 0 {
 			continue // not diverted: leave the control untouched
 		}
-		retry = s.setCidReporting(ctx, e.Index, ci.CID, cidClearDivertParams(ci.CID), "clear-divert") || retry
+		retry = s.setCidReporting(ctx, e.Index, ci.CID, 0, cidClearDivertParams(ci.CID), "clear-divert") || retry
 	}
 	return retry
 }
 
 // setCidReporting issues one 1B04 write, then re-reads to confirm the CID echo
-// and the resulting flags (the on-device confirmation the log carries).
-// Returns true when the write itself failed on a transport error (a failed
-// readback still means the write was sent, so it never retries).
-func (s *logiSession) setCidReporting(ctx context.Context, idx byte, cid uint16, params []byte, kind string) bool {
+// and the resulting flags (the on-device confirmation the log and the state
+// line carry). target is the remap destination (0 for clear-divert). Returns
+// true when the write itself failed on a transport error (a failed readback
+// still means the write was sent, so it never retries).
+func (s *logiSession) setCidReporting(ctx context.Context, idx byte, cid, target uint16, params []byte, kind string) bool {
+	rs := LogiRemapState{CID: fmt.Sprintf("0x%04X", cid), Action: kind}
+	if target != 0 {
+		rs.Target = fmt.Sprintf("0x%04X", target)
+	}
 	if _, err := s.conn.request(ctx, s.devIdx, idx, fnCtrlSetCidReporting, params...); err != nil {
 		fmt.Fprintf(os.Stderr, "logiretch: setCidReporting %s cid 0x%04X FAILED (params %s): %v\n", kind, cid, hexFrame(params), err)
+		rs.Flags = "write failed: " + err.Error()
+		s.view.Remaps = append(s.view.Remaps, rs)
 		return transportErr(err)
 	}
 	rb, err := s.conn.request(ctx, s.devIdx, idx, fnCtrlGetCidReporting, byte(cid>>8), byte(cid))
 	if err != nil {
 		fmt.Printf("logiretch: setCidReporting %s cid 0x%04X sent (params %s); readback failed: %v\n", kind, cid, hexFrame(params), err)
+		s.view.Remaps = append(s.view.Remaps, rs)
 		return false
 	}
 	cr, ok := decodeCidReporting(rb.params)
 	fmt.Printf("logiretch: setCidReporting %s cid 0x%04X sent (params %s); readback flags=0x%02X(%s) remap=0x%04X echo-ok=%v\n",
 		kind, cid, hexFrame(params), cr.Flags, divertString(cr.Flags), cr.Remap, ok && cr.CID == cid)
+	rs.Flags = divertString(cr.Flags)
+	s.view.Remaps = append(s.view.Remaps, rs)
 	return false
 }
 
@@ -573,6 +670,7 @@ func (s *logiSession) applyDPI(ctx context.Context, want int) bool {
 	e, ok := s.feats[featAdjustableDPI]
 	if !ok {
 		s.skip("dpi", featAdjustableDPI)
+		s.noteSetting("dpi", fmt.Sprint(want), "", errFeatureAbsent)
 		return false
 	}
 	var list []uint16
@@ -584,6 +682,7 @@ func (s *logiSession) applyDPI(ctx context.Context, want int) bool {
 	res, err := s.conn.request(ctx, s.devIdx, e.Index, fnDpiSet, params...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logiretch: dpi set FAILED (params %s, requested %d, snapped %d): %v\n", hexFrame(params), want, target, err)
+		s.noteSetting("dpi", fmt.Sprint(want), "", err)
 		return transportErr(err)
 	}
 	got := "?"
@@ -591,6 +690,7 @@ func (s *logiSession) applyDPI(ctx context.Context, want int) bool {
 		got = fmt.Sprintf("%d", be16(rb.params[1:3]))
 	}
 	fmt.Printf("logiretch: dpi set=%d (requested %d) params %s; readback=%s reply %s\n", target, want, hexFrame(params), got, hexFrame(res.raw))
+	s.noteSetting("dpi", fmt.Sprint(want), got, nil)
 	return false
 }
 
@@ -598,6 +698,7 @@ func (s *logiSession) applySmartShift(ctx context.Context, c *smartShiftConfig) 
 	e, ok := s.feats[featSmartShiftEnh]
 	if !ok {
 		s.skip("smartShift", featSmartShiftEnh)
+		s.noteSetting("smartShift", "configured", "", errFeatureAbsent)
 		return false
 	}
 	mode := ptrByte(c.Mode)
@@ -614,12 +715,15 @@ func (s *logiSession) applySmartShift(ctx context.Context, c *smartShiftConfig) 
 		threshold = byte(t)
 	}
 	params := smartShiftSetParams(mode, threshold, torque)
+	want := fmt.Sprintf("mode=%d threshold=%d torque=%d", mode, threshold, torque)
 	res, err := s.conn.request(ctx, s.devIdx, e.Index, fnSmartShiftSet, params...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logiretch: smartShift set FAILED (params %s): %v\n", hexFrame(params), err)
+		s.noteSetting("smartShift", want, "", err)
 		return transportErr(err)
 	}
 	fmt.Printf("logiretch: smartShift set mode=%d threshold=%d torque=%d params %s; reply %s\n", mode, threshold, torque, hexFrame(params), hexFrame(res.raw))
+	s.noteSetting("smartShift", want, hexFrame(res.params), nil)
 	return false
 }
 
@@ -627,6 +731,7 @@ func (s *logiSession) applyHires(ctx context.Context, hires bool) bool {
 	e, ok := s.feats[featHiresWheel]
 	if !ok {
 		s.skip("hiresWheel", featHiresWheel)
+		s.noteSetting("hiresWheel", fmt.Sprint(hires), "", errFeatureAbsent)
 		return false
 	}
 	// MX4 quirk: logitune ships smooth scroll DISABLED because the HID++
@@ -636,9 +741,11 @@ func (s *logiSession) applyHires(ctx context.Context, hires bool) bool {
 	res, err := s.conn.request(ctx, s.devIdx, e.Index, fnHiresSet, params...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logiretch: hiresWheel set FAILED (params %s): %v\n", hexFrame(params), err)
+		s.noteSetting("hiresWheel", fmt.Sprint(hires), "", err)
 		return transportErr(err)
 	}
 	fmt.Printf("logiretch: hiresWheel set=%v params %s; reply %s\n", hires, hexFrame(params), hexFrame(res.raw))
+	s.noteSetting("hiresWheel", fmt.Sprint(hires), hexFrame(res.params), nil)
 	return false
 }
 
@@ -646,15 +753,18 @@ func (s *logiSession) applyThumb(ctx context.Context, invert bool) bool {
 	e, ok := s.feats[featThumbWheel]
 	if !ok {
 		s.skip("thumbwheel", featThumbWheel)
+		s.noteSetting("thumbwheel", fmt.Sprintf("invert=%v", invert), "", errFeatureAbsent)
 		return false
 	}
 	params := thumbSetParams(invert)
 	res, err := s.conn.request(ctx, s.devIdx, e.Index, fnThumbSet, params...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logiretch: thumbwheel set FAILED (params %s): %v\n", hexFrame(params), err)
+		s.noteSetting("thumbwheel", fmt.Sprintf("invert=%v", invert), "", err)
 		return transportErr(err)
 	}
 	fmt.Printf("logiretch: thumbwheel invert=%v params %s; reply %s\n", invert, hexFrame(params), hexFrame(res.raw))
+	s.noteSetting("thumbwheel", fmt.Sprintf("invert=%v", invert), hexFrame(res.params), nil)
 	return false
 }
 
@@ -662,6 +772,7 @@ func (s *logiSession) applyHaptic(ctx context.Context, level int) bool {
 	e, ok := s.feats[featHaptic]
 	if !ok {
 		s.skip("haptic", featHaptic)
+		s.noteSetting("haptic", fmt.Sprint(level), "", errFeatureAbsent)
 		return false
 	}
 	level = min(max(level, 0), 100)
@@ -669,15 +780,20 @@ func (s *logiSession) applyHaptic(ctx context.Context, level int) bool {
 	res, err := s.conn.request(ctx, s.devIdx, e.Index, fnHapticSet, params...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logiretch: haptic set FAILED (params %s): %v\n", hexFrame(params), err)
+		s.noteSetting("haptic", fmt.Sprint(level), "", err)
 		return transportErr(err)
 	}
 	fmt.Printf("logiretch: haptic level=%d params %s; reply %s\n", level, hexFrame(params), hexFrame(res.raw))
+	s.noteSetting("haptic", fmt.Sprint(level), hexFrame(res.params), nil)
 	return false
 }
 
 func (s *logiSession) skip(name string, feat uint16) {
 	fmt.Fprintf(os.Stderr, "logiretch: feature 0x%04X absent, %s skipped\n", feat, name)
 }
+
+// errFeatureAbsent marks a setting whose feature the device does not expose.
+var errFeatureAbsent = errors.New("feature absent")
 
 func (s *logiSession) stepErr(what string, err error) {
 	fmt.Fprintf(os.Stderr, "logiretch: %s: %v\n", what, err)

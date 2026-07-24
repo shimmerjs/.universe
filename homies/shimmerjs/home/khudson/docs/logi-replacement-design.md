@@ -70,20 +70,59 @@ The decided seam survives intact: **single 0xFF43 vendor node over direct BT, no
 
 **New consumers, zero touchd change:** per-app profile switcher (NSWorkspace watcher), actions/macros engine, Actions Ring overlay [15][U97].
 
-**logiretch viewer (REGISTERED 2026-07-22, user):** a kuiboard-analog for
-the mouse -- see the current mappings and watch them activate in real
-time. Two halves with different dependencies:
-- mapping view: render the asserted capability state (DPI, SmartShift,
-  hi-res wheel, thumbwheel, haptic level, 1B04 remaps) from the CUE
-  config channel + the retained lines on logiretch.sock. Buildable
-  against phase 5/5b as shipped -- no divert engine needed.
-- live activation view: light a mapping as it fires. Needs phase 6a's
-  diverted-button/rawXY event lines on logiretch.sock (plain
-  un-diverted presses never reach the host as HID++ events), so this
-  half is gated on un-deferring 6a; the viewer is new demand against
-  that deferral. Until then a partial fallback could mirror scroll /
-  pointer activity from host-side observation, but button/gesture
-  activation is 6a-only.
+**logiretch viewer (REGISTERED 2026-07-22; DESIGN SETTLED 2026-07-23,
+user re-demand "kuiboard experience"):** a kuiboard-analog for the
+mouse -- see the current mappings and watch them activate in real time.
+The 2026-07-22 framing gated the live half on phase 6a; that gate is
+WRONG for physical activation: the shared vendor handle receives the
+device's STANDARD mouse input reports interleaved with HID++ frames
+(report id 0x02 -- the logiretch-0 probe counted 312 of them in 10s,
+and hidppConn.route already hands every unrouted frame to onEvent).
+Buttons, wheels, and motion are therefore observable WITHOUT diverting
+anything and without changing device behavior. What stays 6a-gated is
+only what firmware never puts in 0x02 (the gesture button's custom
+actions, the force/ring button semantics) -- the viewer labels those
+honestly instead of pretending.
+
+LANDED 2026-07-23, same session as the design settle. As-built notes on
+top of the shape below: the 0x02 layout was pinned WITHOUT the capture
+run -- the report descriptor read straight out of the IORegistry (no
+TCC): byte 1 = buttons 1-7 as bits 0-6, bytes 3-5 = packed int12 X/Y,
+byte 6 = wheel int8, byte 7 = AC Pan int8; the descriptor hex is pinned
+in logiretchinput_test.go. A `magicbusd logiretch-capture` subcommand
+(25s raw 0x02 dump) shipped for the remaining observation: which
+physical buttons ride bits 5-6 (gesture/force candidates) -- run it
+after the next switch under the granted daemon identity (a scratch
+binary signed with the same shimmerjs cert + magicbusd identifier was
+TCC-DENIED, so the Input Monitoring grant is not cert-portable). Owed
+at switch: that capture, plus kuimouse eyes-on with live state/input
+lines.
+
+Shape (mirrors kuiboard: standalone TUI, dials the daemon socket, no
+bus/dock dependency):
+- touchd: broadcaster grows RETAINED lines (last line per retained
+  kind, replayed to a new client at accept) -- also fixes the bus
+  battery consumer's cold-start gap (today it waits up to a battery
+  tick after reconnect). logiretch publishes kind:"state" (retained):
+  link presence, resolved features, each applied setting WITH its
+  readback (the honesty the logs already carry), remap table, takeover
+  disposition. kind:"battery" becomes retained too.
+- touchd: the module's onEvent additionally parses report-0x02 frames
+  into a coalescer: button EDGES publish immediately (human-rate,
+  bounded), wheel/pan/motion accumulate and flush on a 100ms ticker
+  ONLY while active (constant-cost invariant: O(1) per frame, one
+  timer, zero lines when idle). kind:"input", never retained. The 0x02
+  byte layout is pinned by a one-shot live capture before the decoder
+  ships (user wiggles the mouse during a gated test).
+- bus logi.go filters kind=="battery" before rebroadcasting
+  TypeLogiState (today it rebroadcasts every line; new kinds would
+  read as bogus battery updates).
+- khudson cmd/kuimouse: bubbletea TUI rendering the MX Master 4 as a
+  cell diagram -- each control labeled with its mapping from the state
+  line (DPI, SmartShift threshold, wheel modes, haptic level, remaps),
+  lighting on input events (kuiboard's ApplyKey pattern), battery +
+  link + staleness on the status row. Mouse-taps only; ctrl+c quits.
+  Controls invisible to 0x02 render with a dim "6a" tag.
 
 ## Transport rules for the Go module (source-verified against pinned go-hid v0.15.0 [17])
 

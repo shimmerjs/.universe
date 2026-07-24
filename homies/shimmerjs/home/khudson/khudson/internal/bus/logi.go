@@ -54,6 +54,11 @@ func (b *Bus) consumeLogi(ctx context.Context, conn net.Conn) {
 		if err := dec.Decode(&st); err != nil {
 			return
 		}
+		if st.Kind != "battery" {
+			// logiretch.sock carries state/input lines for the viewer too;
+			// only battery lines feed the strip readout
+			continue
+		}
 		s := st
 		b.mu.Lock()
 		b.lastLogi = &s
