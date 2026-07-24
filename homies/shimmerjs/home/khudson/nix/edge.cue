@@ -184,6 +184,20 @@ widgets: {
 			params: {view: "recorder"}
 		}
 	}
+	// logiretch viewer: the on-glass MX Master 4 (dock twin of the
+	// standalone `logiretch` TUI). 1s poll = the highlight decay clock
+	// while its layout shows; zero polls otherwise (visibility-gated).
+	// The module holds logiretch.sock open itself.
+	"logiretch-view": {
+		title:  "logiretch"
+		glyph:  "\U000F037D"
+		chrome: true
+		render: {
+			kind:   "native"
+			module: "logiretch"
+			poll:   "1s"
+		}
+	}
 }
 
 // bus-owned theme service: `khudson ctl theme night` re-colors the HUD kitty
@@ -235,9 +249,6 @@ strip: {
 		{kind: "caffeinate", on: "\U000F0176", off: "\U000F06CA"},
 	]
 	flip: {expanded: "home", collapsed: "home-no-kb"}
-	// kitty_mod chord note, templated from programs.kitty.settings.kitty_mod
-	// (module.nix replaceVars) so the strip and the daily kitty never drift.
-	kittyMod: "@kittyMod@"
 }
 
 layouts: {
@@ -282,6 +293,19 @@ layouts: {
 	// it. No tiles/regions: a bespoke full-region renderer.
 	keyboard: {
 		kind: "keyboard"
+		// swipe up on the keyboard view lands on the logiretch mouse
+		// viewer (its inverse -- swipe down -- returns here)
+		swipeUp: "logiretch"
+	}
+	// logiretch mouse viewer: home-kind single-fill (the claude-layout
+	// precedent, zero new dock engine). Reached by swipe-up from the
+	// keyboard view; swipe down returns.
+	logiretch: {
+		kind: "home"
+		regions: [
+			{widget: "logiretch-view", edge: "fill"},
+		]
+		swipeDown: "keyboard"
 	}
 	// claude control panel: home-kind, single fill region -- zero new dock
 	// code; the home strip leads back. Behind the strip's "clod" tab.

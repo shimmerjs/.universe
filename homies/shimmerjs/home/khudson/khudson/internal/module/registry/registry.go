@@ -14,6 +14,7 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/module/dockmirror"
 	"github.com/shimmerjs/khudson/khudson/internal/module/githubprs"
 	"github.com/shimmerjs/khudson/khudson/internal/module/kittysessions"
+	"github.com/shimmerjs/khudson/khudson/internal/module/logiretch"
 	"github.com/shimmerjs/khudson/khudson/internal/module/media"
 	"github.com/shimmerjs/khudson/khudson/internal/module/procs"
 	"github.com/shimmerjs/khudson/khudson/internal/module/reno"
@@ -44,6 +45,7 @@ func All() map[string]module.Module {
 		dockmirror.New(),
 		githubprs.Mod{},
 		kittysessions.Mod{},
+		logiretch.New(),
 		media.Mod{},
 		pr,
 		reno.New(),

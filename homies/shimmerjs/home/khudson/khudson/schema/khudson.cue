@@ -27,7 +27,7 @@ import "time"
 // native modules compiled into khudson
 #Module: "github-prs" | "claude-sessions" | "claude-panel" | "kitty-sessions" |
 	"cheatsheets" | "demo-mode" | "brightness" | "sysmon" | "dock-mirror" |
-	"media" | "cpumem" | "disk" | "procs" | "resources" | "reno"
+	"media" | "cpumem" | "disk" | "procs" | "resources" | "reno" | "logiretch"
 
 // chrome modules: no bus module; the dock renders them purely from config
 // params
@@ -109,6 +109,10 @@ import "time"
 	panel?: string
 	// home only; order = peel order, fill regions split the remainder
 	regions?: [...#Region]
+	// vertical-swipe navigation targets (single-finger; horizontal swipe
+	// is reserved for strip-tab cycling). Each must be a defined layout.
+	swipeUp?:   string
+	swipeDown?: string
 }
 
 // bus-owned theme service (`khudson ctl theme day|night`): night colors are

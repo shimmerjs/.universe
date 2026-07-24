@@ -194,6 +194,11 @@ type Layout struct {
 	// Regions is home-only; order is peel order, fill regions split the
 	// remainder.
 	Regions []Region `json:"regions,omitempty"`
+	// SwipeUp/SwipeDown are vertical-swipe nav targets (single-finger);
+	// each names a defined layout. Horizontal swipe stays strip-tab
+	// cycling.
+	SwipeUp   string `json:"swipeUp,omitempty"`
+	SwipeDown string `json:"swipeDown,omitempty"`
 }
 
 // WidgetIDs returns every widget id the layout references (tiles, then
@@ -303,6 +308,16 @@ func (c *Config) check() error {
 		}
 		if err := c.checkRegions(name, l); err != nil {
 			return err
+		}
+		// vertical-swipe targets must name defined layouts: the dock drops
+		// a miss silently, so a dead target has to fail vet
+		for _, t := range []struct{ dir, target string }{{"swipeUp", l.SwipeUp}, {"swipeDown", l.SwipeDown}} {
+			if t.target == "" {
+				continue
+			}
+			if _, ok := c.Layouts[t.target]; !ok {
+				return fmt.Errorf("layout %q: %s target %q is not a defined layout", name, t.dir, t.target)
+			}
 		}
 	}
 	for id, w := range c.Widgets {

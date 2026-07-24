@@ -777,12 +777,18 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 			m.resolveLongPress(g.Col, g.Row)
 		case proto.GestureSwipe:
 			m.lastGst = "swipe-" + g.Dir
-			// single-finger swipe swaps strip tabs (multi-finger is
-			// hardware-refuted: the panel firmware is single-contact). An
-			// open overlay owns the glass -- its drags must not switch
-			// layouts under the menu.
+			// single-finger swipe (multi-finger is hardware-refuted: the
+			// panel firmware is single-contact). An open overlay owns the
+			// glass -- its drags must not switch layouts under the menu.
+			// Horizontal cycles strip tabs; vertical follows the active
+			// layout's swipeUp/swipeDown nav target.
 			if m.overlay == nil {
-				m.swipeTab(g.Dir)
+				switch g.Dir {
+				case "left", "right":
+					m.swipeTab(g.Dir)
+				case "up", "down":
+					m.swipeVertical(g.Dir)
+				}
 			}
 		case proto.GestureTwoFingerSwipe:
 			// tray gesture; tray engine is a later milestone
@@ -834,6 +840,26 @@ func (m *model) swipeTab(dir string) {
 	next := ring[(cur+step+len(ring))%len(ring)]
 	m.flash("tab:" + next.label)
 	m.trayActivate(next.target, next.label)
+}
+
+// swipeVertical follows the active layout's swipeUp/swipeDown target: a
+// per-layout directional nav (keyboard swipe-up -> logiretch viewer, and
+// its inverse back). A layout with no target for the direction swipes
+// nowhere -- silent, like an off-strip horizontal swipe.
+func (m *model) swipeVertical(dir string) {
+	if m.cfg == nil {
+		return
+	}
+	l := m.cfg.Layouts[m.layout]
+	target := l.SwipeUp
+	if dir == "down" {
+		target = l.SwipeDown
+	}
+	if target == "" {
+		return
+	}
+	m.lastGst = "swipe-" + dir + ": " + target
+	m.trayActivate(target, target)
 }
 
 // navigateTo switches to a layout the dock config knows. Bus-connected navs
