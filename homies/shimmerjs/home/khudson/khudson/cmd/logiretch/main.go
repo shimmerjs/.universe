@@ -1,4 +1,4 @@
-// Command kuimouse is the kuiboard-analog for the MX Master 4: a
+// Command logiretch is the kuiboard-analog for the MX Master 4: a
 // standalone terminal UI over logiretch.sock showing the mouse's
 // asserted mapping state (DPI, SmartShift, wheel modes, haptic level,
 // 1B04 remaps -- each with the device's readback) and lighting controls
@@ -335,10 +335,10 @@ func (m *model) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
 	if m.w < 30 || m.h < 6 {
-		v.SetContent("kuimouse")
+		v.SetContent("logiretch")
 		return v
 	}
-	title := fg.Bold(true).Render(" kuimouse") + dim.Render(" -- MX Master 4")
+	title := fg.Bold(true).Render(" logiretch") + dim.Render(" -- MX Master 4")
 	art := m.mouseArt()
 	maps := m.mappingRows()
 	body := make([]string, 0, max(len(art), len(maps))+3)
@@ -403,7 +403,7 @@ func readLines(ctx context.Context, sock string, ch chan<- wireLine) {
 func main() {
 	p, err := paths.Resolve()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "kuimouse:", err)
+		fmt.Fprintln(os.Stderr, "logiretch:", err)
 		os.Exit(1)
 	}
 	ch := make(chan wireLine, 32)
@@ -415,7 +415,7 @@ func main() {
 		now:   time.Now(),
 	}
 	if _, err := tea.NewProgram(m).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "kuimouse:", err)
+		fmt.Fprintln(os.Stderr, "logiretch:", err)
 		os.Exit(1)
 	}
 }

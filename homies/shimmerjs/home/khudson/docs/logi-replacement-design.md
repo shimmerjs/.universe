@@ -95,7 +95,7 @@ physical buttons ride bits 5-6 (gesture/force candidates) -- run it
 after the next switch under the granted daemon identity (a scratch
 binary signed with the same shimmerjs cert + magicbusd identifier was
 TCC-DENIED, so the Input Monitoring grant is not cert-portable). Owed
-at switch: that capture, plus kuimouse eyes-on with live state/input
+at switch: that capture, plus logiretch (the viewer binary; renamed from kuimouse 2026-07-24, user) eyes-on with live state/input
 lines.
 
 Shape (mirrors kuiboard: standalone TUI, dials the daemon socket, no
@@ -117,7 +117,7 @@ bus/dock dependency):
 - bus logi.go filters kind=="battery" before rebroadcasting
   TypeLogiState (today it rebroadcasts every line; new kinds would
   read as bogus battery updates).
-- khudson cmd/kuimouse: bubbletea TUI rendering the MX Master 4 as a
+- khudson cmd/logiretch: bubbletea TUI rendering the MX Master 4 as a
   cell diagram -- each control labeled with its mapping from the state
   line (DPI, SmartShift threshold, wheel modes, haptic level, remaps),
   lighting on input events (kuiboard's ApplyKey pattern), battery +
