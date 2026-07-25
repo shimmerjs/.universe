@@ -136,3 +136,42 @@ func TestStatusRowBattery(t *testing.T) {
 		t.Errorf("status row = %q", got)
 	}
 }
+
+// The art block must be exactly rectangular. The top-down silhouette this
+// replaced drifted a column between rows -- 12 cells on some, 13 on
+// others -- which showed up on glass as a ragged right edge. Padding is
+// what guarantees it, so this pins the guarantee rather than the drawing.
+func TestArtRowsAreRectangular(t *testing.T) {
+	m := testMod()
+	for i, row := range m.artLines() {
+		n := 0
+		for _, s := range row {
+			n += len([]rune(s.Text))
+		}
+		if n != artW {
+			t.Errorf("art row %d is %d cells, want %d", i, n, artW)
+		}
+	}
+}
+
+// Every callout names a control the event stream can actually light: a
+// label wired to a key nothing publishes is a dead legend.
+func TestArtCalloutsLight(t *testing.T) {
+	m := testMod()
+	for _, key := range []string{"wheel", "left", "right", "middle", "thumb", "back", "forward", "gesture", "btn6", "motion"} {
+		m.lit = map[string]time.Time{key: m.now()}
+		rows := m.artLines()
+
+		var found bool
+		for _, row := range rows {
+			for _, s := range row {
+				if s.Style == module.StyleHighlight {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("lighting %q lit nothing in the art", key)
+		}
+	}
+}

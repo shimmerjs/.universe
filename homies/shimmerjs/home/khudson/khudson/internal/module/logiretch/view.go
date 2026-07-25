@@ -3,6 +3,7 @@ package logiretch
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 )
@@ -53,12 +54,29 @@ func dimSpan(s string) module.Span {
 	return module.Span{Text: s, Style: module.StyleDim}
 }
 
-// artLines is the ASCII MX Master 4: a top-down silhouette with the
-// two main buttons and wheel up top, the thumb cluster (thumbwheel,
-// back/forward, gesture button) on the left flank, and the palm swell
-// below. Controls light through ctl() as events arrive.
+// artW is the art block's fixed cell width. Every row pads to it, so a
+// hand-edited silhouette cannot drift a column and leave the right edge
+// ragged (the top-down art it replaced was 12 cells on some rows and 13
+// on others).
+const artW = 41
+
+// calloutW is the label column ahead of each leader: right-aligned names
+// so the leaders line up into one gutter.
+const calloutW = 10
+
+// artLines is the ASCII MX Master 4 seen from the LEFT: the flank a side
+// view actually shows -- thumbwheel, back/forward, gesture -- reads
+// straight down the near edge, with leader lines out to named labels.
+// The profile is wide and short by design so it can sit under the
+// keyboard render later. Controls light through ctl() as events arrive;
+// a lit control lights its label too, so the name is readable at a
+// glance instead of only the glyph.
+//
+// The two main buttons are stacked rather than side by side: a true
+// profile hides the far button entirely, and a mouse viewer that cannot
+// show a right-click is worse than one that cheats the perspective.
 func (m *Mod) artLines() [][]module.Span {
-	wheel := "|"
+	wheel := "O"
 	if m.isLit("wheel") {
 		if m.wheelDir > 0 {
 			wheel = "v"
@@ -74,23 +92,87 @@ func (m *Mod) artLines() [][]module.Span {
 			thumb = "<"
 		}
 	}
-	motion := dimSpan("   . . .")
-	if m.isLit("motion") {
-		motion = module.Span{Text: "   ~ ~ ~", Style: module.StyleHighlight}
-	}
 
-	return [][]module.Span{
-		{plain("      .-\"\"-.")},
-		{plain("     /"), m.ctl("left", "L"), plain(" | "), m.ctl("right", "R"), plain(`\`)},
-		{plain("    |   "), m.ctl("wheel", wheel), plain("   |")},
-		{plain("    | ("), m.ctl("middle", "o"), plain(")   |")},
-		{m.ctl("thumb", thumb), plain("---|       |")},
-		{m.ctl("back", "<"), plain(" "), m.ctl("forward", ">"), plain(" |       |    "), m.ctl("btn6", "*")},
-		{plain("[ "), m.ctl("gesture", "G"), plain(" ] |       |")},
-		{plain("    |       |")},
-		{plain("     \\     /")},
-		{plain("      '.__.'"), motion},
+	// The shell, drawn right of the control column: the nose sits low at
+	// the left where the buttons are, the surface climbs to the palm hump,
+	// then the back wall drops and the base closes it. Every tail is 26
+	// cells; the leading control cluster IS the near flank, so the shape
+	// hangs off the callout column rather than repeating a left wall.
+	rows := [][]module.Span{
+		m.artRow("", "", "", "    _.-~~~~~~-._          "),
+		m.artRow("", "", "", "  _.-~          ~-._      "),
+		m.artRow("wheel", "wheel", wheel, "~                   ~-.   "),
+		m.artRow("left", "left", "L", "                       \\  "),
+		m.artRow("right", "right", "R", "                        | "),
+		m.artRow("middle", "middle", "M", "                        | "),
+		m.artRowSpans(m.isLit("thumb"), "thumb", []module.Span{m.ctl("thumb", thumb)},
+			plain("            "), m.ctl("btn6", m.btn6Glyph()), plain("           | ")),
+		// the only two-glyph control: back and forward light separately
+		m.artRowSpans(m.isLit("back") || m.isLit("forward"), "back/fwd",
+			[]module.Span{m.ctl("back", "<"), m.ctl("forward", ">")},
+			plain("                       | ")),
+		m.artRow("gesture", "gesture", "G", "                       /  "),
+		m.artRow("", "", "", "~-.._______________..-~   "),
 	}
+	return append(rows, m.motionRow())
+}
+
+// artRow is one art line: an optional right-aligned label, its leader, the
+// lit control glyph, then silhouette.
+func (m *Mod) artRow(key, label, glyph, tail string) []module.Span {
+	if label == "" {
+		// +5, not +4: a bare row must also skip the control cell so every
+		// tail starts in the same column
+		return padSpans([]module.Span{
+			plain(strings.Repeat(" ", calloutW+5)), plain(tail)}, artW)
+	}
+	return m.artRowSpans(m.isLit(key), label, []module.Span{m.ctl(key, glyph)}, plain(tail))
+}
+
+// artRowSpans is artRow for a control cluster wider than one glyph. lit
+// drives the LABEL tone: the name has to read at a glance, not just the
+// character. Pads to artW so the block stays rectangular whatever the
+// caller drew.
+func (m *Mod) artRowSpans(lit bool, label string, ctls []module.Span, tail ...module.Span) []module.Span {
+	name := module.Span{Text: fmt.Sprintf("%*s", calloutW, label), Style: module.StyleDim}
+	if lit {
+		name.Style = module.StyleHighlight
+	}
+	spans := append([]module.Span{name, dimSpan(" --"), plain(" ")}, ctls...)
+	return padSpans(append(spans, tail...), artW)
+}
+
+// btn6Glyph is the lone body-mounted button, drawn inside the shell: a
+// bare dot at rest so it does not compete with the flank cluster, a star
+// while held.
+func (m *Mod) btn6Glyph() string {
+	if m.isLit("btn6") {
+		return "*"
+	}
+	return "."
+}
+
+// motionRow is the trail under the mouse: the pointer's own liveness,
+// which no button can show.
+func (m *Mod) motionRow() []module.Span {
+	dots := dimSpan("             . .  .   .")
+	if m.isLit("motion") {
+		dots = module.Span{Text: "             ~ ~  ~   ~", Style: module.StyleHighlight}
+	}
+	return padSpans([]module.Span{plain(strings.Repeat(" ", calloutW+5)), dots}, artW)
+}
+
+// padSpans right-pads a row to width cells. Art rows are hand-drawn, so
+// the padding -- not the drawing -- is what guarantees a straight edge.
+func padSpans(spans []module.Span, width int) []module.Span {
+	n := 0
+	for _, s := range spans {
+		n += len([]rune(s.Text))
+	}
+	if n < width {
+		spans = append(spans, plain(strings.Repeat(" ", width-n)))
+	}
+	return spans
 }
 
 // mapRows renders the asserted mapping state with device readbacks.
