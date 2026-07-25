@@ -73,10 +73,11 @@ type Mod struct {
 	notes     string
 	notesPath string
 
-	runsDir string // "" on bare test buses: journal writes error loudly
-	exe     string // os.Executable for TCC-identity argvs (focus-app)
-	now     func() time.Time
-	lastAct time.Time
+	stateDir string // <state>/reno; "" on bare test buses
+	runsDir  string // "" on bare test buses: journal writes error loudly
+	exe      string // os.Executable for TCC-identity argvs (focus-app)
+	now      func() time.Time
+	lastAct  time.Time
 }
 
 // New builds the singleton, recovering the newest live run journal (a
@@ -90,9 +91,11 @@ func New() *Mod {
 		m.exe = "khudson"
 	}
 	if p, err := paths.Resolve(); err == nil {
-		m.runsDir = filepath.Join(p.Dir, "reno", "runs")
+		m.stateDir = filepath.Join(p.Dir, "reno")
+		m.runsDir = filepath.Join(m.stateDir, "runs")
 	}
 	m.recover()
+	m.recoverInventory()
 	renocore.SweepRuns(m.runsDir, m.now())
 	return m
 }
@@ -380,6 +383,7 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 			return nil, nil, fmt.Errorf("reno obs-inventory: %w", err)
 		}
 		m.inventory = &inv
+		m.saveInventoryLocked()
 		return nil, nil, nil
 	case "notes":
 		return nil, nil, m.setNotesLocked(args[1:])

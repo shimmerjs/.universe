@@ -136,23 +136,31 @@ func TestScriptedAutoRecord(t *testing.T) {
 	}
 }
 
+// The transport tile carries every recording phase EXPLICITLY -- ready,
+// arming, live, stopped-with-clip, failed -- so the pad never shows a
+// healthy-looking default over a dead OBS.
 func TestRecorderViewStates(t *testing.T) {
 	m, _ := testMod(t)
 	rows := mustRows(t, m, "recorder")
-	if !actRowPresent(rows, "record") {
-		t.Fatalf("idle recorder needs the record act: %+v", rows)
+	if tile := padTile(rows, KeyActRecord); tile == nil || tile.Text != "REC" || len(tile.Act) == 0 {
+		t.Fatalf("idle recorder needs the record tile: %+v", rows)
 	}
 
 	m.HandleActEffects([]string{actRecord})
-	if rows = mustRows(t, m, "recorder"); !rowsContain(rows, "armed (start pending)") {
-		t.Errorf("armed state: %+v", rows)
+	if tile := padTile(mustRows(t, m, "recorder"), KeyActRecord); tile == nil || tile.Value != "arming" {
+		t.Errorf("armed state: %+v", tile)
 	}
 	ctl(t, m, "record-note", m.run.ID, "started", "31")
-	if rows = mustRows(t, m, "recorder"); !actRowPresent(rows, "stop recording") {
-		t.Errorf("live state needs the stop act: %+v", rows)
+	rows = mustRows(t, m, "recorder")
+	tile := padTile(rows, KeyActRecord)
+	if tile == nil || tile.Text != "STOP" || len(tile.Act) == 0 {
+		t.Errorf("live state needs the stop tile: %+v", rows)
+	}
+	if tile.Style != module.StyleWarn {
+		t.Errorf("a live recording must read hot: %+v", tile)
 	}
 	ctl(t, m, "record-note", m.run.ID, "stopped", "/clips/a.mkv")
-	if rows = mustRows(t, m, "recorder"); !rowsContain(rows, "/clips/a.mkv") {
+	if rows = mustRows(t, m, "recorder"); !rowsContain(rows, "a.mkv") {
 		t.Errorf("stopped state shows the clip: %+v", rows)
 	}
 
@@ -164,13 +172,14 @@ func TestRecorderViewStates(t *testing.T) {
 	}
 }
 
-func actRowPresent(rows []module.Row, label string) bool {
-	for _, r := range rows {
-		if r.Key == KeyActRecord && r.Text == label {
-			return true
+// padTile finds one pad button by key; readout rows never match.
+func padTile(rows []module.Row, key string) *module.Row {
+	for i := range rows {
+		if rows[i].Kind == module.RowPad && rows[i].Key == key {
+			return &rows[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func writeFile(path, body string) error {

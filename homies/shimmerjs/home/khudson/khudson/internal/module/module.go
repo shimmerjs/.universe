@@ -48,6 +48,12 @@ const (
 	// RowSpans is one line of independently styled runs (Row.Spans),
 	// concatenated left to right and truncated to the panel width.
 	RowSpans = "spans"
+	// RowPad is one control-pad button: Glyph over Text over Value on a
+	// bordered tile the dock sizes to the region. A module publishes what
+	// the buttons ARE and what state they carry; the dock owns how big
+	// they get and where they sit. Pad rows are pressables only -- a
+	// readout belongs in a header row, not a tile nobody can press.
+	RowPad = "pad"
 )
 
 // Row styles (dock palette names, not colors: modules stay theme-blind).
@@ -122,6 +128,15 @@ type Row struct {
 	// the dock renders the input-requested emphasis, composed with the
 	// row's spans and styles).
 	Attention bool `json:"attention,omitempty"`
+	// Glyph is a pad tile's icon line (RowPad only). Empty renders the
+	// tile on its label alone, so a module that has no icon vocabulary
+	// still gets a well-formed button.
+	Glyph string `json:"glyph,omitempty"`
+	// Section groups consecutive pad tiles into one labeled band (RowPad
+	// only): every choice in a set -- each mic, each display, each webcam
+	// preset -- is its own button, and the section is what says which set
+	// it belongs to.
+	Section string `json:"section,omitempty"`
 }
 
 // ActHandler is an optional Module capability: HandleAct runs a published

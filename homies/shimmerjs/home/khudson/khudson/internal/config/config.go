@@ -40,20 +40,9 @@ type Config struct {
 type Strip struct {
 	Entries []StripEntry  `json:"entries,omitempty"`
 	Toggles []StripToggle `json:"toggles,omitempty"`
-	// Flip is the collapse/expand chevron between the tabs and the toggles;
-	// nil renders no chevron.
-	Flip *StripFlip `json:"flip,omitempty"`
 	// KittyMod is the configured kitty_mod chord ("ctrl+opt+shift"), rendered
 	// as a compact modifier-glyph note on the strip; empty renders nothing.
 	KittyMod string `json:"kittyMod,omitempty"`
-}
-
-// StripFlip is the flip chevron's layout pair: the chevron renders only
-// while the active layout is one of the two, and its tap navigates to the
-// other. Both names must be defined layouts (checkStrip).
-type StripFlip struct {
-	Expanded  string `json:"expanded"`
-	Collapsed string `json:"collapsed"`
 }
 
 // StripEntry is one strip tab: label on glass, target layout on tap.
@@ -61,8 +50,8 @@ type StripFlip struct {
 // Alt is an optional second target: while the active layout is Target or
 // Alt the tab reads active, and its tap flips to the other side (the
 // reno presenter<->recorder pair). Unlike Target, Alt must be a defined
-// layout: it is only reachable through the flip, so a stub alt would be
-// a dead control, not an affordance.
+// layout: it is only reachable through the tab itself, so a stub alt would
+// be a dead control, not an affordance.
 type StripEntry struct {
 	Label  string `json:"label"`
 	Target string `json:"target"`
@@ -227,6 +216,13 @@ type Region struct {
 	Widget string `json:"widget"`
 	Edge   string `json:"edge"`           // left | right | top | bottom | fill
 	Size   int    `json:"size,omitempty"` // cells: cols for left/right, rows for top/bottom
+	// SwipeUp/SwipeDown are this slot's vertical-swipe nav targets: a swipe
+	// STARTING in the region beats the layout-level target, so one column
+	// can swap its own widget (the kb column -> the MX viewer) while the
+	// rest of the screen holds. Each names a defined layout, so the widget
+	// swap is a layout switch and the bus's widget visibility follows it.
+	SwipeUp   string `json:"swipeUp,omitempty"`
+	SwipeDown string `json:"swipeDown,omitempty"`
 }
 
 // Load vets src against the schema and decodes it. filename is for error
@@ -309,15 +305,8 @@ func (c *Config) check() error {
 		if err := c.checkRegions(name, l); err != nil {
 			return err
 		}
-		// vertical-swipe targets must name defined layouts: the dock drops
-		// a miss silently, so a dead target has to fail vet
-		for _, t := range []struct{ dir, target string }{{"swipeUp", l.SwipeUp}, {"swipeDown", l.SwipeDown}} {
-			if t.target == "" {
-				continue
-			}
-			if _, ok := c.Layouts[t.target]; !ok {
-				return fmt.Errorf("layout %q: %s target %q is not a defined layout", name, t.dir, t.target)
-			}
+		if err := c.checkSwipeTargets(fmt.Sprintf("layout %q", name), l.SwipeUp, l.SwipeDown); err != nil {
+			return err
 		}
 	}
 	for id, w := range c.Widgets {
@@ -347,9 +336,7 @@ func (c *Config) check() error {
 // empty label or target is a dead tab -- rejected so `khudson config vet`
 // fails the closure build -- and a ":" in a label (or a duplicate label)
 // would collide in the dock's ":"-namespaced flash registry. A toggle must name its kind; unknown kinds are
-// allowed (rendered dead, a config ahead of the binary stays visible). The
-// flip pair must name defined layouts on both sides -- a chevron whose tap
-// leads nowhere is a silently dead control.
+// allowed (rendered dead, a config ahead of the binary stays visible).
 func (c *Config) checkStrip() error {
 	if c.Strip == nil {
 		return nil
@@ -386,21 +373,6 @@ func (c *Config) checkStrip() error {
 	for i, tg := range c.Strip.Toggles {
 		if tg.Kind == "" {
 			return fmt.Errorf("strip: toggle %d needs a kind", i)
-		}
-	}
-	if f := c.Strip.Flip; f != nil {
-		for _, name := range []string{f.Expanded, f.Collapsed} {
-			if name == "" {
-				return fmt.Errorf("strip: flip needs both expanded and collapsed layouts")
-			}
-			if _, ok := c.Layouts[name]; !ok {
-				return fmt.Errorf("strip: flip layout %q is not defined in layouts", name)
-			}
-		}
-		if f.Expanded == f.Collapsed {
-			// a chevron flipping a layout onto itself is a permanently
-			// dead control that vet exists to reject
-			return fmt.Errorf("strip: flip expanded and collapsed name the same layout %q", f.Expanded)
 		}
 	}
 	return nil
@@ -491,6 +463,21 @@ func intParam(v any) (int64, bool) {
 	return 0, false
 }
 
+// checkSwipeTargets rejects a vertical-swipe target that is not a defined
+// layout: the dock drops a miss silently, so a dead target has to fail vet.
+// what names the owner (a layout or one of its regions) for the message.
+func (c *Config) checkSwipeTargets(what, up, down string) error {
+	for _, t := range []struct{ dir, target string }{{"swipeUp", up}, {"swipeDown", down}} {
+		if t.target == "" {
+			continue
+		}
+		if _, ok := c.Layouts[t.target]; !ok {
+			return fmt.Errorf("%s: %s target %q is not a defined layout", what, t.dir, t.target)
+		}
+	}
+	return nil
+}
+
 // checkRegions enforces the home-layout region rules: widgets exist, edged
 // regions carry a size, and fill regions trail every edged region (the fill
 // split is a single pass over whatever the peels leave).
@@ -512,6 +499,9 @@ func (c *Config) checkRegions(name string, l Layout) error {
 		}
 		if w.Render.Kind == "exec" {
 			return fmt.Errorf("layout %q: region %d widget %q renders exec (scraped); home regions take native or chrome widgets", name, i, r.Widget)
+		}
+		if err := c.checkSwipeTargets(fmt.Sprintf("layout %q: region %d (%q)", name, i, r.Widget), r.SwipeUp, r.SwipeDown); err != nil {
+			return err
 		}
 		if r.Edge == "fill" {
 			fillSeen = true

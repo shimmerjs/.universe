@@ -214,90 +214,115 @@ func TestArmConfigSelection(t *testing.T) {
 	}
 }
 
-func TestRecorderConfigRows(t *testing.T) {
+// The recorder pad publishes one PRESSABLE button per CHOICE -- each
+// display, each mic, each webcam preset -- grouped into labeled sections.
+// A popover would make selecting a device a two-aim gesture on glass.
+func TestRecorderPadChoiceButtons(t *testing.T) {
 	m, _ := testMod(t)
 
-	// no inventory: a probe act row instead of dead menus
+	// nothing probed: the OBS button is the whole surface, and the pad
+	// says so rather than offering bands that select nothing
 	d := m.recorderData()
-	var probeRow *module.Row
-	for i := range d.Rows {
-		if d.Rows[i].Key == KeyActProbe {
-			probeRow = &d.Rows[i]
-		}
+	probe := padTile(d.Rows, KeyActProbe)
+	if probe == nil || probe.Act[0] != actProbe || probe.Value != "cold" {
+		t.Fatalf("no probe button without inventory: %+v", d.Rows)
 	}
-	if probeRow == nil || probeRow.Act[0] != actProbe {
-		t.Fatalf("no probe row without inventory: %+v", d.Rows)
+	if padTile(d.Rows, "cfg:unprobed") == nil {
+		t.Errorf("pre-probe pad must say what is missing: %+v", d.Rows)
 	}
 
 	freshInv(t, m)
 	m.pending = renocore.RecordConfig{Screens: []renocore.ScreenSel{{Display: "uuid-d"}}, Audio: "uid-mbp"}
 	d = m.recorderData()
-	rows := map[string]module.Row{}
-	for _, r := range d.Rows {
-		rows[r.Key] = r
+
+	// one button per display, the selected one lit, tap = direct toggle
+	sel := padTile(d.Rows, KeyCfgScreens+":uuid-d")
+	if sel == nil || sel.Text != "DELL" || sel.Style != module.StyleAccent {
+		t.Errorf("selected display button = %+v", sel)
 	}
-	if got := rows[KeyCfgScreens].Value; got != "DELL" {
-		t.Errorf("screens row = %q", got)
+	if len(sel.Act) != 2 || sel.Act[0] != actCfgScreen || sel.Act[1] != "uuid-d" {
+		t.Errorf("display button act = %v", sel.Act)
 	}
-	if got := rows[KeyCfgAudio].Value; got != "MacBook Pro Microphone" {
-		t.Errorf("audio row = %q", got)
-	}
-	if got := rows[KeyCfgWebcam].Value; got != "obs as-is" {
-		t.Errorf("webcam row = %q", got)
-	}
-	// menus: screens toggle marks the selected display
-	var sawSelected bool
-	for _, a := range rows[KeyCfgScreens].Menu {
-		if a.Argv[0] != actCfgScreen {
-			t.Errorf("screen menu argv = %v", a.Argv)
-		}
-		if strings.HasPrefix(a.Label, "[x] DELL") {
-			sawSelected = true
-		}
-	}
-	if !sawSelected {
-		t.Errorf("selected display unmarked: %+v", rows[KeyCfgScreens].Menu)
-	}
-	if n := len(rows[KeyCfgAudio].Menu); n != 3 { // as-is, none, one device
-		t.Errorf("audio menu = %d items", n)
-	}
-	// "obs as-is" (clear) plus every preset INCLUDING the real "off":
-	// the two are different promises (as-is skips scene reconciliation;
-	// off forces the cam item disabled)
-	if n := len(rows[KeyCfgWebcam].Menu); n != len(renocore.WebcamPresets)+1 {
-		t.Errorf("webcam menu = %d items", n)
-	}
-	var sawAsIs, sawOff bool
-	for _, a := range rows[KeyCfgWebcam].Menu {
-		switch a.Label {
-		case "obs as-is":
-			sawAsIs = a.Argv[1] == cfgDefault
-		case "off":
-			sawOff = a.Argv[1] == "off"
-		}
-	}
-	if !sawAsIs || !sawOff {
-		t.Errorf("webcam menu must carry distinct as-is and off items: %+v", rows[KeyCfgWebcam].Menu)
+	if off := padTile(d.Rows, KeyCfgScreens+":uuid-b"); off == nil || off.Style == module.StyleAccent {
+		t.Errorf("unselected display must not read lit: %+v", off)
 	}
 
-	// a stale inventory falls back to the re-probe row
-	m.inventory.At = m.now().Add(-2 * invStale)
-	d = m.recorderData()
-	found := false
-	for _, r := range d.Rows {
-		if r.Key == KeyActProbe && strings.Contains(r.Text, "stale") {
-			found = true
+	// mic band: as-is, MUTE, then a button per device. "obs as-is" clears
+	// the knob while MUTE forces every input silent -- different promises,
+	// so they stay different buttons
+	asIs := padTile(d.Rows, KeyCfgAudio+":default")
+	mute := padTile(d.Rows, KeyCfgAudio+":none")
+	dev := padTile(d.Rows, KeyCfgAudio+":uid-mbp")
+	if asIs == nil || mute == nil || dev == nil {
+		t.Fatalf("mic band incomplete: %+v", d.Rows)
+	}
+	if asIs.Act[1] != cfgDefault || mute.Act[1] != renocore.AudioNone || dev.Act[1] != "uid-mbp" {
+		t.Errorf("mic acts = %v / %v / %v", asIs.Act, mute.Act, dev.Act)
+	}
+	if dev.Style != module.StyleAccent || asIs.Style == module.StyleAccent {
+		t.Errorf("the live selection is the lit one: as-is=%q dev=%q", asIs.Style, dev.Style)
+	}
+	// the band label says MIC; the key does not need to repeat it
+	if dev.Text != "MacBook Pro" {
+		t.Errorf("device label = %q, want the trimmed form", dev.Text)
+	}
+	for _, tile := range []*module.Row{asIs, mute, dev} {
+		if tile.Section != secMic {
+			t.Errorf("mic button %q in section %q", tile.Text, tile.Section)
 		}
 	}
-	if !found {
-		t.Errorf("stale inventory must offer re-probe: %+v", d.Rows)
+
+	// cam band: as-is plus every preset, "off" among them -- an as-is that
+	// meant off could record a hot camera (arc-2 review #4)
+	if got := padTile(d.Rows, KeyCfgWebcam+":default"); got == nil || got.Style != module.StyleAccent {
+		t.Errorf("webcam as-is must be lit with no preset set: %+v", got)
+	}
+	for _, p := range renocore.WebcamPresets {
+		tile := padTile(d.Rows, KeyCfgWebcam+":"+p)
+		if tile == nil || tile.Act[1] != p || tile.Section != secCam {
+			t.Errorf("webcam preset %q button = %+v", p, tile)
+		}
+	}
+
+	// a stale inventory keeps its buttons but says so on the OBS key: a
+	// cached enumeration beats booting cold with nothing selectable
+	m.inventory.At = m.now().Add(-2 * invStale)
+	d = m.recorderData()
+	if probe = padTile(d.Rows, KeyActProbe); probe == nil || !strings.Contains(probe.Value, "stale") {
+		t.Errorf("stale inventory must offer re-probe: %+v", probe)
+	}
+	if padTile(d.Rows, KeyCfgAudio+":uid-mbp") == nil {
+		t.Errorf("stale inventory must keep its device buttons: %+v", d.Rows)
 	}
 }
 
-// The script's read-only config row shows ONLY while the scripted run
-// is live: with the script merely staged, a record tap arms an AD HOC
-// run with the pending knobs, so the ad hoc menus must show (displaying
-// the script's config there would lie about what is about to record).
+// Every switch restarts the bus. An in-memory-only inventory meant the pad
+// came back COLD after every system update, with the device bands gone --
+// which is the ad hoc surface, so losing it loses the feature.
+func TestObsInventorySurvivesRestart(t *testing.T) {
+	m, script := testMod(t)
+	freshInv(t, m)
+	if padTile(m.recorderData().Rows, KeyCfgAudio+":uid-mbp") == nil {
+		t.Fatal("probed inventory must produce device buttons")
+	}
+
+	next := &Mod{now: m.now, stateDir: filepath.Dir(script)}
+	next.recoverInventory()
+	if next.inventory == nil {
+		t.Fatal("inventory cache did not survive the restart")
+	}
+	if got := padTile(next.recorderData().Rows, KeyCfgAudio+":uid-mbp"); got == nil {
+		t.Errorf("recovered inventory must rebuild the device buttons: %+v", next.recorderData().Rows)
+	}
+	if got := padTile(next.recorderData().Rows, KeyActProbe); got == nil || got.Value != "32.2.0" {
+		t.Errorf("recovered pad must not read cold: %+v", got)
+	}
+}
+
+// The script's read-only config shows ONLY while the scripted run is live:
+// with the script merely staged, a record tap arms an AD HOC run with the
+// pending knobs, so the ad hoc bands must show (displaying the script's
+// config there would lie about what is about to record).
 func TestRecorderConfigRowsScripted(t *testing.T) {
 	m, _ := testMod(t)
 	freshInv(t, m)
@@ -308,36 +333,31 @@ func TestRecorderConfigRowsScripted(t *testing.T) {
 	}
 	ctl(t, m, "load", path)
 
-	// staged but not started: the ad hoc config rows show (a tap arms
-	// ad hoc, not the script)
 	d := m.recorderData()
-	sawMenus := false
-	for _, r := range d.Rows {
-		if r.Key == KeyCfgScreens || r.Key == KeyCfgAudio || r.Key == KeyCfgWebcam {
-			sawMenus = true
-		}
-		if r.Key == "config" {
-			t.Errorf("staged-only script leaked its config row: %+v", r)
-		}
+	if padTile(d.Rows, KeyCfgAudio+":default") == nil || padTile(d.Rows, KeyCfgWebcam+":default") == nil {
+		t.Errorf("staged-only view must show the ad hoc bands: %+v", d.Rows)
 	}
-	if !sawMenus {
-		t.Error("staged-only view must show the ad hoc config menus")
+	if tile := padTile(d.Rows, KeyCfgScript); tile != nil {
+		t.Errorf("staged-only script leaked its config tile: %+v", tile)
 	}
 
-	// live scripted run: the script's config shows read-only, menus gone
+	// live scripted run: the script's config shows read-only, bands gone
 	ctl(t, m, "start")
 	d = m.recorderData()
-	sawScript := false
-	for _, r := range d.Rows {
-		if r.Key == KeyCfgScreens || r.Key == KeyCfgAudio || r.Key == KeyCfgWebcam {
-			t.Errorf("scripted live view leaked config menus: %+v", r)
-		}
-		if r.Key == "config" && strings.Contains(r.Value, "audio none") {
-			sawScript = true
+	for _, key := range []string{KeyCfgAudio + ":default", KeyCfgWebcam + ":default", KeyCfgScreens + ":uuid-d"} {
+		if tile := padTile(d.Rows, key); tile != nil {
+			t.Errorf("scripted live view leaked %s: %+v", key, tile)
 		}
 	}
-	if !sawScript {
+	script := padTile(d.Rows, KeyCfgScript)
+	if script == nil || !strings.Contains(script.Value, "audio none") {
 		t.Errorf("live scripted view must show the script config: %+v", d.Rows)
+	}
+	if len(script.Act) > 0 || len(script.Menu) > 0 {
+		t.Errorf("the script config is a readout, not a button: %+v", script)
+	}
+	if padTile(d.Rows, KeyActEndRun) == nil {
+		t.Error("a live run must keep its end-run button")
 	}
 }
 

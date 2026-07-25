@@ -44,7 +44,9 @@ func testMod(t *testing.T) (*Mod, string) {
 	t.Helper()
 	dir := t.TempDir()
 	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
-	m := &Mod{runsDir: filepath.Join(dir, "runs"), exe: "/inst/khudson"}
+	// dir stands in for <state>/reno: runs beneath it, the obs inventory
+	// cache alongside, exactly as paths.Resolve lays it out
+	m := &Mod{stateDir: dir, runsDir: filepath.Join(dir, "runs"), exe: "/inst/khudson"}
 	m.now = func() time.Time {
 		now = now.Add(time.Second)
 		return now
@@ -329,6 +331,11 @@ func rowsContain(rows []module.Row, sub string) bool {
 	for _, r := range rows {
 		if strings.Contains(r.Text, sub) || strings.Contains(r.Value, sub) {
 			return true
+		}
+		for _, sp := range r.Spans {
+			if strings.Contains(sp.Text, sub) {
+				return true
+			}
 		}
 	}
 	return false

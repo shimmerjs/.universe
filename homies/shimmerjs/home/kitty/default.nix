@@ -117,6 +117,7 @@ in
       "kitty_mod+cmd+enter" = "launch --location=vsplit --cwd=current"; # One beside the other
       "ctrl+shift+enter" = "launch --location=split --cwd=current"; # Dynamic based on the current split
       "ctrl+shift+r" = "layout_action rotate"; # Rotate orientation of active split
+      "ctrl+shift+e" = "layout_action equalize"; # Even out every split along each axis
 
       # Tab management
       "cmd+t" = "new_tab_with_cwd";
@@ -194,6 +195,10 @@ in
       macos_titlebar_color = "background";
 
       # Appearance
+      # vertical tab bar (kitty >= 0.48 takes left/right here); on a vertical
+      # edge tab_bar_margin_width is the margin ABOVE and BELOW the bar, and
+      # the bar sizes its width off the tab titles -- no explicit width knob
+      tab_bar_edge = "right";
       tab_bar_margin_width = "5.0";
       tab_bar_style = "powerline";
 
@@ -203,7 +208,9 @@ in
       font_family = "FiraCode Nerd Font Mono";
       disable_ligatures = "always"; # render ->, =>, !=, etc. as plain glyphs
 
-      enabled_layouts = "splits:split_axis=vertical,fat:bias=50;full_size=2,vertical";
+      # equalize_on_close keeps the survivors balanced instead of handing
+      # the closed window's space to whichever neighbour happened to abut it
+      enabled_layouts = "splits:split_axis=vertical;equalize_on_close=true,fat:bias=50;full_size=2,vertical";
 
       # Scrollback
       scrollback_lines = 5000;

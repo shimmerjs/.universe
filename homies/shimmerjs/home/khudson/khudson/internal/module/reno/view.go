@@ -23,10 +23,26 @@ const (
 	KeyActPrev     = "act:prev"
 	KeyActRecord   = "act:record"
 	KeyActProbe    = "act:probe"
+	KeyActEndRun   = "act:endrun"
 	KeyCfgScreens  = "cfg:screens"
 	KeyCfgAudio    = "cfg:audio"
 	KeyCfgWebcam   = "cfg:webcam"
+	KeyCfgScript   = "cfg:script"
 	KeyNotes       = "notes"
+	KeyHead        = "head"
+)
+
+// Recorder pad glyphs, nf-md from the HUD's Nerd Font. Escaped, not
+// literal: the source stays ASCII and the codepoint stays greppable.
+const (
+	glyphRecord = "\U000F044A" // nf-md-record
+	glyphStop   = "\U000F04DB" // nf-md-stop
+	glyphProbe  = "\U000F0450" // nf-md-refresh
+	glyphMic    = "\U000F036C" // nf-md-microphone
+	glyphMicOff = "\U000F036D" // nf-md-microphone_off
+	glyphCam    = "\U000F0567" // nf-md-video
+	glyphScreen = "\U000F0379" // nf-md-monitor
+	glyphScript = "\U000F0219" // nf-md-file_document
 )
 
 // presenterData renders the presenter view. Caller holds mu.
@@ -204,45 +220,82 @@ func (m *Mod) summaryRows() []module.Row {
 	return rows
 }
 
-// recorderData is the recorder view: run identity, the recording
-// transport (one-tap ad hoc record / stop), and the journaled recording
-// state. States are EXPLICIT -- armed intent, live, stopped-with-clip,
-// failed -- never a stale-looking healthy default (the OBS disconnect
-// hazard from the design's P1 preconditions).
+// recorderData is the recorder control pad: a header line of readouts
+// over one tile per pressable control. States are EXPLICIT -- armed
+// intent, live, stopped-with-clip, failed -- never a stale-looking
+// healthy default (the OBS disconnect hazard from the design's P1
+// preconditions). Readouts never become tiles: a button you cannot press
+// is a lie about the surface.
 func (m *Mod) recorderData() module.Data {
 	d := module.Data{Title: "reno rec"}
-	if m.journalErr != "" {
-		d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "journal: " + m.journalErr, Style: module.StyleWarn})
-	}
-	if m.run != nil {
-		d.Rows = append(d.Rows, m.recordingRows()...)
-	}
-	switch {
-	case m.run != nil && m.run.Live():
-		d.Rows = append(d.Rows,
-			module.Row{Kind: module.RowKV, Key: "run", Value: m.run.ID, Style: module.StyleAccent},
-			module.Row{Kind: module.RowKV, Key: "demo", Value: m.run.Demo},
-			module.Row{Kind: module.RowKV, Key: "workspace", Value: m.workspace(), Style: module.StyleDim})
-	case m.staged != nil:
-		d.Rows = append(d.Rows, module.Row{Kind: module.RowKV, Key: "loaded", Value: m.staged.Name})
-	default:
-		d.Rows = append(d.Rows, module.Row{Kind: module.RowText, Text: "no script, no run", Style: module.StyleDim})
-	}
-	d.Rows = append(d.Rows, module.Row{Kind: module.RowDivider})
-	d.Rows = append(d.Rows, m.configRows()...)
-	d.Rows = append(d.Rows, module.Row{Kind: module.RowDivider}, m.recordControlRow())
+	d.Rows = append(d.Rows, m.recorderHeadRows()...)
+	d.Rows = append(d.Rows, m.recorderTiles()...)
 	return d
 }
 
-// configRows renders the next run's recording config with the menus
-// that mutate it. Scripted recording runs read their config from the
-// script; the pending knobs then show read-only so a leftover ad hoc
-// config never looks armed.
-func (m *Mod) configRows() []module.Row {
-	// the script's config rows show only while the SCRIPTED run is live:
-	// with no live scripted run, a record tap arms an AD HOC run with the
-	// pending knobs, and displaying the script's config over that would
-	// lie about what is about to record (arc-2 review #6)
+// recorderHeadRows is the pad's readout header: the loud failures first,
+// then one dense status line. Caller holds mu.
+func (m *Mod) recorderHeadRows() []module.Row {
+	var rows []module.Row
+	if m.journalErr != "" {
+		rows = append(rows, module.Row{Kind: module.RowText,
+			Text: "journal: " + m.journalErr, Style: module.StyleWarn})
+	}
+	rec := m.recording()
+	if rec != nil && rec.Failed != "" {
+		rows = append(rows, module.Row{Kind: module.RowText,
+			Text: "recording FAILED: " + rec.Failed, Style: module.StyleWarn})
+	}
+
+	var spans []module.Span
+	add := func(key, value, style string) {
+		if value == "" {
+			return
+		}
+		if len(spans) > 0 {
+			spans = append(spans, module.Span{Text: "   "})
+		}
+		spans = append(spans,
+			module.Span{Text: key + " ", Style: module.StyleDim},
+			module.Span{Text: value, Style: style})
+	}
+	switch {
+	case m.run != nil && m.run.Live():
+		add("run", m.run.ID, module.StyleAccent)
+		add("demo", m.run.Demo, "")
+		add("clips", m.workspace(), module.StyleDim)
+	case m.staged != nil:
+		add("loaded", m.staged.Name, "")
+	default:
+		add("run", "none -- record arms an ad hoc one", module.StyleDim)
+	}
+	if rec != nil && !rec.StoppedAt.IsZero() && rec.Output != "" {
+		add("clip", filepath.Base(rec.Output), module.StyleAccent)
+	}
+	if m.notesPath != "" {
+		add("notes", filepath.Base(m.notesPath), module.StyleDim)
+	}
+	return append(rows, module.Row{Kind: module.RowSpans, Key: KeyHead, Spans: spans})
+}
+
+// Pad section names; the dock draws each as a labeled band of buttons.
+const (
+	secTransport = "transport"
+	secScreens   = "screens"
+	secMic       = "mic"
+	secCam       = "cam"
+)
+
+// recorderTiles is the pad's button set. Every CHOICE is its own button --
+// each display, each microphone, each webcam preset -- so selecting one is
+// a single tap on a lit target instead of a popover you aim at twice.
+// Caller holds mu.
+func (m *Mod) recorderTiles() []module.Row {
+	tiles := []module.Row{m.recordTile()}
+
+	// a scripted recording run reads its config FROM the script: the ad
+	// hoc knobs would lie about what is about to record, so the script's
+	// config shows as one unpressable readout instead (arc-2 review #6)
 	if m.staged != nil && m.staged.Record &&
 		m.run != nil && m.run.Live() && m.run.Demo == m.staged.Name {
 		v := "from script"
@@ -251,73 +304,158 @@ func (m *Mod) configRows() []module.Row {
 		} else if m.staged.Scene != "" {
 			v = "scene " + m.staged.Scene
 		}
-		return []module.Row{{Kind: module.RowKV, Key: "config", Value: v, Style: module.StyleDim}}
+		tiles = append(tiles, module.Row{Kind: module.RowPad, Section: secTransport,
+			Key: KeyCfgScript, Glyph: glyphScript, Text: "SCRIPTED", Value: v,
+			Style: module.StyleDim})
+		return m.appendEndRun(tiles)
 	}
+
+	tiles = append(tiles, m.probeTile())
+	tiles = m.appendEndRun(tiles)
+
 	inv := m.inventory
-	if inv == nil || m.now().Sub(inv.At) > invStale {
-		label := "probe obs devices"
-		if inv != nil {
-			label = "re-probe obs devices (inventory stale)"
-		}
-		rows := m.pendingSummaryRows()
-		return append(rows, module.Row{Kind: module.RowText, Key: KeyActProbe,
-			Text: label, Style: module.StyleHighlight, Act: []string{actProbe}})
+	if inv == nil {
+		// nothing probed yet: the OBS button above is the whole surface,
+		// and saying so beats a band of buttons that select nothing
+		return append(tiles, module.Row{Kind: module.RowPad, Section: secScreens,
+			Key: "cfg:unprobed", Text: "probe OBS first", Style: module.StyleDim})
 	}
 
-	screens := module.Row{Kind: module.RowKV, Key: KeyCfgScreens, Value: "obs as-is",
-		Menu: m.screenMenu(inv)}
-	if len(m.pending.Screens) > 0 {
-		var sel []string
-		for _, s := range m.pending.Screens {
-			sel = append(sel, screenLabel(inv, s))
-		}
-		screens.Value = strings.Join(sel, " + ")
-		screens.Style = module.StyleAccent
-	}
-	audio := module.Row{Kind: module.RowKV, Key: KeyCfgAudio, Value: "obs as-is",
-		Menu: m.audioMenu(inv)}
-	if m.pending.Audio != "" {
-		audio.Value = audioLabel(inv, m.pending.Audio)
-		audio.Style = module.StyleAccent
-	}
-	webcam := module.Row{Kind: module.RowKV, Key: KeyCfgWebcam, Value: "obs as-is",
-		Menu: m.webcamMenu()}
-	if m.pending.Webcam != "" {
-		webcam.Value = m.pending.Webcam
-		webcam.Style = module.StyleAccent
-	}
-	rows := []module.Row{screens, audio, webcam}
-	if m.notesPath != "" {
-		rows = append(rows, module.Row{Kind: module.RowKV, Key: KeyNotes,
-			Value: filepath.Base(m.notesPath), Style: module.StyleDim})
-	}
-	return rows
-}
-
-// pendingSummaryRows shows a config set before any probe (CLI-driven):
-// honest even without menus.
-func (m *Mod) pendingSummaryRows() []module.Row {
-	if m.pending.Empty() {
-		return nil
-	}
-	return []module.Row{{Kind: module.RowKV, Key: "config",
-		Value: m.pending.Summary(), Style: module.StyleAccent}}
-}
-
-func (m *Mod) screenMenu(inv *renocore.ObsInventory) []module.Act {
-	var items []module.Act
 	for _, it := range inv.Screens {
-		label := it.Name
+		t := module.Row{Kind: module.RowPad, Section: secScreens,
+			Key: KeyCfgScreens + ":" + it.Value, Glyph: glyphScreen, Text: it.Name,
+			Act: []string{actCfgScreen, it.Value}}
 		for _, s := range m.pending.Screens {
 			if s.Display == it.Value {
-				label = "[x] " + label
+				t.Style = module.StyleAccent
+				if s.Region != nil {
+					t.Value = s.Region.String()
+				}
 				break
 			}
 		}
-		items = append(items, module.Act{Label: label,
-			Argv: []string{actCfgScreen, it.Value}, Section: "screens"})
+		tiles = append(tiles, t)
 	}
-	return items
+
+	// "obs as-is" clears the knob (no scene reconciliation) while "MUTE"
+	// forces every non-reno input silent -- different promises, so they
+	// stay different buttons (arc-2 review #4, the webcam off/as-is split)
+	tiles = append(tiles,
+		m.choiceTile(secMic, KeyCfgAudio+":default", "obs as-is", glyphMic,
+			actCfgAudio, cfgDefault, m.pending.Audio == ""),
+		m.choiceTile(secMic, KeyCfgAudio+":none", "MUTE", glyphMicOff,
+			actCfgAudio, renocore.AudioNone, m.pending.Audio == renocore.AudioNone))
+	for _, it := range inv.Mics {
+		tiles = append(tiles, m.choiceTile(secMic, KeyCfgAudio+":"+it.Value, deviceLabel(it.Name),
+			glyphMic, actCfgAudio, it.Value, m.pending.Audio == it.Value))
+	}
+
+	tiles = append(tiles, m.choiceTile(secCam, KeyCfgWebcam+":default", "obs as-is",
+		glyphCam, actCfgWebcam, cfgDefault, m.pending.Webcam == ""))
+	for _, p := range renocore.WebcamPresets {
+		tiles = append(tiles, m.choiceTile(secCam, KeyCfgWebcam+":"+p, p,
+			glyphCam, actCfgWebcam, p, m.pending.Webcam == p))
+	}
+	return tiles
+}
+
+// deviceLabel trims the noise OBS reports in device names: a key is ~18
+// cells wide, and "MacBook Pro Microphone" spends four of them saying
+// what the MIC band already said.
+func deviceLabel(name string) string {
+	for _, suffix := range []string{" Microphone", " Camera", " Audio Device"} {
+		if trimmed := strings.TrimSuffix(name, suffix); trimmed != name && trimmed != "" {
+			return trimmed
+		}
+	}
+	return name
+}
+
+// choiceTile is one button in a pick-one band: lit when it is the live
+// selection, plain otherwise.
+func (m *Mod) choiceTile(section, key, label, glyph, act, value string, on bool) module.Row {
+	t := module.Row{Kind: module.RowPad, Section: section, Key: key,
+		Glyph: glyph, Text: label, Act: []string{act, value}}
+	if on {
+		t.Style = module.StyleAccent
+	}
+	return t
+}
+
+// recordTile is the transport button: one tap arms an ad hoc run and
+// starts OBS, or stops the recording that is live. Caller holds mu.
+func (m *Mod) recordTile() module.Row {
+	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActRecord,
+		Glyph: glyphRecord, Text: "REC", Value: "ready",
+		Style: module.StyleHighlight, Act: []string{actRecord}}
+	rec := m.recording()
+	switch {
+	case rec.Active():
+		t.Glyph, t.Text = glyphStop, "STOP"
+		t.Style, t.Value = module.StyleWarn, fmtClock(m.now().Sub(rec.StartedAt))
+	case rec != nil && rec.Failed != "":
+		t.Value = "retry"
+	case rec != nil && rec.StoppedAt.IsZero():
+		t.Value = "arming"
+	}
+	return t
+}
+
+// probeTile re-enumerates the OBS devices behind the choice bands. It also
+// boots OBS, so it stays a deliberate tap and never an automatic poll.
+func (m *Mod) probeTile() module.Row {
+	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActProbe,
+		Glyph: glyphProbe, Text: "OBS", Value: "cold",
+		Style: module.StyleHighlight, Act: []string{actProbe}}
+	inv := m.inventory
+	if inv == nil {
+		return t
+	}
+	t.Value = inv.ObsVersion
+	if m.now().Sub(inv.At) > invStale {
+		t.Value = inv.ObsVersion + " stale"
+		return t
+	}
+	t.Style = ""
+	return t
+}
+
+// appendEndRun adds the close-the-run button, but only while one is live:
+// an inert tile reads as a broken one, so the pad loses the button rather
+// than greying it.
+func (m *Mod) appendEndRun(tiles []module.Row) []module.Row {
+	if m.run == nil || !m.run.Live() {
+		return tiles
+	}
+	return append(tiles, module.Row{Kind: module.RowPad, Section: secTransport,
+		Key: KeyActEndRun, Glyph: glyphStop, Text: "END RUN", Value: m.run.Demo,
+		Style: module.StyleWarn, Act: []string{actStop}})
+}
+
+// recording is the live run's recording state, nil-safe for every
+// no-run branch. Caller holds mu.
+func (m *Mod) recording() *renocore.RecordingState {
+	if m.run == nil {
+		return nil
+	}
+	return m.run.Recording
+}
+
+func (m *Mod) pendingAudioLabel() string {
+	if m.pending.Audio == "" {
+		return "obs as-is"
+	}
+	if inv := m.inventory; inv != nil {
+		return audioLabel(inv, m.pending.Audio)
+	}
+	return m.pending.Audio
+}
+
+func (m *Mod) pendingWebcamLabel() string {
+	if m.pending.Webcam == "" {
+		return "obs as-is"
+	}
+	return m.pending.Webcam
 }
 
 func (m *Mod) audioMenu(inv *renocore.ObsInventory) []module.Act {
@@ -345,20 +483,6 @@ func (m *Mod) webcamMenu() []module.Act {
 	return items
 }
 
-// screenLabel resolves a selection back to its display name for the
-// row; the raw value stands in when the inventory moved on.
-func screenLabel(inv *renocore.ObsInventory, s renocore.ScreenSel) string {
-	for _, it := range inv.Screens {
-		if it.Value == s.Display {
-			if s.Region != nil {
-				return it.Name + " (" + s.Region.String() + ")"
-			}
-			return it.Name
-		}
-	}
-	return s.String()
-}
-
 func audioLabel(inv *renocore.ObsInventory, q string) string {
 	if q == renocore.AudioNone {
 		return "none (mute all)"
@@ -369,41 +493,6 @@ func audioLabel(inv *renocore.ObsInventory, q string) string {
 		}
 	}
 	return q
-}
-
-// recordControlRow is the transport's one tap: record (arming an ad hoc
-// run when nothing is live) or stop-recording while one is live.
-func (m *Mod) recordControlRow() module.Row {
-	if m.run != nil && m.run.Recording.Active() {
-		return module.Row{Kind: module.RowText, Key: KeyActRecord, Text: "stop recording",
-			Style: module.StyleWarn, Act: []string{actRecord}}
-	}
-	return module.Row{Kind: module.RowText, Key: KeyActRecord, Text: "record",
-		Style: module.StyleHighlight, Act: []string{actRecord}}
-}
-
-// recordingRows renders the journaled recording state, explicitly per
-// phase. Caller holds mu; m.run is non-nil.
-func (m *Mod) recordingRows() []module.Row {
-	rec := m.run.Recording
-	if rec == nil {
-		return nil
-	}
-	switch {
-	case rec.Failed != "":
-		return []module.Row{{Kind: module.RowText, Text: "recording FAILED: " + rec.Failed, Style: module.StyleWarn}}
-	case rec.Active():
-		return []module.Row{{Kind: module.RowKV, Key: "recording",
-			Value: fmtClock(m.now().Sub(rec.StartedAt)), Style: module.StyleWarn}}
-	case !rec.StoppedAt.IsZero():
-		out := rec.Output
-		if out == "" {
-			out = "(no output path noted)"
-		}
-		return []module.Row{{Kind: module.RowKV, Key: "clip", Value: out, Style: module.StyleAccent}}
-	default:
-		return []module.Row{{Kind: module.RowKV, Key: "recording", Value: "armed (start pending)", Style: module.StyleDim}}
-	}
 }
 
 // heatFrac clamps a budget fraction into PctHeat's live range; PctHeat

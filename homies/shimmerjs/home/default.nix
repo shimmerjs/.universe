@@ -2,6 +2,7 @@
 {
   imports = [
     ../../../modules/home-manager
+    ./bat
     ./git.nix
     ./dev.nix
     ./worktrunk.nix

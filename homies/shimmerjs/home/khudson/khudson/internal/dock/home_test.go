@@ -123,12 +123,12 @@ func TestHomeRegionGeometry(t *testing.T) {
 	}
 }
 
-// The home-no-kb variant (the strip flip's collapsed layout, region math
-// mirroring edge.cue at the Edge's 196x24): no kb-live region anywhere,
-// claude-panel takes the freed width (148 = home's 73 + kb's 75). Both
-// layouts run at the full 196-col body -- no outer frame, no per-view
-// return column.
-func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
+// The home-logi variant (region math mirroring edge.cue at the Edge's
+// 196x24): the kb column's widget swaps for the MX viewer at the SAME rect,
+// every other region holding its place -- the swipe-up swap redraws one
+// column, not the screen. Both layouts run at the full 196-col body: no
+// outer frame, no per-view return column.
+func TestHomeLogiSwapsTheKBColumn(t *testing.T) {
 	m := &model{
 		cfg: &config.Config{
 			Widgets: map[string]config.Widget{
@@ -136,6 +136,8 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 					Render: config.Render{Kind: "chrome", Module: "kb-live"}},
 				"claude-panel": {ID: "claude-panel", Title: "claude",
 					Render: config.Render{Kind: "native", Module: "claude-panel"}},
+				"logiretch-view": {ID: "logiretch-view", Title: "logiretch",
+					Render: config.Render{Kind: "native", Module: "logiretch"}},
 				"dock-rail": {ID: "dock-rail", Title: "dock", Chrome: true,
 					Render: config.Render{Kind: "native", Module: "dock-mirror"}},
 				"resources": {ID: "resources", Title: "resources",
@@ -148,8 +150,9 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 					{Widget: "dock-rail", Edge: "top", Size: 8},
 					{Widget: "resources", Edge: "fill"},
 				}},
-				"home-no-kb": {Kind: "home", Regions: []config.Region{
-					{Widget: "claude-panel", Edge: "right", Size: 148},
+				"home-logi": {Kind: "home", Regions: []config.Region{
+					{Widget: "logiretch-view", Edge: "right", Size: 75, SwipeDown: "home"},
+					{Widget: "claude-panel", Edge: "right", Size: 73},
 					{Widget: "dock-rail", Edge: "top", Size: 8},
 					{Widget: "resources", Edge: "fill"},
 				}},
@@ -174,43 +177,44 @@ func TestHomeNoKBClaudeColumnWidens(t *testing.T) {
 		return false
 	}
 
-	// expanded home (the config default): 196x22 body, kb column 75 cols,
-	// claude 73
+	// home (the config default): 196x22 body, kb column 75 cols, claude 73
 	v := m.View()
 	if lines := strings.Split(v.Content, "\n"); len(lines) != 24 {
 		t.Fatalf("home view lines = %d, want 24", len(lines))
 	}
-	kbRegion := rect{121, 0, 75, 23}
-	claudeExpanded := rect{48, 0, 73, 23}
-	if !hasHit(kbRegion) {
-		t.Fatalf("expanded home missing the kb region rect %+v", kbRegion)
+	kbColumn := rect{121, 0, 75, 23}
+	claudeColumn := rect{48, 0, 73, 23}
+	if !hasHit(kbColumn) {
+		t.Fatalf("home missing the kb region rect %+v", kbColumn)
 	}
-	if !hasHit(claudeExpanded) {
-		t.Fatalf("expanded home missing the claude rect %+v", claudeExpanded)
+	if !hasHit(claudeColumn) {
+		t.Fatalf("home missing the claude rect %+v", claudeColumn)
 	}
 
-	// collapsed variant: claude at 148 cols, no kb region
-	m.layout = "home-no-kb"
+	// swapped variant: the MX viewer inherits the kb column's exact rect
+	m.layout = "home-logi"
 	m.resetLayout()
 	v = m.View()
 	lines := strings.Split(v.Content, "\n")
 	if len(lines) != 24 {
-		t.Fatalf("home-no-kb view lines = %d, want 24", len(lines))
+		t.Fatalf("home-logi view lines = %d, want 24", len(lines))
 	}
 	for i, l := range lines[:22] {
 		if w := lipgloss.Width(l); w != 196 {
 			t.Errorf("line %d width = %d, want 196", i, w)
 		}
 	}
-	claudeCollapsed := rect{48, 0, 148, 23}
-	if !hasHit(claudeCollapsed) {
-		t.Fatalf("home-no-kb missing the widened claude rect %+v", claudeCollapsed)
+	if !hasHit(kbColumn) {
+		t.Fatalf("home-logi missing the swapped column rect %+v", kbColumn)
 	}
-	if hasHit(kbRegion) {
-		t.Fatal("home-no-kb still places the kb region")
+	if !hasHit(claudeColumn) {
+		t.Fatalf("home-logi moved the claude rect off %+v", claudeColumn)
 	}
-	if claudeCollapsed.w <= claudeExpanded.w {
-		t.Fatal("claude column did not widen against expanded home")
+	// the swap binds swipe-down back to home over that column alone
+	if len(m.regionSwipes) != 1 || m.regionSwipes[0].area != kbColumn ||
+		m.regionSwipes[0].down != "home" {
+		t.Fatalf("home-logi swipe table = %+v, want swipe-down home at %+v",
+			m.regionSwipes, kbColumn)
 	}
 }
 

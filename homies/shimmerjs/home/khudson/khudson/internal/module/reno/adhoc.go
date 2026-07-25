@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -95,6 +96,63 @@ func (m *Mod) setNotesLocked(args []string) error {
 	}
 	m.notes, m.notesPath = string(body), path
 	return nil
+}
+
+// inventoryFile is the probed OBS enumeration, cached on disk. Every
+// switch restarts the bus, and an in-memory-only inventory meant the
+// recorder pad came back COLD after every system update -- the device
+// menus are the ad hoc controls, so losing them loses the surface.
+// Re-probing costs an OBS launch, so it must stay a deliberate tap.
+const inventoryFile = "inventory.json"
+
+// recoverInventory reloads the cached probe. A cache older than invStale
+// still loads: the pad renders it and offers a re-probe (the At stamp
+// carries the age), which beats booting cold with dead menus.
+func (m *Mod) recoverInventory() {
+	if m.stateDir == "" {
+		return
+	}
+	body, err := os.ReadFile(filepath.Join(m.stateDir, inventoryFile))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("khudson reno: obs inventory cache: %v", err)
+		}
+		return
+	}
+	var inv renocore.ObsInventory
+	if err := json.Unmarshal(body, &inv); err != nil {
+		log.Printf("khudson reno: obs inventory cache: %v", err)
+		return
+	}
+	m.inventory = &inv
+	log.Printf("khudson reno: obs inventory cache: %d displays, %d mics, %d cams (%s old)",
+		len(inv.Screens), len(inv.Mics), len(inv.Cams), m.now().Sub(inv.At).Round(time.Second))
+}
+
+// saveInventoryLocked caches the probe for the next bus. Best effort: a
+// failed write costs a re-probe, never the running surface. Caller holds
+// mu.
+func (m *Mod) saveInventoryLocked() {
+	if m.stateDir == "" || m.inventory == nil {
+		return
+	}
+	body, err := json.Marshal(m.inventory)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(m.stateDir, 0o700); err != nil {
+		log.Printf("khudson reno: obs inventory cache: %v", err)
+		return
+	}
+	// write-rename: a torn cache would fail the next unmarshal and boot cold
+	tmp := filepath.Join(m.stateDir, inventoryFile+".next")
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		log.Printf("khudson reno: obs inventory cache: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, filepath.Join(m.stateDir, inventoryFile)); err != nil {
+		log.Printf("khudson reno: obs inventory cache: %v", err)
+	}
 }
 
 // handleCfgActLocked is the recorder view's config-menu dispatch.

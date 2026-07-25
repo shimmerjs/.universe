@@ -22,13 +22,9 @@ import (
 )
 
 // stripModel is a 196x24 home model with a strip block: one stub tab, one
-// real home-kind target, one deliberate stub, the flip chevron pair (home
-// expanded, home-no-kb collapsed), and the caffeinate cup.
+// real home-kind target, one deliberate stub, and the caffeinate cup.
 func stripModel() *model {
 	m := newHomeModel(196, 24)
-	m.cfg.Layouts["home-no-kb"] = config.Layout{Kind: "home", Regions: []config.Region{
-		{Widget: "cpumem", Edge: "fill"},
-	}}
 	m.cfg.Strip = &config.Strip{
 		Entries: []config.StripEntry{
 			{Label: "kb", Target: "keyboard"}, // no keyboard layout in the fixture: stub
@@ -36,7 +32,6 @@ func stripModel() *model {
 			{Label: "sys", Target: "sys"},     // stub
 		},
 		Toggles: []config.StripToggle{{Kind: "caffeinate"}},
-		Flip:    &config.StripFlip{Expanded: "home", Collapsed: "home-no-kb"},
 	}
 	return m
 }
@@ -90,9 +85,6 @@ func TestStripGeometry(t *testing.T) {
 	if !strings.Contains(ansi.Strip(bot), batUnknownGlyph) {
 		t.Error("bottom row missing the battery placeholder glyph (no logi frame yet)")
 	}
-	if !strings.Contains(ansi.Strip(bot), stripCollapseGlyph) {
-		t.Error("bottom row missing the flip chevron (home is the expanded layout)")
-	}
 	plain := ansi.Strip(bot)
 	for _, sub := range []string{"home", "bus absent"} {
 		if !strings.Contains(plain, sub) {
@@ -128,8 +120,8 @@ func TestStripActiveTabNotch(t *testing.T) {
 }
 
 // Strip hit zones ride the body table's tail: icon, the three tabs, the
-// flip chevron, the cup, the always-present battery readout, then the
-// whole-strip consume rect last -- no overlap among the specific rects.
+// cup, the always-present battery readout, then the whole-strip consume
+// rect last -- no overlap among the specific rects.
 // (No kitty_mod cell here: stripModel leaves Strip.KittyMod empty.)
 func TestStripHitTable(t *testing.T) {
 	m := stripModel()
@@ -139,9 +131,8 @@ func TestStripHitTable(t *testing.T) {
 		{3, 23, 4, 1},   // tab: kb (padded label)
 		{7, 23, 6, 1},   // tab: clod
 		{13, 23, 5, 1},  // tab: sys
-		{18, 23, 3, 1},  // flip chevron glyph
-		{22, 23, 3, 1},  // caffeinate cup glyph (after the 1-col gap)
-		{25, 23, 10, 1}, // battery readout cell (always-present chrome)
+		{19, 23, 3, 1},  // caffeinate cup glyph (after the 1-col gap)
+		{22, 23, 10, 1}, // battery readout cell (always-present chrome)
 		{0, 23, 196, 1}, // whole-strip consume rect, last
 	}
 	if len(m.hits) < len(want) {
@@ -200,10 +191,7 @@ func TestStripSurvivesCompositor(t *testing.T) {
 	if got := cellRow(23, 3, 18); got != " kb  clod  sys " {
 		t.Errorf("tab label cells = %q, want the padded labels", got)
 	}
-	if got := cellRow(23, 18, 21); !strings.Contains(got, stripCollapseGlyph) {
-		t.Errorf("chevron cells = %q, want the collapse chevron inside its hit rect", got)
-	}
-	if got := cellRow(23, 22, 25); !strings.Contains(got, cupOffGlyph) {
+	if got := cellRow(23, 19, 22); !strings.Contains(got, cupOffGlyph) {
 		t.Errorf("cup cells = %q, want the cup glyph inside its hit rect", got)
 	}
 	// clock flush right on the bottom row
@@ -313,7 +301,7 @@ func TestStripTaps(t *testing.T) {
 	m := stripModel()
 	m.View()
 
-	if !m.resolveTap(23, 23) {
+	if !m.resolveTap(20, 23) {
 		t.Fatal("tap on the cup not consumed")
 	}
 	if m.lastGst != "caffeinate: bus absent" {
@@ -363,71 +351,6 @@ func TestStripTaps(t *testing.T) {
 	}
 	if m.layout != "home" {
 		t.Fatalf("bare strip tap changed layout to %q", m.layout)
-	}
-}
-
-// The flip chevron renders on both sides of the pair with the right glyph,
-// and its tap flips to the other side (bus absent: dock-local switch, the
-// TestStripTaps precedent): collapse on the expanded layout hides the kb
-// column, expand on the collapsed layout restores it.
-func TestStripFlipChevron(t *testing.T) {
-	m := stripModel()
-	bot := stripLines(t, m)
-	plain := ansi.Strip(bot)
-	if !strings.Contains(plain, stripCollapseGlyph) {
-		t.Error("expanded layout missing the collapse chevron")
-	}
-	if strings.Contains(plain, stripExpandGlyph) {
-		t.Error("expanded layout renders the expand chevron")
-	}
-
-	// chevron slot: home icon (3) + the padded tab labels (15) -> x 18
-	if !m.resolveTap(19, 23) {
-		t.Fatal("collapse tap not consumed")
-	}
-	if m.layout != "home-no-kb" {
-		t.Fatalf("collapse tap landed on %q, want home-no-kb", m.layout)
-	}
-
-	bot = stripLines(t, m)
-	plain = ansi.Strip(bot)
-	if !strings.Contains(plain, stripExpandGlyph) {
-		t.Error("collapsed layout missing the expand chevron")
-	}
-	if strings.Contains(plain, stripCollapseGlyph) {
-		t.Error("collapsed layout renders the collapse chevron")
-	}
-	if !m.resolveTap(19, 23) {
-		t.Fatal("expand tap not consumed")
-	}
-	if m.layout != "home" {
-		t.Fatalf("expand tap landed on %q, want home", m.layout)
-	}
-}
-
-// No chevron outside the pair: another layout renders neither glyph and the
-// chevron slot falls to the toggles; a flip-less config never renders one.
-func TestStripFlipAbsent(t *testing.T) {
-	m := stripModel()
-	m.layout = "hub"
-	m.resetLayout()
-	bot := stripLines(t, m)
-	plain := ansi.Strip(bot)
-	if strings.Contains(plain, stripCollapseGlyph) || strings.Contains(plain, stripExpandGlyph) {
-		t.Error("chevron rendered on a layout outside the flip pair")
-	}
-	for _, h := range m.hits {
-		if h.area == (rect{18, 23, 3, 1}) {
-			t.Error("chevron hit rect registered outside the flip pair")
-		}
-	}
-
-	m = stripModel()
-	m.cfg.Strip.Flip = nil
-	bot = stripLines(t, m)
-	plain = ansi.Strip(bot)
-	if strings.Contains(plain, stripCollapseGlyph) || strings.Contains(plain, stripExpandGlyph) {
-		t.Error("chevron rendered without a flip block")
 	}
 }
 

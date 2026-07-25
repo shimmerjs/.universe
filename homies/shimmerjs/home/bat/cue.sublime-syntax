@@ -1,0 +1,184 @@
+%YAML 1.2
+---
+# CUE (cuelang.org), for bat/syntect. Hand-written: there is no upstream
+# .sublime-syntax for CUE, and the two on GitHub under "cue" are CD cue
+# SHEETS -- a different format that happens to share the extension.
+#
+# Grammar reference: https://cuelang.org/docs/references/spec/
+# Known deviations, all cosmetic:
+#  - `#`-delimited raw strings are recognised up to three hashes, and the
+#    hash count is not carried into the body, so `\(x)` inside `#"..."#`
+#    highlights as interpolation when CUE would need `\#(x)`.
+#  - a multiline string's closing delimiter is matched without checking
+#    the indentation CUE strips.
+name: CUE
+file_extensions:
+  - cue
+scope: source.cue
+
+variables:
+  ident: '[[:alpha:]_$][[:alnum:]_$]*'
+  # a definition is #Name or _#Name; a hidden field is _name
+  def_ident: '_?#{{ident}}'
+
+contexts:
+  main:
+    - include: comments
+    - include: attributes
+    - include: strings
+    - include: numbers
+    - include: keywords
+    - include: types
+    - include: labels
+    - include: operators
+    - include: identifiers
+
+  comments:
+    # CUE has line comments only -- no /* */ form
+    - match: //
+      scope: punctuation.definition.comment.cue
+      push:
+        - meta_scope: comment.line.double-slash.cue
+        - match: $\n?
+          pop: true
+
+  attributes:
+    - match: '(@){{ident}}(?=\()'
+      scope: entity.other.attribute-name.cue
+      captures:
+        1: punctuation.definition.annotation.cue
+
+  keywords:
+    - match: \b(package|import)\b
+      scope: keyword.control.import.cue
+    - match: \b(if|for|in|let)\b
+      scope: keyword.control.cue
+    - match: \b(true|false|null)\b
+      scope: constant.language.cue
+    - match: \b(len|close|and|or|div|mod|quo|rem)\b(?=\()
+      scope: support.function.builtin.cue
+    # bottom and top
+    - match: '_\|_'
+      scope: constant.language.bottom.cue
+    - match: '\b_\b'
+      scope: constant.language.top.cue
+
+  types:
+    - match: \b(bool|string|bytes|rune|number|int|float|uint)\b
+      scope: storage.type.cue
+    - match: \b(u?int(8|16|32|64|128)|float(32|64))\b
+      scope: storage.type.cue
+
+  labels:
+    # definitions: #Name / _#Name, optionally optional (#Name?)
+    - match: '({{def_ident}})(\??)'
+      captures:
+        1: entity.name.type.cue
+        2: keyword.operator.optional.cue
+    # a field label followed by a colon; ? and ! are the optional and
+    # required markers
+    - match: '({{ident}})\s*([?!]?)\s*(:)'
+      captures:
+        1: entity.name.tag.cue
+        2: keyword.operator.optional.cue
+        3: punctuation.separator.key-value.cue
+    # quoted field labels: "foo": ...
+    - match: '("(?:[^"\\]|\\.)*")\s*([?!]?)\s*(:)'
+      captures:
+        1: entity.name.tag.quoted.cue
+        2: keyword.operator.optional.cue
+        3: punctuation.separator.key-value.cue
+
+  numbers:
+    # SI/IEC multipliers are part of the literal: 1Ki, 2M, 1.5Gi
+    - match: '\b\d[\d_]*(\.[\d_]*)?([eE][+-]?\d+)?(([KMGTPE]i?)|[KMGTPE])?\b'
+      scope: constant.numeric.cue
+    - match: '\b0[xX][0-9a-fA-F_]+\b'
+      scope: constant.numeric.hex.cue
+    - match: '\b0[oO][0-7_]+\b'
+      scope: constant.numeric.octal.cue
+    - match: '\b0[bB][01_]+\b'
+      scope: constant.numeric.binary.cue
+
+  strings:
+    # multiline forms first: """ and ''' must beat " and '
+    - match: '(#{0,3})"""'
+      scope: punctuation.definition.string.begin.cue
+      push:
+        - meta_scope: string.quoted.triple.cue
+        - match: '"""\1'
+          scope: punctuation.definition.string.end.cue
+          pop: true
+        - include: string-body
+    - match: "(#{0,3})'''"
+      scope: punctuation.definition.string.begin.cue
+      push:
+        - meta_scope: string.quoted.triple.bytes.cue
+        - match: "'''\\1"
+          scope: punctuation.definition.string.end.cue
+          pop: true
+        - include: string-body
+    - match: '(#{0,3})"'
+      scope: punctuation.definition.string.begin.cue
+      push:
+        - meta_scope: string.quoted.double.cue
+        - match: '"\1'
+          scope: punctuation.definition.string.end.cue
+          pop: true
+        - match: $\n?
+          pop: true
+        - include: string-body
+    # single quotes are BYTES in CUE, not an alternate string quote
+    - match: "(#{0,3})'"
+      scope: punctuation.definition.string.begin.cue
+      push:
+        - meta_scope: string.quoted.single.bytes.cue
+        - match: "'\\1"
+          scope: punctuation.definition.string.end.cue
+          pop: true
+        - match: $\n?
+          pop: true
+        - include: string-body
+
+  string-body:
+    - match: '\\#{0,3}\('
+      scope: punctuation.section.interpolation.begin.cue
+      push:
+        - meta_scope: meta.interpolation.cue
+        - clear_scopes: 1
+        - match: \)
+          scope: punctuation.section.interpolation.end.cue
+          pop: true
+        - include: main
+    - match: '\\#{0,3}(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|[0-7]{3}|[abfnrtv\\/''"])'
+      scope: constant.character.escape.cue
+
+  operators:
+    # unification and disjunction are THE cue operators; * marks a default
+    - match: '&&|\|\||[&|]'
+      scope: keyword.operator.lattice.cue
+    - match: '=~|!~|==|!=|<=|>=|[<>]'
+      scope: keyword.operator.comparison.cue
+    - match: '\.\.\.'
+      scope: keyword.operator.ellipsis.cue
+    - match: '[-+*/]|\bdiv\b|\bmod\b'
+      scope: keyword.operator.arithmetic.cue
+    - match: '[=?!]'
+      scope: keyword.operator.cue
+    - match: '[{}]'
+      scope: punctuation.section.braces.cue
+    - match: '[\[\]]'
+      scope: punctuation.section.brackets.cue
+    - match: '[()]'
+      scope: punctuation.section.parens.cue
+    - match: ','
+      scope: punctuation.separator.cue
+
+  identifiers:
+    # hidden fields and references: _name
+    - match: '\b_{{ident}}\b'
+      scope: variable.other.hidden.cue
+    - match: '{{ident}}(?=\s*\()'
+      scope: variable.function.cue
+    - match: '\b{{ident}}\b'
+      scope: variable.other.cue

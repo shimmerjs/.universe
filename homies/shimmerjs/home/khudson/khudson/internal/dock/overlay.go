@@ -380,9 +380,12 @@ func (m *model) fireOverlayItem(o *overlayState, it menuItem) {
 //	    destructive item, which execs only on a second explicit tap on the
 //	    Confirm rect (the 2s bus debounce is amplification protection, not
 //	    intent confirmation);
-//	(b) a tap inside the box but on no item (border/title/padding) stays
-//	    open -- fat-finger near-misses must not dismiss;
-//	(c) a tap outside the box dismisses.
+//	(b) a tap inside a MENU box but on no item (border/title/padding) stays
+//	    open -- fat-finger near-misses must not dismiss an item list;
+//	(c) a tap on an info bloom shrinks it back to its card (a quick second
+//	    tap converts to the monitor layout instead): nothing in it is
+//	    fireable, so the whole box is its own dismiss target;
+//	(d) a tap outside the box dismisses.
 func (m *model) overlayTap(x, y int) {
 	o := m.overlay
 	for i := range o.items {
@@ -406,11 +409,15 @@ func (m *model) overlayTap(x, y int) {
 		return
 	}
 	if o.anchor.contains(x, y) {
-		// an info bloom's quick second tap converts to the monitor layout
-		// (the window measures from the FIRST tap; a faster second tap
-		// converts pre-bloom via tapResources and never sees this path)
-		if o.info && time.Since(o.openedWall) < doubleTapWindow {
-			m.overlay = nil
+		if !o.info {
+			return
+		}
+		// the info bloom closes on any tap; inside the conversion window
+		// that tap is the double-tap's second press and lands on the monitor
+		// layout instead (the window measures from the FIRST tap -- a faster
+		// second tap converts pre-bloom via tapResources and never gets here)
+		m.overlay = nil
+		if time.Since(o.openedWall) < doubleTapWindow {
 			m.convertToMonitor()
 		}
 		return

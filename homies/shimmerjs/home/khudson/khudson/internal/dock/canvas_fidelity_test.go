@@ -105,7 +105,7 @@ func TestCanvasComposeFidelity(t *testing.T) {
 		carry []string // glyphs the frame must put on glass (width-gate permitting)
 	}{
 		{"strip", func(t *testing.T) *model { return stripModel() },
-			[]string{homeGlyph, stripCollapseGlyph, cupOffGlyph}},
+			[]string{homeGlyph, cupOffGlyph}},
 		{"strip-divergent-label", func(t *testing.T) *model {
 			m := stripModel()
 			m.cfg.Strip.Entries = append(m.cfg.Strip.Entries,

@@ -82,3 +82,116 @@ func TestSwipeOffStripNoops(t *testing.T) {
 		t.Fatalf("off-strip swipe navigated: %q", m.layout)
 	}
 }
+
+// Vertical swipes: the region the stroke STARTED in owns the direction,
+// with the layout's own target as the fallback. homeTestConfig's regions at
+// 196x24 place claude-hud across the top: {20,0,164,10}.
+func verticalSwipe(m *model, dir string, startCol, startRow int) {
+	m.handleBusMsg(proto.Msg{Type: proto.TypeGesture, Gesture: &proto.Gesture{
+		Kind: proto.GestureSwipe, Dir: dir, Cells: 8,
+		StartCol: startCol, StartRow: startRow,
+	}})
+}
+
+// bindRegionSwipe rebinds one of home's regions by widget id and renders so
+// the frame's swipe table exists (gestures resolve against the last frame).
+func bindRegionSwipe(t *testing.T, m *model, widget, up, down string) {
+	t.Helper()
+	l := m.cfg.Layouts["home"]
+	regs := make([]config.Region, len(l.Regions))
+	copy(regs, l.Regions)
+	found := false
+	for i := range regs {
+		if regs[i].Widget == widget {
+			regs[i].SwipeUp, regs[i].SwipeDown = up, down
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fixture has no %q region", widget)
+	}
+	l.Regions = regs
+	m.cfg.Layouts["home"] = l
+	m.renderHome(m.height - stripH)
+}
+
+func TestSwipeUpOnRegionNavigatesThatRegion(t *testing.T) {
+	m := newHomeModel(196, 24)
+	bindRegionSwipe(t, m, "claude-hud", "hub", "")
+
+	// starting outside the bound region: nothing bound, nothing happens
+	verticalSwipe(m, "up", 5, 5)
+	if m.layout != "home" {
+		t.Fatalf("swipe outside the region navigated: %q", m.layout)
+	}
+	if m.xition != nil {
+		t.Fatalf("unbound swipe opened a wash over %v", m.xition.area)
+	}
+
+	verticalSwipe(m, "up", 100, 5)
+	if m.layout != "hub" {
+		t.Fatalf("region swipe up: layout = %q, want hub", m.layout)
+	}
+	// the wash covers the region that changed, not the whole body
+	if m.xition == nil {
+		t.Fatal("region swipe opened no wash")
+	}
+	if want := (rect{20, 0, 164, 10}); m.xition.area != want {
+		t.Errorf("wash area = %+v, want %+v (the region's rect)", m.xition.area, want)
+	}
+}
+
+// A region binding only one direction leaves the other to the layout: the
+// column does not swallow the whole vertical axis.
+func TestSwipeRegionFallsBackToLayoutTarget(t *testing.T) {
+	m := newHomeModel(196, 24)
+	l := m.cfg.Layouts["home"]
+	l.SwipeDown = "hub"
+	m.cfg.Layouts["home"] = l
+	bindRegionSwipe(t, m, "claude-hud", "hub", "")
+
+	verticalSwipe(m, "down", 100, 5) // inside the up-only region
+	if m.layout != "hub" {
+		t.Fatalf("layout fallback: layout = %q, want hub", m.layout)
+	}
+	if m.xition == nil {
+		t.Fatal("layout swipe opened no wash")
+	}
+	// a layout-level swipe changes everything under the strip
+	if want := (rect{0, 0, 196, 23}); m.xition.area != want {
+		t.Errorf("wash area = %+v, want the whole body %+v", m.xition.area, want)
+	}
+}
+
+// The swipe table rides homeCache: a cache-hit frame must resolve swipes
+// against the regions actually on glass.
+func TestSwipeTableSurvivesHomeCache(t *testing.T) {
+	m := newHomeModel(196, 24)
+	bindRegionSwipe(t, m, "claude-hud", "hub", "")
+	m.View() // composes and memoizes the frame
+	if !m.homeCache.ok {
+		t.Fatal("home frame not memoized")
+	}
+	m.regionSwipes = nil
+	m.View() // cache hit: restores both frame tables
+	if len(m.regionSwipes) != 1 {
+		t.Fatalf("swipe table after cache hit = %d entries, want 1", len(m.regionSwipes))
+	}
+	verticalSwipe(m, "up", 100, 5)
+	if m.layout != "hub" {
+		t.Fatalf("cached-frame region swipe: layout = %q, want hub", m.layout)
+	}
+}
+
+// A swipe before the first frame has no table to resolve against; it must
+// fall back, not panic.
+func TestSwipeBeforeFirstFrame(t *testing.T) {
+	m := newHomeModel(196, 24)
+	l := m.cfg.Layouts["home"]
+	l.SwipeUp = "hub"
+	m.cfg.Layouts["home"] = l
+	verticalSwipe(m, "up", 100, 5)
+	if m.layout != "hub" {
+		t.Fatalf("pre-frame swipe: layout = %q, want hub", m.layout)
+	}
+}

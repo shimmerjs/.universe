@@ -88,6 +88,23 @@ type hitRegion struct {
 	weldTile bool
 }
 
+// regionSwipe is one home region's vertical-swipe binding at its rect on
+// glass: the swipe table's entry, the hitRegion sibling for gestures that
+// resolve by where the stroke STARTED rather than where it landed.
+type regionSwipe struct {
+	area     rect
+	up, down string
+}
+
+// target is the layout this binding navigates to for dir, "" when the
+// region leaves that direction to the layout.
+func (rs regionSwipe) target(dir string) string {
+	if dir == "down" {
+		return rs.down
+	}
+	return rs.up
+}
+
 // pressState is the touch currently held on a press-keyed element; nil
 // when no press is live. Cleared by the resolving gesture, backstopped by
 // pressHoldMax (a menu-less held release is silent recognizer-side).
@@ -159,10 +176,12 @@ func (m *model) resolveLongPress(x, y int) bool {
 	return false
 }
 
-// resetHits starts a fresh hit table; every layout renderer calls it before
-// appending its own targets, so the table always matches the frame on glass.
+// resetHits starts fresh frame tables (taps and region swipes); every layout
+// renderer calls it before appending its own targets, so the tables always
+// match the frame on glass.
 func (m *model) resetHits() {
 	m.hits = m.hits[:0]
+	m.regionSwipes = m.regionSwipes[:0]
 }
 
 // consumeTap is the no-op action: the region owns the tap, nothing fires.
@@ -201,6 +220,13 @@ type (
 	// bloomTickMsg is the deferred resources-bloom open at the double-tap
 	// debounce deadline.
 	bloomTickMsg time.Time
+	// xitionTickMsg advances the swipe wash one frame; the chain re-arms
+	// itself until the wash's last frame, then stops. gen is the wash it
+	// belongs to -- a retargeted wash drops its predecessor's ticks.
+	xitionTickMsg struct {
+		gen int
+		at  time.Time
+	}
 )
 
 type model struct {
@@ -264,6 +290,11 @@ type model struct {
 	// scratch by the layout renderer (via resetHits); the first containing
 	// rect wins
 	hits []hitRegion
+	// regionSwipes is the vertical-swipe table: one entry per placed region
+	// that binds a direction, rebuilt beside hits. A swipe resolves against
+	// the region its stroke STARTED in; an empty table (no bindings, or a
+	// swipe landing before the first frame) falls back to the layout target
+	regionSwipes []regionSwipe
 	// pressed is the touch currently held on a press-keyed element (touch
 	// acknowledgment); nil = none. overlayOriginKey is the pressKey of the
 	// element whose long-press opened the current menu -- the fired flash
@@ -309,6 +340,14 @@ type model struct {
 	// flashArmed idiom.
 	resPending      *pendingBloom
 	resPendingArmed bool
+
+	// xition is the live swipe wash (nil = none); xitionArmed is drained by
+	// Update into the wash's tick chain, the flashArmed idiom. xitionGen is
+	// the live chain's generation: a retargeting swipe bumps it and the
+	// older chain's ticks are dropped (the busGen convention)
+	xition      *xition
+	xitionArmed bool
+	xitionGen   int
 
 	// openURL hands a URL to the OS (default /usr/bin/open); nil in bare
 	// test models so a stray tap in a test never spawns a browser
@@ -360,14 +399,6 @@ const stripIconW = 3
 // the plain md-home read as an up arrow at strip size.
 const homeGlyph = "\U000F02DD"
 
-// Strip flip chevrons (nerd font material design icons, the cup-glyph
-// convention): one control between the tabs and the toggles that flips the
-// strip.flip layout pair -- collapse hides the kb column, expand restores it.
-const (
-	stripCollapseGlyph = "\U000F0140" // nf-md-chevron_down
-	stripExpandGlyph   = "\U000F0143" // nf-md-chevron_up
-)
-
 // batteryCellW is the strip battery readout's fixed width in cells: the
 // mouse marker, a nerd-font battery glyph, and the integer pct, budgeted so
 // the largest reading ("100%") fits and the always-present cell never
@@ -406,6 +437,11 @@ func bloomTick() tea.Cmd {
 	return tea.Tick(bloomDelay, func(t time.Time) tea.Msg { return bloomTickMsg(t) })
 }
 
+// xitionTick arms the next frame of gen's swipe wash.
+func xitionTick(gen int) tea.Cmd {
+	return tea.Tick(xitionFrame, func(t time.Time) tea.Msg { return xitionTickMsg{gen: gen, at: t} })
+}
+
 // drainMark reports and clears a one-shot dispatch mark (the armed-tick
 // idiom): a renderer or tap handler sets the mark, Update drains it into
 // its one-shot tick.
@@ -418,6 +454,10 @@ func drainMark(mark *bool) bool {
 // drainBloomArmed drains the deferred-bloom mark tapResources set during
 // the current dispatch; Update turns it into bloomTick.
 func (m *model) drainBloomArmed() bool { return drainMark(&m.resPendingArmed) }
+
+// drainXitionArmed drains the wash mark startXition set during the current
+// dispatch; Update turns it into the xitionTick chain.
+func (m *model) drainXitionArmed() bool { return drainMark(&m.xitionArmed) }
 
 // drainFlashArmed drains the tap-flash mark flash() set during the current
 // dispatch; Update turns it into flashTick.
@@ -616,6 +656,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.drainBloomArmed() {
 			cmds = append(cmds, bloomTick())
 		}
+		if m.drainXitionArmed() {
+			// a swipe opened the wash: gestures arrive on this path only
+			cmds = append(cmds, xitionTick(m.xitionGen))
+		}
 		return m, tea.Batch(cmds...)
 
 	case tickMsg:
@@ -645,6 +689,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case bloomTickMsg:
 		m.now = time.Time(msg)
 		m.openPendingBloom()
+
+	case xitionTickMsg:
+		// the wash owns its own chain: each frame re-arms until the last,
+		// then the tick stops and the dock is back on the 1 s clock. A tick
+		// from a retired chain (its wash retargeted or already ended) is
+		// dropped -- two chains must not advance one wash at double speed.
+		if m.xition == nil || msg.gen != m.xition.gen {
+			break
+		}
+		m.now = msg.at
+		if m.advanceXition() {
+			return m, xitionTick(m.xition.gen)
+		}
 	}
 	return m, nil
 }
@@ -787,7 +844,7 @@ func (m *model) handleBusMsg(msg proto.Msg) {
 				case "left", "right":
 					m.swipeTab(g.Dir)
 				case "up", "down":
-					m.swipeVertical(g.Dir)
+					m.swipeVertical(g)
 				}
 			}
 		case proto.GestureTwoFingerSwipe:
@@ -839,27 +896,54 @@ func (m *model) swipeTab(dir string) {
 	}
 	next := ring[(cur+step+len(ring))%len(ring)]
 	m.flash("tab:" + next.label)
+	// the whole body changes on a tab cycle, so the wash covers all of it
+	cols, rows := m.panelRegion()
+	m.startXition(rect{0, 0, cols, rows})
 	m.trayActivate(next.target, next.label)
 }
 
-// swipeVertical follows the active layout's swipeUp/swipeDown target: a
-// per-layout directional nav (keyboard swipe-up -> logiretch viewer, and
-// its inverse back). A layout with no target for the direction swipes
-// nowhere -- silent, like an off-strip horizontal swipe.
-func (m *model) swipeVertical(dir string) {
+// swipeVertical follows a swipeUp/swipeDown target: the region the stroke
+// STARTED in owns the direction first (swipe up on the kb column swaps that
+// column to the MX viewer, swipe down on the viewer restores it), with the
+// active layout's own target as the fallback (keyboard view swipe-up ->
+// logiretch viewer). No target for the direction swipes nowhere -- silent,
+// like an off-strip horizontal swipe. The wash runs over whatever changes:
+// the region's rect, or the whole body for a layout-level target.
+func (m *model) swipeVertical(g *proto.Gesture) {
 	if m.cfg == nil {
 		return
 	}
-	l := m.cfg.Layouts[m.layout]
-	target := l.SwipeUp
-	if dir == "down" {
-		target = l.SwipeDown
-	}
+	target, area := m.swipeTarget(g)
 	if target == "" {
 		return
 	}
-	m.lastGst = "swipe-" + dir + ": " + target
+	m.lastGst = "swipe-" + g.Dir + ": " + target
+	m.startXition(area)
 	m.trayActivate(target, target)
+}
+
+// swipeTarget resolves a vertical swipe to its nav target and the area that
+// changes. Region bindings win by start cell (first containing rect, the hit
+// table's convention); the layout target covers the rest of the glass.
+func (m *model) swipeTarget(g *proto.Gesture) (target string, area rect) {
+	for _, rs := range m.regionSwipes {
+		if !rs.area.contains(g.StartCol, g.StartRow) {
+			continue
+		}
+		if t := rs.target(g.Dir); t != "" {
+			return t, rs.area
+		}
+		// a region binding only the other direction leaves this one to the
+		// layout: the stroke is not swallowed by the column it started in
+		break
+	}
+	l := m.cfg.Layouts[m.layout]
+	target = l.SwipeUp
+	if g.Dir == "down" {
+		target = l.SwipeDown
+	}
+	cols, rows := m.panelRegion()
+	return target, rect{0, 0, cols, rows}
 }
 
 // navigateTo switches to a layout the dock config knows. Bus-connected navs
@@ -936,22 +1020,20 @@ func (m *model) View() tea.View {
 			m.homeCache.ok = false
 			body = m.renderHome(bodyH)
 		} else if m.homeCache.ok {
-			body = m.homeCache.body
-			m.hits = m.homeCache.hits
+			body = m.loadHomeCache()
 		} else {
 			body = m.renderHome(bodyH)
-			m.homeCache = homeCache{body: body, hits: slices.Clone(m.hits), ok: true}
+			m.storeHomeCache(body)
 		}
 	case "keyboard":
 		if m.trayFlashLive() {
 			m.homeCache.ok = false
 			body = m.renderKeyboard(bodyH)
 		} else if m.homeCache.ok {
-			body = m.homeCache.body
-			m.hits = m.homeCache.hits
+			body = m.loadHomeCache()
 		} else {
 			body = m.renderKeyboard(bodyH)
-			m.homeCache = homeCache{body: body, hits: slices.Clone(m.hits), ok: true}
+			m.storeHomeCache(body)
 		}
 	default:
 		body = m.renderSkewStub(bodyH)
@@ -964,20 +1046,25 @@ func (m *model) View() tea.View {
 	// construction.
 	m.hits = m.hits[:len(m.hits):len(m.hits)]
 	frame := body + "\n" + m.renderStrip()
+	// layered only when something floats over the body: the swipe wash, an
+	// open menu, or both (a long-press mid-wash). Positioned layering MUST
+	// go through NewCompositor -- a bare Canvas.Compose(layer) ignores
+	// Layer.X/Y in v2.0.4 (draws at origin after clearing the area) -- and Z
+	// is explicit because equal-z draw order is unspecified. The wash sits
+	// under the menu: a modal must never render as static.
+	layers := []*lipgloss.Layer{lipgloss.NewLayer(frame)}
+	if l := m.xition.layer(1); l != nil {
+		layers = append(layers, l)
+	}
 	if m.overlay != nil {
-		// open only: composite the pre-built overlay box over the frame on
-		// the P0-pinned Canvas/GraphemeWidth path. Positioned layering MUST
-		// go through NewCompositor -- a bare Canvas.Compose(layer) ignores
-		// Layer.X/Y in v2.0.4 (draws at origin after clearing the area) --
-		// and Z is explicit because equal-z draw order is unspecified.
-		comp := lipgloss.NewCompositor(
-			lipgloss.NewLayer(frame),
-			lipgloss.NewLayer(m.overlay.box).X(m.overlay.anchor.x).Y(m.overlay.anchor.y).Z(1),
-		)
-		v.SetContent(lipgloss.NewCanvas(m.width, m.height).Compose(comp).Render())
+		layers = append(layers,
+			lipgloss.NewLayer(m.overlay.box).X(m.overlay.anchor.x).Y(m.overlay.anchor.y).Z(2))
+	}
+	if len(layers) == 1 {
+		v.SetContent(frame)
 		return v
 	}
-	v.SetContent(frame)
+	v.SetContent(lipgloss.NewCanvas(m.width, m.height).Compose(lipgloss.NewCompositor(layers...)).Render())
 	return v
 }
 
@@ -993,14 +1080,13 @@ func (m *model) renderSkewStub(bodyH int) string {
 // renderStrip is the one-row band under the body, nav ahead of status
 // content: the home icon (bare while a home layout shows -- the icon IS
 // home's tab), config section tabs (band labels, the active tab notching
-// through to the bare background), the flip chevron (only while the active
-// layout is one of the strip.flip pair), toggle cups, the kitty_mod chord
+// through to the bare background), toggle cups, the kitty_mod chord
 // note, the always-present battery readout, the act-fail warn cell while
 // one is fresh, then layout, bus state, and gesture tally, the clock flush
 // right. Everything outside the active notch sits on the stripSurface
-// fill. Registers the strip hits as it places the band: icon, tabs,
-// chevron, cups, kitty_mod, battery, act-fail, then a whole-strip consume
-// rect so strip taps never leak into the body (first-match table).
+// fill. Registers the strip hits as it places the band: icon, tabs, cups,
+// kitty_mod, battery, act-fail, then a whole-strip consume rect so strip
+// taps never leak into the body (first-match table).
 func (m *model) renderStrip() string {
 	yTop := m.height - stripH
 	srf := m.stripSurface()
@@ -1081,28 +1167,6 @@ func (m *model) renderStrip() string {
 				pressKey: "tab:" + e.Label,
 			})
 			x += lw
-		}
-		// flip chevron: a control (chromeFG, not a state light), rendered
-		// only while the active layout is one of the pair; tap flips to the
-		// other side. The icon closure does not width-guard, so guard here.
-		if f := m.cfg.Strip.Flip; f != nil && x+stripIconW <= m.width {
-			glyph, target := "", ""
-			switch m.layout {
-			case f.Expanded:
-				glyph, target = stripCollapseGlyph, f.Collapsed
-			case f.Collapsed:
-				glyph, target = stripExpandGlyph, f.Expanded
-			}
-			if glyph != "" {
-				style := srf.label(chromeFG)
-				if m.flashLive("icon:chevron") {
-					style = m.tapStyle(style)
-				}
-				icon(glyph, style, false, "icon:chevron", func(int, int) {
-					m.flash("icon:chevron")
-					m.trayActivate(target, "kb")
-				})
-			}
 		}
 		degraded := m.bus != busConnected || m.skew
 		for i, tg := range m.cfg.Strip.Toggles {

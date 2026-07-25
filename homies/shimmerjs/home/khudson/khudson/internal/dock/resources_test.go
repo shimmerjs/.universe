@@ -283,7 +283,7 @@ func TestResourcesBloomOpens(t *testing.T) {
 
 // A fast second tap converts to the monitor layout BEFORE the bloom ever
 // renders (the debounce eats the flicker); a mid-speed second tap converts
-// through the open bloom; a slow one holds the bloom open.
+// through the open bloom; a slow one shrinks it back to the card.
 func TestResourcesBloomDoubleTapConverts(t *testing.T) {
 	m := resourcesModel(80, 16)
 	m.widgetData["res"] = resourcesData()
@@ -319,19 +319,29 @@ func TestResourcesBloomDoubleTapConverts(t *testing.T) {
 		t.Fatal("bloom did not open")
 	}
 
-	// slow tap: past the window, stays open
+	// slow tap: past the window, shrinks the bloom back to the card
 	o.openedWall = time.Now().Add(-time.Second)
 	if !m.resolveTap(o.anchor.x+1, o.anchor.y+1) {
 		t.Fatal("in-box tap not consumed")
 	}
-	if m.overlay == nil {
-		t.Fatal("slow in-box tap dismissed the bloom")
+	if m.overlay != nil {
+		t.Fatal("slow in-box tap left the bloom open")
 	}
 	if m.layout == monitorLayout {
 		t.Fatal("slow tap converted")
 	}
 
 	// mid-speed tap: bloom open, still inside the window, converts
+	m.View()
+	if !m.resolveTap(10, 5) {
+		t.Fatal("card tap not consumed")
+	}
+	m.resPending.at = time.Now().Add(-bloomDelay)
+	m.openPendingBloom()
+	o = m.overlay
+	if o == nil {
+		t.Fatal("bloom did not reopen")
+	}
 	o.openedWall = time.Now()
 	if !m.resolveTap(o.anchor.x+1, o.anchor.y+1) {
 		t.Fatal("in-box tap not consumed")
@@ -424,5 +434,97 @@ func TestResourcesReplayLiveWidgetData(t *testing.T) {
 	}
 	if strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "kitty ") {
 		t.Error("proc tail leaked onto the card from the live payload")
+	}
+}
+
+// The bloom's metric headers share the card's column discipline: percent,
+// raw numerator, separator, and bound each line up across metrics whose
+// labels and window hints differ in width.
+func TestResourcesBloomHeadersAligned(t *testing.T) {
+	m := resourcesModel(80, 16)
+	m.widgetData["res"] = resourcesData()
+	m.View()
+	if !m.resolveTap(10, 5) {
+		t.Fatal("card tap not consumed")
+	}
+	m.resPending.at = time.Now().Add(-bloomDelay)
+	m.openPendingBloom()
+	o := m.overlay
+	if o == nil {
+		t.Fatal("bloom did not open")
+	}
+	// metric headers only: stop at the divider (the process rows carry
+	// percents of their own), and skip the dot-grid rows between them
+	var heads []string
+	for _, l := range strings.Split(ansi.Strip(o.box), "\n") {
+		if strings.Contains(l, "┄") {
+			break
+		}
+		if strings.Contains(l, "%") && !hasBraille(l) {
+			heads = append(heads, l)
+		}
+	}
+	if len(heads) != 3 {
+		t.Fatalf("bloom header rows = %d, want 3 (cpu/mem/disk):\n%s", len(heads), ansi.Strip(o.box))
+	}
+	col := func(s, needle string) int {
+		at := strings.Index(s, needle)
+		if at < 0 {
+			t.Fatalf("header missing %q: %q", needle, s)
+		}
+		return at
+	}
+	pct := col(heads[0], "%")
+	for i, h := range heads[1:] {
+		if at := col(h, "%"); at != pct {
+			t.Errorf("header %d percent at col %d, want %d: %q", i+1, at, pct, h)
+		}
+	}
+	// the raw pair's separator slot is one column for every metric ("/" for
+	// cpu and mem, the space before disk's suffix bound)
+	sep := col(heads[0], "/12")
+	if at := col(heads[1], "/36G"); at != sep {
+		t.Errorf("mem separator at col %d, want %d: %q", at, sep, heads[1])
+	}
+	if at := col(heads[2], "free"); at != sep+1 {
+		t.Errorf("disk bound at col %d, want %d (separator slot + 1): %q", at, sep+1, heads[2])
+	}
+}
+
+// Every interior cell of the bloom rides the fill backdrop -- including the
+// dot-grid rows, whose heat styles carry no background of their own and
+// otherwise read as a band of base layer through the raised box.
+func TestResourcesBloomFillsHistoryRows(t *testing.T) {
+	m := resourcesModel(80, 16)
+	m.palette = palette{"color0": "#1e2326", "background": "#232a2e"}
+	m.widgetData["res"] = resourcesData()
+	m.View()
+	if !m.resolveTap(10, 5) {
+		t.Fatal("card tap not consumed")
+	}
+	m.resPending.at = time.Now().Add(-bloomDelay)
+	m.openPendingBloom()
+	o := m.overlay
+	if o == nil {
+		t.Fatal("bloom did not open")
+	}
+	buf := canvasRefBuffer(o.box, ansi.GraphemeWidth)
+	want, _ := m.palette.color("color0")
+	rows := 0
+	for y := 1; y < o.anchor.h-1; y++ {
+		row := ""
+		for x := 1; x < o.anchor.w-1; x++ {
+			c := buf.CellAt(x, y)
+			row += c.Content
+			if c.Style.Bg != want {
+				t.Fatalf("bloom cell row %d col %d bg = %v, want the fill %v", y, x, c.Style.Bg, want)
+			}
+		}
+		if hasBraille(row) {
+			rows++
+		}
+	}
+	if rows == 0 {
+		t.Error("no dot-grid rows in the bloom to check")
 	}
 }

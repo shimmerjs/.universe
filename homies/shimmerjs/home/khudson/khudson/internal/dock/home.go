@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -60,7 +61,7 @@ const (
 	trayFlashFor = 2 * time.Second
 	// tapFlashFor is the tap-feedback window; one registry (m.trayFlash)
 	// serves both flashes, tap keys namespaced ("tab:kb", "rail:safari",
-	// "icon:home", "icon:chevron", "cup:0"), soon keys bare entry labels.
+	// "icon:home", "cup:0"), soon keys bare entry labels.
 	tapFlashFor = 250 * time.Millisecond
 )
 
@@ -119,11 +120,32 @@ func (m *model) tapStyle(base lipgloss.Style) lipgloss.Style {
 	return base.Foreground(lipgloss.BrightWhite).Bold(true).Reverse(true)
 }
 
-// homeCache is the memoized home frame; ok=false means rebuild.
+// homeCache is the memoized home frame; ok=false means rebuild. Both frame
+// tables ride the cache: a cache-hit frame must resolve taps AND swipes
+// against the regions actually on glass.
 type homeCache struct {
-	body string
-	hits []hitRegion
-	ok   bool
+	body   string
+	hits   []hitRegion
+	swipes []regionSwipe
+	ok     bool
+}
+
+// loadHomeCache restores the memoized body and its frame tables.
+func (m *model) loadHomeCache() string {
+	m.hits = m.homeCache.hits
+	m.regionSwipes = m.homeCache.swipes
+	return m.homeCache.body
+}
+
+// storeHomeCache memoizes the composed body with the tables the render just
+// built; the clones keep later frames from writing through the cache.
+func (m *model) storeHomeCache(body string) {
+	m.homeCache = homeCache{
+		body:   body,
+		hits:   slices.Clone(m.hits),
+		swipes: slices.Clone(m.regionSwipes),
+		ok:     true,
+	}
 }
 
 // trayFlashLive reports whether any flash -- "soon" stub or tap feedback --
@@ -256,6 +278,7 @@ var chromeRenderers = map[string]func(*model, config.Widget, rect) string{
 	"resources":   (*model).renderResources,
 	"kb-live":     (*model).renderKBLive,
 	"reno":        (*model).renderReno,
+	"logiretch":   (*model).renderLogiretch,
 }
 
 // renderRegion draws one region at rr. A module with a registered dock-side
@@ -264,6 +287,12 @@ var chromeRenderers = map[string]func(*model, config.Widget, rect) string{
 // never a silent titled region. Everything else gets a titled border around
 // its module rows.
 func (m *model) renderRegion(r config.Region, rr rect) string {
+	if r.SwipeUp != "" || r.SwipeDown != "" {
+		// swipe bindings register at the region's rect, ahead of any
+		// renderer: the stroke resolves by geometry alone, so a chrome
+		// widget's own hit tiles never shadow the column's swap
+		m.regionSwipes = append(m.regionSwipes, regionSwipe{area: rr, up: r.SwipeUp, down: r.SwipeDown})
+	}
 	w := m.cfg.Widgets[r.Widget]
 	if render, ok := chromeRenderers[w.Render.Module]; ok {
 		return render(m, w, rr)

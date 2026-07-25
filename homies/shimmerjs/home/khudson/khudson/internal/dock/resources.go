@@ -242,7 +242,18 @@ func (m *model) openResourcesBloom(d module.Data, rr rect) {
 		return s
 	}
 
+	// the dot grids ride the backdrop like every other interior cell: heat
+	// styles carry no background of their own, so an unbacked spark reads as
+	// a band of base layer inside the raised box
+	heat := ss.heat
+	if !isNoColor(bg) {
+		for i := range heat {
+			heat[i] = heat[i].Background(bg)
+		}
+	}
+
 	lead, rest := cardRows(d)
+	bc := measureBloomCols(lead)
 	var lines []string
 	for _, r := range lead {
 		if r.Kind == module.RowText {
@@ -250,15 +261,15 @@ func (m *model) openResourcesBloom(d module.Data, rr rect) {
 			lines = append(lines, pad(on(ss.styleFor(r.Style)).Render(" "+r.Text)))
 			continue
 		}
-		name, hint := splitKeyHint(r.Key)
-		hdr := on(ss.fg).Render(" " + metricName(name) + " ")
-		if hint != "" {
-			hdr += on(ss.dim).Render("(" + hint + ") ")
+		lines = append(lines, pad(bloomHeader(r, bc, ss, on, fill)))
+		// spark only as wide as it has samples: pad() fills the remainder on
+		// the backdrop, where spark's own tail padding would be bare cells
+		sw := min(wi-2, len(r.Series))
+		if sw < 1 {
+			lines = append(lines, pad(fill.Render(" ")))
+			continue
 		}
-		hdr += on(textHeat(pctHeat(r), ss)).Render(pctCell(r.Frac)) + fill.Render("  ") +
-			on(textHeat(r.RawHeat, ss)).Render(r.RawX) + on(ss.dim).Render(r.RawY)
-		lines = append(lines, pad(hdr))
-		lines = append(lines, pad(fill.Render(" ")+spark(r.Series, wi-2, ss.heat)))
+		lines = append(lines, pad(fill.Render(" ")+spark(r.Series, sw, heat)))
 	}
 	keyW, valW := kvColumns(rest)
 	for _, r := range rest {
@@ -291,6 +302,59 @@ func (m *model) openResourcesBloom(d module.Data, rr rect) {
 	}
 	o.box = o.frameBox(lines, on(chromeDim))
 	m.overlay = o
+}
+
+// bloomCols is the bloom header's shared column geometry, measured across
+// every metric so the percents, the raw numerators, the separators, and the
+// bounds each scan as one column -- the card's rawCols discipline, plus the
+// label and window-hint cells the card renders at fixed width.
+type bloomCols struct {
+	nameW, hintW int
+	raw          rawCols
+}
+
+func measureBloomCols(lead []module.Row) bloomCols {
+	var bc bloomCols
+	for _, r := range lead {
+		if r.Kind != module.RowResource {
+			continue
+		}
+		name, hint := splitKeyHint(r.Key)
+		bc.nameW = max(bc.nameW, lipgloss.Width(metricName(name)))
+		if hint != "" {
+			bc.hintW = max(bc.hintW, lipgloss.Width("("+hint+")"))
+		}
+		x, _, y := splitRaw(r)
+		bc.raw.xW = max(bc.raw.xW, lipgloss.Width(x))
+		bc.raw.yW = max(bc.raw.yW, lipgloss.Width(y))
+	}
+	return bc
+}
+
+// bloomHeader is one metric's bloom header at the measured columns: label,
+// window hint, tone-ramped percent, then the raw pair in the card's
+// sub-columns (X right-aligned, the separator in its own cell, Y
+// left-aligned). on backs a span with the bloom fill; fill paints the gaps.
+func bloomHeader(r module.Row, bc bloomCols, ss rowStyles,
+	on func(lipgloss.Style) lipgloss.Style, fill lipgloss.Style,
+) string {
+	name, hint := splitKeyHint(r.Key)
+	hdr := on(ss.fg).Render(" " + fitCellPad(metricName(name), bc.nameW) + " ")
+	if bc.hintW > 0 {
+		cell := ""
+		if hint != "" {
+			cell = "(" + hint + ")"
+		}
+		hdr += on(ss.dim).Render(fitCellPad(cell, bc.hintW) + " ")
+	}
+	hdr += on(textHeat(pctHeat(r), ss)).Render(pctCell(r.Frac)) + fill.Render("  ")
+	x, sep, y := splitRaw(r)
+	if sep == "" && bc.raw.width() > 0 {
+		sep = " "
+	}
+	return hdr + fill.Render(strings.Repeat(" ", max(bc.raw.xW-lipgloss.Width(x), 0))) +
+		on(textHeat(r.RawHeat, ss)).Render(x) +
+		on(ss.dim).Render(fmt.Sprintf("%s%-*s", sep, bc.raw.yW, y))
 }
 
 // kvNameCap bounds the KV table's name column.

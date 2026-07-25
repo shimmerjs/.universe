@@ -37,17 +37,13 @@ import "time"
 // status strip (chrome, not a region widget). The home icon is chrome-owned,
 // never an entry. Unknown entry targets are allowed on purpose -- the "soon"
 // flash IS the stub affordance; unknown toggle kinds render dead so a config
-// ahead of the binary stays visible. flip is the collapse/expand chevron
-// between the tabs and the toggles: expanded/collapsed name the layout pair
-// it flips between -- both required together (a half pair fails vet here;
-// Go checks the names against layouts).
+// ahead of the binary stays visible.
 #Strip: {
 	// alt is an optional second target: while the active layout is target
 	// or alt, the tab reads active and its tap flips to the other (the
 	// reno presenter<->recorder pair); Go checks alt against layouts.
 	entries: [...{label: string, target: string, alt?: string}] | *[]
 	toggles: [...{kind: string, on?: string, off?: string}] | *[]
-	flip?: {expanded: string, collapsed: string}
 	// configured kitty_mod chord, rendered as a compact modifier-glyph note;
 	// unset renders nothing
 	kittyMod?: string
@@ -98,6 +94,11 @@ import "time"
 	edge:   "left" | "right" | "top" | "bottom" | "fill"
 	// cells: cols for left/right, rows for top/bottom; unused for fill
 	size?: int & >0
+	// this slot's vertical-swipe targets: a swipe STARTING in the region
+	// beats the layout's own target, so one column can swap its widget
+	// while the rest of the screen holds. Each must be a defined layout.
+	swipeUp?:   string
+	swipeDown?: string
 }
 
 #Layout: {

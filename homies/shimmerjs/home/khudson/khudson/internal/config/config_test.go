@@ -493,53 +493,6 @@ layouts: other: {kind: "full-panel", tiles: ["w"]}
 `, "not defined")
 }
 
-// The strip flip pair vets and decodes; the chevron targets must name
-// defined layouts.
-func TestStripFlipVets(t *testing.T) {
-	c, err := Load("t.cue", []byte(homePrelude+`
-layouts: {
-	main: {
-		kind: "home"
-		regions: [{widget: "f", edge: "fill"}]
-	}
-	"main-no-kb": {
-		kind: "home"
-		regions: [{widget: "w", edge: "fill"}]
-	}
-}
-strip: flip: {expanded: "main", collapsed: "main-no-kb"}
-`))
-	if err != nil {
-		t.Fatalf("valid flip rejected: %v", err)
-	}
-	f := c.Strip.Flip
-	if f == nil || f.Expanded != "main" || f.Collapsed != "main-no-kb" {
-		t.Fatalf("flip decoded wrong: %#v", f)
-	}
-}
-
-func TestStripFlipRejectsUnknownLayout(t *testing.T) {
-	vetFail(t, homePrelude+`
-layouts: main: {
-	kind: "home"
-	regions: [{widget: "f", edge: "fill"}]
-}
-strip: flip: {expanded: "main", collapsed: "nope"}
-`, `flip layout "nope" is not defined`)
-}
-
-func TestStripFlipRejectsHalfPair(t *testing.T) {
-	// both members are required inside the optional struct: CUE vet alone
-	// rejects a half pair, before the Go layout check runs
-	vetFail(t, homePrelude+`
-layouts: main: {
-	kind: "home"
-	regions: [{widget: "f", edge: "fill"}]
-}
-strip: flip: {expanded: "main"}
-`, "")
-}
-
 // kb-live requires no params: a bare declaration vets clean.
 func TestKBLiveWithoutParamsVets(t *testing.T) {
 	_, err := Load("t.cue", []byte(homePrelude+`
@@ -645,16 +598,6 @@ layouts: main: {
 	}
 }
 
-func TestStripFlipRejectsSelfPair(t *testing.T) {
-	vetFail(t, homePrelude+`
-layouts: main: {
-	kind: "home"
-	regions: [{widget: "f", edge: "fill"}]
-}
-strip: flip: {expanded: "main", collapsed: "main"}
-`, "name the same layout")
-}
-
 func TestKBLiveRejectsUnknownTexture(t *testing.T) {
 	vetFail(t, homePrelude+`
 widgets: kb: {
@@ -716,4 +659,52 @@ layouts: main: {
 	} {
 		vetFail(t, src(tex), `param "texture" must be one of`)
 	}
+}
+
+// Vertical-swipe targets, layout-level and per-region: each must name a
+// defined layout, because the dock drops a miss silently.
+func TestSwipeTargetsMustBeDefinedLayouts(t *testing.T) {
+	c, err := Load("t.cue", []byte(homePrelude+`
+layouts: {
+	main: {
+		kind: "home"
+		regions: [
+			{widget: "w", edge: "right", size: 14, swipeUp: "alt"},
+			{widget: "f", edge: "fill"},
+		]
+		swipeDown: "alt"
+	}
+	alt: {
+		kind: "home"
+		regions: [{widget: "f", edge: "fill", swipeDown: "main"}]
+	}
+}
+`))
+	if err != nil {
+		t.Fatalf("valid swipe targets rejected: %v", err)
+	}
+	if got := c.Layouts["main"].Regions[0].SwipeUp; got != "alt" {
+		t.Errorf("region swipeUp = %q, want alt", got)
+	}
+	if got := c.Layouts["alt"].Regions[0].SwipeDown; got != "main" {
+		t.Errorf("region swipeDown = %q, want main", got)
+	}
+
+	vetFail(t, homePrelude+`
+layouts: main: {
+	kind: "home"
+	regions: [{widget: "f", edge: "fill"}]
+	swipeUp: "ghost"
+}
+`, `layout "main": swipeUp target "ghost" is not a defined layout`)
+
+	vetFail(t, homePrelude+`
+layouts: main: {
+	kind: "home"
+	regions: [
+		{widget: "w", edge: "right", size: 14, swipeUp: "ghost"},
+		{widget: "f", edge: "fill"},
+	]
+}
+`, `layout "main": region 0 ("w"): swipeUp target "ghost" is not a defined layout`)
 }

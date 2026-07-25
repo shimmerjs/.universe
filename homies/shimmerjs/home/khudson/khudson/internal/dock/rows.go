@@ -112,6 +112,10 @@ func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][
 			if cols > 0 {
 				line = fitCell(line, cols)
 			}
+		case module.RowPad:
+			// no grid here (couch clients, side columns, the classic
+			// panel): a pad tile still reads as a labeled control line
+			line = ss.styleFor(r.Style).Render(" "+r.Text) + ss.dim.Render("  "+r.Value)
 		case module.RowResource:
 			// one renderer for every resource cluster (heat is
 			// data-not-style, so it rides into the classic panel too)

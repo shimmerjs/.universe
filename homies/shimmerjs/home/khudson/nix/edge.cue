@@ -43,9 +43,9 @@ widgets: {
 	// active layer grid as a home-region widget, TypeKey highlights included.
 	// Chrome (no bus module, no poll): the dock resolves the board off the
 	// USB serial (oryx cache / generations store behind it) and the
-	// push-based key broadcasts. Hiding/restoring this column is the
-	// strip's flip chevron (strip.flip below), not a widget affordance --
-	// the widget renders wherever a layout places it.
+	// push-based key broadcasts. The widget renders wherever a layout places
+	// it; swiping the column up trades it for the MX viewer (home-logi),
+	// which is a layout switch, not a widget affordance.
 	"kb-live": {
 		title:  "keyboard"
 		glyph:  ""
@@ -234,8 +234,7 @@ caffeinate: on: true
 // (fullscreen btop) -- the same destination the resources bloom's
 // double-tap converts to. Cup glyphs: filled (nf-md-coffee)
 // while the bus holds the assertion, outline (nf-md-coffee_outline) when
-// off; tap toggles. flip is the collapse/expand chevron beside the tabs:
-// it hides/restores the kb column by flipping between the named layouts.
+// off; tap toggles.
 strip: {
 	entries: [
 		{label: "kb", target: "keyboard"},
@@ -248,7 +247,6 @@ strip: {
 	toggles: [
 		{kind: "caffeinate", on: "\U000F0176", off: "\U000F06CA"},
 	]
-	flip: {expanded: "home", collapsed: "home-no-kb"}
 }
 
 layouts: {
@@ -264,27 +262,30 @@ layouts: {
 		// max-width tiles, pinned to the card's read so the column shares
 		// one width. The 15x17 remainder right of the rail stays blank:
 		// clawed-back space reserved for coming layout changes.
-		// SYNC with home-no-kb below: the two home-kind layouts share
-		// claude-panel / dock-rail / resources; widget changes must land
-		// in both region lists. kb-live is home-only -- the strip flip
-		// hides the whole column.
+		// SYNC with home-logi below: both home-kind layouts share
+		// claude-panel / dock-rail / resources; widget changes must land in
+		// both region lists. kb-live is home-only -- home-logi swaps that
+		// column for the MX viewer.
 		regions: [
-			{widget: "kb-live", edge: "right", size: 75},
+			// swipe up on the keyboard column swaps that column alone to the
+			// MX viewer (home-logi); the rest of the screen holds
+			{widget: "kb-live", edge: "right", size: 75, swipeUp: "home-logi"},
 			{widget: "claude-panel", edge: "right", size: 73},
 			{widget: "resources", edge: "bottom", size: 6},
 			{widget: "dock-rail", edge: "left", size: 33},
 		]
 	}
-	// collapsed home variant behind the strip's flip chevron: NO keyboard,
-	// claude-panel takes the freed width (148 = home's 73 + kb's 75).
-	// SYNC with home above (shared widgets claude-panel / dock-rail /
-	// resources; kb-live is now home-only). Not the config default, so the
-	// dock wraps it in the right-edge return strip and the layout runs at
-	// interior-3 cols (191 on this glass).
-	"home-no-kb": {
+	// home with the keyboard column swapped for the MX viewer: reached by
+	// swiping up on that column, swipe down on the viewer restores the
+	// keyboard. A sibling LAYOUT rather than a dock-local widget
+	// substitution, so the bus's widget visibility (and logiretch-view's
+	// polling) follows the switch.
+	// SYNC with home above: same peel order and sizes, kb-live -> logiretch-view.
+	"home-logi": {
 		kind: "home"
 		regions: [
-			{widget: "claude-panel", edge: "right", size: 148},
+			{widget: "logiretch-view", edge: "right", size: 75, swipeDown: "home"},
+			{widget: "claude-panel", edge: "right", size: 73},
 			{widget: "resources", edge: "bottom", size: 6},
 			{widget: "dock-rail", edge: "left", size: 33},
 		]

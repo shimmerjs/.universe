@@ -1,6 +1,7 @@
 package dock
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -114,18 +115,124 @@ func TestRenoFlatViews(t *testing.T) {
 		t.Errorf("flat view missing empty-state row:\n%s", body)
 	}
 
-	// recorder param routes to the flat view too
-	m.cfg.Widgets["reno-presenter"] = config.Widget{ID: "reno-presenter", Title: "reno", Chrome: true,
-		Render: config.Render{Kind: "native", Module: "reno",
-			Params: map[string]any{"view": "recorder"}}}
+	// the recorder param routes to the control pad: readout rows land in
+	// the header, pad rows become buttons
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
 	m.widgetData["reno-presenter"] = module.Data{Title: "reno rec", Rows: []module.Row{
 		{Kind: module.RowKV, Key: "run", Value: "r-123"},
-		{Kind: module.RowText, Key: "act:record", Text: "record", Act: []string{"reno:record"}},
+		{Kind: module.RowPad, Key: reno.KeyActRecord, Text: "REC", Value: "ready",
+			Act: []string{"reno:record"}},
 	}}
 	m.invalidateHome("reno-presenter")
 	body = ansi.Strip(m.View().Content)
-	if !strings.Contains(body, "record") || !strings.Contains(body, "r-123") {
+	if !strings.Contains(body, "REC") || !strings.Contains(body, "r-123") {
 		t.Errorf("recorder view missing rows:\n%s", body)
+	}
+}
+
+func recorderWidget(id string) config.Widget {
+	return config.Widget{ID: id, Title: "reno rec", Chrome: true,
+		Render: config.Render{Kind: "native", Module: "reno",
+			Params: map[string]any{"view": "recorder"}}}
+}
+
+// padRows is a recorder payload: a readout header plus n buttons split
+// across two labeled sections.
+func padRows(n int) module.Data {
+	d := module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowSpans, Key: reno.KeyHead, Spans: []module.Span{{Text: "run r-123"}}},
+	}}
+	for i := range n {
+		section := "transport"
+		if i >= 2 {
+			section = "mic"
+		}
+		d.Rows = append(d.Rows, module.Row{Kind: module.RowPad, Section: section,
+			Key:  "t" + strconv.Itoa(i),
+			Text: "T" + strconv.Itoa(i), Act: []string{"act", strconv.Itoa(i)}})
+	}
+	return d
+}
+
+// The pad fills its region exactly, groups buttons under their section
+// labels, and every button is a live tap target resolved by geometry --
+// the recorder is a surface you operate with a thumb, so a button that
+// paints but does not press (the bug the first flat cut shipped) is the
+// failure that matters.
+func TestRenoRecorderPadGridAndHits(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = padRows(7)
+	m.invalidateHome("reno-presenter")
+
+	v := m.View()
+	for i, l := range strings.Split(v.Content, "\n") {
+		if lipgloss.Width(l) != 196 {
+			t.Fatalf("line %d width = %d, want 196", i, lipgloss.Width(l))
+		}
+	}
+	body := ansi.Strip(v.Content)
+	if !strings.Contains(body, "run r-123") {
+		t.Error("readout header missing from the pad")
+	}
+	for _, want := range []string{"TRANSPORT", "MIC"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("section label %q missing:\n%s", want, body)
+		}
+	}
+	for i := range 7 {
+		if !strings.Contains(body, "T"+strconv.Itoa(i)) {
+			t.Errorf("button T%d missing:\n%s", i, body)
+		}
+	}
+
+	// every button answers a plain tap, resolved by its own rect
+	msgs := busSink(t, m)
+	seen := map[string]bool{}
+	for _, h := range m.hits {
+		if !strings.Contains(h.pressKey, ":pad:t") {
+			continue
+		}
+		m.resolveTap(h.area.x+h.area.w/2, h.area.y+h.area.h/2)
+		got := <-msgs
+		if got.Type != proto.TypeRowAct || got.Argv[0] != "act" {
+			t.Fatalf("button tap sent %+v", got)
+		}
+		seen[got.Argv[1]] = true
+	}
+	if len(seen) != 7 {
+		t.Errorf("pressed %d distinct buttons, want 7", len(seen))
+	}
+}
+
+// A tile whose only control is a menu opens it on a PLAIN tap: a pad has
+// no discoverable long-press, so a menu-only button that ignores taps is
+// a dead button.
+func TestRenoRecorderPadMenuTileOpensOnTap(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowPad, Key: reno.KeyCfgAudio, Text: "MIC", Value: "obs as-is",
+			Menu: []module.Act{{Label: "none (mute all)", Argv: []string{"reno:cfg-audio", "none"}}}},
+	}}
+	m.invalidateHome("reno-presenter")
+	m.View()
+
+	var tile rect
+	for _, h := range m.hits {
+		if strings.HasSuffix(h.pressKey, ":pad:"+reno.KeyCfgAudio) {
+			tile = h.area
+		}
+	}
+	if tile.w == 0 {
+		t.Fatal("no hit registered for the mic tile")
+	}
+	m.resolveTap(tile.x+tile.w/2, tile.y+tile.h/2)
+	if m.overlay == nil {
+		t.Fatal("a menu-only tile must open its menu on a tap")
+	}
+	if len(m.overlay.items) != 1 || !strings.Contains(m.overlay.items[0].label, "mute all") {
+		t.Errorf("overlay items = %+v", m.overlay.items)
 	}
 }
 

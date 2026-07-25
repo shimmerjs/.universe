@@ -37,9 +37,30 @@ func (m *model) renderReno(w config.Widget, rr rect) string {
 		return renderTitledBox(w.Title, []string{chromeDim.Render(" ...")}, rr.w, rr.h)
 	}
 	if view, _ := w.Render.Params["view"].(string); view == "recorder" {
-		return m.renderRenoFlat(w.ID, d, rr)
+		return m.renderRenoRecorder(w.ID, d, rr)
 	}
 	return m.renderRenoPresenter(w.ID, d, rr)
+}
+
+// renderRenoRecorder is the recorder control pad: the module's readout
+// rows become the header, its pad rows the button grid. The split is the
+// contract -- anything you can press is a tile, anything you can only
+// read is a header line.
+func (m *model) renderRenoRecorder(id string, d module.Data, rr rect) string {
+	var head module.Data
+	var tiles []module.Row
+	for _, r := range d.Rows {
+		if r.Kind == module.RowPad {
+			tiles = append(tiles, r)
+			continue
+		}
+		head.Rows = append(head.Rows, r)
+	}
+	lines := []string{fitCellPad(chromeAccent.Bold(true).Render(" "+d.Title), rr.w)}
+	// the header never eats the grid: readouts cap at a third of the glass
+	body, _, _ := renderChromeRows(head, rr.w, max(rr.h/3, 1), m.rowStyles())
+	lines = append(lines, body...)
+	return m.renderPad(id, lines, tiles, rr)
 }
 
 // renderRenoFlat is the generic keyed-row view: the recorder transport
