@@ -54,26 +54,52 @@ func dimSpan(s string) module.Span {
 	return module.Span{Text: s, Style: module.StyleDim}
 }
 
-// artW is the art block's fixed cell width. Every row pads to it, so a
-// hand-edited silhouette cannot drift a column and leave the right edge
-// ragged (the top-down art it replaced was 12 cells on some rows and 13
-// on others).
-const artW = 41
+// artW is the art block's fixed cell width. Rows composite into a fixed
+// buffer, so a hand-edited silhouette cannot drift a column and leave the
+// right edge ragged (the top-down art it replaced was 12 cells on some
+// rows and 13 on others).
+const artW = 62
 
 // calloutW is the label column ahead of each leader: right-aligned names
 // so the leaders line up into one gutter.
 const calloutW = 10
 
-// artLines is the ASCII MX Master 4 seen from the LEFT: the flank a side
-// view actually shows -- thumbwheel, back/forward, gesture -- reads
-// straight down the near edge, with leader lines out to named labels.
-// The profile is wide and short by design so it can sit under the
-// keyboard render later. Controls light through ctl() as events arrive;
-// a lit control lights its label too, so the name is readable at a
-// glance instead of only the glyph.
+// Drawing glyphs, escaped so this file stays ASCII. kitty renders the
+// block and box-drawing families procedurally, so they stay crisp at any
+// cell size.
+const (
+	glyphFill   = "\u2588" // full block: the shell body
+	glyphLeader = "\u2500" // light horizontal: callout leaders
+)
+
+// artShell is the MX Master in profile, one {left, right} column pair per
+// row: a long low wedge, not an oval -- a thin nose almost on the desk at
+// the front (left), the surface climbing to the palm crest at the back,
+// a steep tail, and a flat base. Reshape it by moving numbers.
+var artShell = [...][2]int{
+	{38, 52},
+	{35, 55},
+	{32, 57},
+	{29, 58},
+	{26, 59},
+	{24, 60},
+	{22, 60},
+	{21, 60},
+	{20, 60},
+	{20, 60}, // the base: flat on the desk, and no control sits on it
+}
+
+// artLines is the ASCII MX Master 4 seen from the LEFT -- the flank a side
+// view actually shows -- as a filled silhouette with its controls punched
+// into the shell and a leader out to each name. Rows run front-to-back
+// bottom-to-top, so the controls sit roughly where they do on the real
+// mouse: main buttons at the nose, thumbwheel low and forward, the flank
+// cluster behind them, the wheel back near the crest. Wide and short by
+// design, to sit under the keyboard render later. A lit control lights its
+// LABEL too, so the name reads at a glance instead of only the glyph.
 //
-// The two main buttons are stacked rather than side by side: a true
-// profile hides the far button entirely, and a mouse viewer that cannot
+// The two main buttons are stacked rather than in true profile: a real
+// side view hides the far button entirely, and a mouse viewer that cannot
 // show a right-click is worse than one that cheats the perspective.
 func (m *Mod) artLines() [][]module.Span {
 	wheel := "O"
@@ -93,53 +119,108 @@ func (m *Mod) artLines() [][]module.Span {
 		}
 	}
 
-	// The shell, drawn right of the control column: the nose sits low at
-	// the left where the buttons are, the surface climbs to the palm hump,
-	// then the back wall drops and the base closes it. Every tail is 26
-	// cells; the leading control cluster IS the near flank, so the shape
-	// hangs off the callout column rather than repeating a left wall.
-	rows := [][]module.Span{
-		m.artRow("", "", "", "    _.-~~~~~~-._          "),
-		m.artRow("", "", "", "  _.-~          ~-._      "),
-		m.artRow("wheel", "wheel", wheel, "~                   ~-.   "),
-		m.artRow("left", "left", "L", "                       \\  "),
-		m.artRow("right", "right", "R", "                        | "),
-		m.artRow("middle", "middle", "M", "                        | "),
-		m.artRowSpans(m.isLit("thumb"), "thumb", []module.Span{m.ctl("thumb", thumb)},
-			plain("            "), m.ctl("btn6", m.btn6Glyph()), plain("           | ")),
-		// the only two-glyph control: back and forward light separately
-		m.artRowSpans(m.isLit("back") || m.isLit("forward"), "back/fwd",
-			[]module.Span{m.ctl("back", "<"), m.ctl("forward", ">")},
-			plain("                       | ")),
-		m.artRow("gesture", "gesture", "G", "                       /  "),
-		m.artRow("", "", "", "~-.._______________..-~   "),
+	rows := make([][]module.Span, len(artShell))
+	for r, span := range artShell {
+		buf := newArtBuf()
+		buf.put(span[0], module.Span{
+			Text:  strings.Repeat(glyphFill, span[1]-span[0]+1),
+			Style: module.StyleDim,
+		})
+		rows[r] = buf.spans()
 	}
+	// front (low rows) to back (high rows): nose buttons, then the flank
+	// cluster, then the wheel near the crest
+	m.place(rows, 8, "left", "left", "L")
+	m.place(rows, 7, "right", "right", "R")
+	m.place(rows, 6, "thumb", "thumb", thumb)
+	m.placeCluster(rows, 5, m.isLit("back") || m.isLit("forward"), "back/fwd",
+		m.ctl("back", "<"), m.ctl("forward", ">"))
+	m.place(rows, 4, "gesture", "gesture", "G")
+	m.place(rows, 3, "btn6", "btn6", m.btn6Glyph())
+	// middle-click IS the wheel press: it sits directly under the wheel
+	m.place(rows, 2, "middle", "middle", "M")
+	m.place(rows, 1, "wheel", "wheel", wheel)
 	return append(rows, m.motionRow())
 }
 
-// artRow is one art line: an optional right-aligned label, its leader, the
-// lit control glyph, then silhouette.
-func (m *Mod) artRow(key, label, glyph, tail string) []module.Span {
-	if label == "" {
-		// +5, not +4: a bare row must also skip the control cell so every
-		// tail starts in the same column
-		return padSpans([]module.Span{
-			plain(strings.Repeat(" ", calloutW+5)), plain(tail)}, artW)
-	}
-	return m.artRowSpans(m.isLit(key), label, []module.Span{m.ctl(key, glyph)}, plain(tail))
+// place punches one labeled control into the shell and runs its leader
+// back to the label gutter, stopping at the shell edge -- a leader that
+// crossed the body would read as a line drawn ON the mouse.
+func (m *Mod) place(rows [][]module.Span, r int, key, label, glyph string) {
+	m.placeCluster(rows, r, m.isLit(key), label, m.ctl(key, glyph))
 }
 
-// artRowSpans is artRow for a control cluster wider than one glyph. lit
-// drives the LABEL tone: the name has to read at a glance, not just the
-// character. Pads to artW so the block stays rectangular whatever the
-// caller drew.
-func (m *Mod) artRowSpans(lit bool, label string, ctls []module.Span, tail ...module.Span) []module.Span {
+func (m *Mod) placeCluster(rows [][]module.Span, r int, lit bool, label string, ctls ...module.Span) {
+	left := artShell[r][0]
 	name := module.Span{Text: fmt.Sprintf("%*s", calloutW, label), Style: module.StyleDim}
 	if lit {
 		name.Style = module.StyleHighlight
 	}
-	spans := append([]module.Span{name, dimSpan(" --"), plain(" ")}, ctls...)
-	return padSpans(append(spans, tail...), artW)
+	buf := newArtBuf()
+	buf.under(rows[r])
+	buf.put(0, name)
+	buf.put(calloutW+1, module.Span{
+		Text:  strings.Repeat(glyphLeader, max(left-calloutW-2, 0)),
+		Style: module.StyleDim,
+	})
+	// blank the shell around the glyph so the control reads as a key set
+	// into the surface rather than a letter floating on it
+	buf.put(left+1, plain(strings.Repeat(" ", len(ctls)+2)))
+	for i, c := range ctls {
+		buf.put(left+2+i, c)
+	}
+	rows[r] = buf.spans()
+}
+
+// artBuf composites one row cell by cell: last write wins, so callers
+// paint back to front and never count spaces.
+type artBuf struct {
+	runes  []rune
+	styles []string
+}
+
+func newArtBuf() *artBuf {
+	b := &artBuf{runes: make([]rune, artW), styles: make([]string, artW)}
+	for i := range b.runes {
+		b.runes[i] = ' '
+	}
+	return b
+}
+
+func (b *artBuf) put(col int, s module.Span) {
+	for i, r := range []rune(s.Text) {
+		if c := col + i; c >= 0 && c < artW {
+			b.runes[c], b.styles[c] = r, s.Style
+		}
+	}
+}
+
+// under paints spans onto the buffer, blanks included: it seeds a row.
+func (b *artBuf) under(spans []module.Span) {
+	col := 0
+	for _, s := range spans {
+		for _, r := range []rune(s.Text) {
+			if col < artW {
+				b.runes[col], b.styles[col] = r, s.Style
+			}
+			col++
+		}
+	}
+}
+
+// spans coalesces the buffer into styled runs. Every row is exactly artW
+// cells; padding, not drawing, is what keeps the block rectangular.
+func (b *artBuf) spans() []module.Span {
+	var out []module.Span
+	start := 0
+	for i := 1; i <= artW; i++ {
+		if i == artW || b.styles[i] != b.styles[start] {
+			out = append(out, module.Span{
+				Text: string(b.runes[start:i]), Style: b.styles[start]})
+			start = i
+		}
+	}
+	return out
 }
 
 // btn6Glyph is the lone body-mounted button, drawn inside the shell: a
