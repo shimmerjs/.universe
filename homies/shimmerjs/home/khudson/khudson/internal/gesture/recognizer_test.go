@@ -222,3 +222,60 @@ func TestCellMapping(t *testing.T) {
 		t.Fatalf("bottom-right mapped to %d,%d, want 255,17", col, row)
 	}
 }
+
+// swipeStroke runs a down/move/up over the given pixel delta and returns
+// the Swipe it produced, if any.
+func swipeStroke(t *testing.T, r *Recognizer, x0, y0, x1, y1 uint16) (Swipe, bool) {
+	t.Helper()
+	t0 := time.Now()
+	r.Frame(frame(t0, down(1, x0, y0)))
+	r.Frame(frame(t0.Add(60*time.Millisecond), down(1, x1, y1)))
+	for _, ev := range r.Frame(frame(t0.Add(120 * time.Millisecond))) {
+		if sw, ok := ev.(Swipe); ok {
+			return sw, true
+		}
+	}
+	return Swipe{}, false
+}
+
+// Cells are 10px wide and 40px tall here, so raw column and row deltas are
+// not comparable: a mostly-upward stroke crosses more COLUMNS than rows and
+// used to classify as horizontal. The dominant axis is physical distance.
+func TestSwipeAxisUsesPhysicalTravel(t *testing.T) {
+	r := testRecognizer()
+	// 100px right, 200px up: unambiguously vertical to a finger, but 10
+	// columns against 5 rows in cell counts
+	sw, ok := swipeStroke(t, r, 400, 500, 500, 300)
+	if !ok {
+		t.Fatal("diagonal-but-mostly-vertical stroke produced no swipe")
+	}
+	if sw.Dir != Up {
+		t.Errorf("dir = %v, want Up (200px vertical beats 100px horizontal)", sw.Dir)
+	}
+
+	// and the mirror: more physical travel sideways stays horizontal
+	r = testRecognizer()
+	sw, ok = swipeStroke(t, r, 400, 500, 700, 460)
+	if !ok {
+		t.Fatal("mostly-horizontal stroke produced no swipe")
+	}
+	if sw.Dir != Right {
+		t.Errorf("dir = %v, want Right", sw.Dir)
+	}
+}
+
+// A row is four times a column here, so one shared threshold made an
+// up-swipe demand four times the finger travel of a left-swipe.
+func TestSwipeVerticalThresholdIsSeparate(t *testing.T) {
+	r := testRecognizer()
+	// 3 rows = 120px up, under the 6-cell horizontal threshold but over
+	// the vertical one
+	if sw, ok := swipeStroke(t, r, 400, 500, 400, 380); !ok || sw.Dir != Up {
+		t.Errorf("3-row swipe = %+v ok=%v, want Up", sw, ok)
+	}
+	// 2 rows still reads as an imprecise drag, not a swipe
+	r = testRecognizer()
+	if sw, ok := swipeStroke(t, r, 400, 500, 400, 420); ok {
+		t.Errorf("2-row stroke produced %+v, want no swipe", sw)
+	}
+}

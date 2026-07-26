@@ -9,7 +9,12 @@ import (
 type Config struct {
 	SlopCells  float64       // tap/drag slop radius in cells; default 1.5
 	LongPress  time.Duration // hold threshold; default 450ms
-	SwipeCells int           // min dominant-axis travel; default 6
+	SwipeCells int           // min horizontal travel in columns; default 6
+	// SwipeRows is the vertical threshold, in rows. It is SEPARATE from
+	// SwipeCells because a cell is far taller than it is wide (40px vs
+	// 10px on this glass): one shared count made an up-swipe demand four
+	// times the finger travel of a left-swipe.
+	SwipeRows int // default 3
 }
 
 func (c Config) withDefaults() Config {
@@ -21,6 +26,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SwipeCells == 0 {
 		c.SwipeCells = 6
+	}
+	if c.SwipeRows == 0 {
+		c.SwipeRows = 3
 	}
 	return c
 }
@@ -203,10 +211,20 @@ func (r *Recognizer) beyondSlop(p Point) bool {
 	return math.Abs(float64(p.PX-r.start.PX)) > sx || math.Abs(float64(p.PY-r.start.PY)) > sy
 }
 
+// classifySwipe picks the dominant axis by PHYSICAL travel and then holds
+// each axis to its own threshold. Comparing raw column and row deltas
+// treated a cell as square; it is not, so a finger moving diagonally --
+// or even mostly upward -- covered more columns than rows and classified
+// as horizontal. Metrics are missing on a bare recognizer, so fall back
+// to the cell comparison there rather than dividing by zero.
 func (r *Recognizer) classifySwipe(start, end Point) (Swipe, bool) {
 	dc, dr := end.Col-start.Col, end.Row-start.Row
 	adc, adr := abs(dc), abs(dr)
-	if adc >= adr {
+	horizontal := adc >= adr
+	if w, h := r.cells.CellW(), r.cells.CellH(); w > 0 && h > 0 {
+		horizontal = float64(adc)*w >= float64(adr)*h
+	}
+	if horizontal {
 		if adc < r.cfg.SwipeCells {
 			return Swipe{}, false
 		}
@@ -216,7 +234,7 @@ func (r *Recognizer) classifySwipe(start, end Point) (Swipe, bool) {
 		}
 		return Swipe{Dir: dir, Start: start, End: end, Cells: adc}, true
 	}
-	if adr < r.cfg.SwipeCells {
+	if adr < r.cfg.SwipeRows {
 		return Swipe{}, false
 	}
 	dir := Down

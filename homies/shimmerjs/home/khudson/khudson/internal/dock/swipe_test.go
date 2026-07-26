@@ -195,3 +195,58 @@ func TestSwipeBeforeFirstFrame(t *testing.T) {
 		t.Fatalf("pre-frame swipe: layout = %q, want hub", m.layout)
 	}
 }
+
+// A thumb arriving at a column edge lands a cell or two off the region it
+// meant. Without a near-miss pass the stroke fell through to a layout with
+// no vertical binding and did nothing at all, which reads as a broken
+// gesture rather than a missed one.
+func TestSwipeStartNearMissStillHitsRegion(t *testing.T) {
+	m := newHomeModel(196, 24)
+	bindRegionSwipe(t, m, "claude-hud", "hub", "") // region rect {20,0,164,10}
+
+	// four columns short of the region's left edge
+	verticalSwipe(m, "up", 16, 5)
+	if m.layout != "hub" {
+		t.Fatalf("near-miss swipe: layout = %q, want hub", m.layout)
+	}
+	// the wash still covers the region that changed, not the slop rect
+	if want := (rect{20, 0, 164, 10}); m.xition == nil || m.xition.area != want {
+		t.Errorf("wash area = %+v, want the region's own rect %+v", m.xition, want)
+	}
+
+	// one row under its bottom edge
+	m2 := newHomeModel(196, 24)
+	bindRegionSwipe(t, m2, "claude-hud", "hub", "")
+	verticalSwipe(m2, "up", 100, 11)
+	if m2.layout != "hub" {
+		t.Fatalf("near-miss below the region: layout = %q, want hub", m2.layout)
+	}
+
+	// slop is a near miss, not a free-for-all: the far side of the glass
+	// still resolves to the layout
+	m3 := newHomeModel(196, 24)
+	bindRegionSwipe(t, m3, "claude-hud", "hub", "")
+	verticalSwipe(m3, "up", 2, 20)
+	if m3.layout != "home" {
+		t.Fatalf("far swipe navigated: %q", m3.layout)
+	}
+}
+
+// The near-miss pass must not overrule a region that deliberately leaves
+// one direction to the layout: a start INSIDE a bound region is resolved
+// by that region alone.
+func TestSwipeNearMissRespectsExactMatch(t *testing.T) {
+	m := newHomeModel(196, 24)
+	l := m.cfg.Layouts["home"]
+	l.SwipeDown = "hub"
+	m.cfg.Layouts["home"] = l
+	bindRegionSwipe(t, m, "claude-hud", "keyboard", "")
+
+	verticalSwipe(m, "down", 100, 5) // inside the up-only region
+	if m.layout != "hub" {
+		t.Fatalf("layout fallback: layout = %q, want hub", m.layout)
+	}
+	if want := (rect{0, 0, 196, 23}); m.xition == nil || m.xition.area != want {
+		t.Errorf("wash area = %+v, want the whole body %+v", m.xition, want)
+	}
+}

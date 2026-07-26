@@ -68,6 +68,13 @@ func (r rect) contains(x, y int) bool {
 	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
 }
 
+// grow expands a rect by dx/dy on every side, clamped at the glass origin.
+// Used for near-miss gesture matching, never for painting.
+func (r rect) grow(dx, dy int) rect {
+	x, y := max(r.x-dx, 0), max(r.y-dy, 0)
+	return rect{x, y, r.w + dx + (r.x - x), r.h + dy + (r.y - y)}
+}
+
 // hitRegion is one tappable rect; do runs with the tap's absolute cell
 // coords. The first containing rect in the table wins, and a match consumes
 // the tap even when its action no-ops.
@@ -922,9 +929,21 @@ func (m *model) swipeVertical(g *proto.Gesture) {
 	m.trayActivate(target, target)
 }
 
+// swipeSlopCols / swipeSlopRows widen a region's swipe rect for the START
+// cell only. A thumb arriving at a column edge lands a cell or two off
+// the region it meant, and the stroke then fell through to a layout with
+// no vertical binding -- silently doing nothing, which reads as a broken
+// gesture rather than a missed one.
+const (
+	swipeSlopCols = 6
+	swipeSlopRows = 2
+)
+
 // swipeTarget resolves a vertical swipe to its nav target and the area that
 // changes. Region bindings win by start cell (first containing rect, the hit
-// table's convention); the layout target covers the rest of the glass.
+// table's convention); a start that landed in no bound region at all gets a
+// second pass against widened rects, and the layout target covers the rest
+// of the glass.
 func (m *model) swipeTarget(g *proto.Gesture) (target string, area rect) {
 	for _, rs := range m.regionSwipes {
 		if !rs.area.contains(g.StartCol, g.StartRow) {
@@ -934,11 +953,24 @@ func (m *model) swipeTarget(g *proto.Gesture) (target string, area rect) {
 			return t, rs.area
 		}
 		// a region binding only the other direction leaves this one to the
-		// layout: the stroke is not swallowed by the column it started in
-		break
+		// layout: the stroke is not swallowed by the column it started in,
+		// and the near-miss pass must not overrule that deliberate choice
+		return m.layoutSwipe(g)
 	}
+	for _, rs := range m.regionSwipes {
+		if rs.area.grow(swipeSlopCols, swipeSlopRows).contains(g.StartCol, g.StartRow) {
+			if t := rs.target(g.Dir); t != "" {
+				return t, rs.area
+			}
+		}
+	}
+	return m.layoutSwipe(g)
+}
+
+// layoutSwipe is the whole-glass fallback binding.
+func (m *model) layoutSwipe(g *proto.Gesture) (string, rect) {
 	l := m.cfg.Layouts[m.layout]
-	target = l.SwipeUp
+	target := l.SwipeUp
 	if g.Dir == "down" {
 		target = l.SwipeDown
 	}
