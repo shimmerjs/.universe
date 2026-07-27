@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
@@ -368,5 +369,97 @@ func TestObsInventoryCtlValidates(t *testing.T) {
 	}
 	if _, _, err := m.HandleCtl([]string{"obs-inventory"}); err == nil {
 		t.Error("missing payload must fail")
+	}
+}
+
+// A pad tile is a BUTTON. The only tile allowed to ignore a tap is the
+// scripted-config readout, which exists to say the knobs are not yours to
+// turn right now. Anything else that paints like a key and swallows the
+// press is a lie about the surface -- the "probe OBS first" tile shipped
+// exactly that way.
+func TestEveryPadTileIsPressable(t *testing.T) {
+	readouts := map[string]bool{KeyCfgScript: true}
+
+	check := func(t *testing.T, what string, rows []module.Row) {
+		t.Helper()
+		var tiles int
+		for _, r := range rows {
+			if r.Kind != module.RowPad {
+				continue
+			}
+			tiles++
+			if readouts[r.Key] {
+				continue
+			}
+			if len(r.Act) == 0 && len(r.Menu) == 0 {
+				t.Errorf("%s: tile %q (%q) takes no tap", what, r.Key, r.Text)
+			}
+		}
+		if tiles == 0 {
+			t.Errorf("%s: pad rendered no tiles at all", what)
+		}
+	}
+
+	m, _ := testMod(t)
+	check(t, "cold", m.recorderData().Rows)
+
+	freshInv(t, m)
+	check(t, "probed", m.recorderData().Rows)
+
+	m.inventory.At = m.now().Add(-2 * invStale)
+	check(t, "stale", m.recorderData().Rows)
+
+	m2, _ := testMod(t)
+	m2.HandleActEffects([]string{actRecord})
+	check(t, "recording", m2.recorderData().Rows)
+}
+
+// Screens are the one part of an OBS enumeration that changes without
+// warning. A dock unplugged mid-setup leaves an inventory whose clock has
+// not run out but whose selectors point at displays that are gone, so the
+// pad checks display IDENTITY, not age.
+func TestDisplayChangeOutranksTheStalenessClock(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	// the fixture inventory enumerates uuid-b and uuid-d
+	m.local = []cgdisplay.Display{{UUID: "uuid-b"}, {UUID: "uuid-d"}}
+	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Value != "32.2.0" {
+		t.Fatalf("matching display set must read healthy: %+v", got)
+	}
+
+	// unplug one: fresh clock, wrong screens
+	m.local = []cgdisplay.Display{{UUID: "uuid-b"}}
+	probe := padTile(m.recorderData().Rows, KeyActProbe)
+	if probe == nil || probe.Style != module.StyleWarn {
+		t.Errorf("a moved display set must read hot: %+v", probe)
+	}
+	if probe.Value != "displays moved" {
+		t.Errorf("probe tile value = %q, want the reason", probe.Value)
+	}
+	// the screen buttons stay live -- the selection is still yours to
+	// clear -- but must not read healthy
+	screen := padTile(m.recorderData().Rows, KeyCfgScreens+":uuid-d")
+	if screen == nil || len(screen.Act) == 0 {
+		t.Fatalf("screen button went dead: %+v", screen)
+	}
+	if screen.Style != module.StyleWarn || screen.Value != "re-probe" {
+		t.Errorf("stale screen button = %+v, want a warning", screen)
+	}
+
+	// swapped for a different display: same count, different identity
+	m.local = []cgdisplay.Display{{UUID: "uuid-b"}, {UUID: "uuid-new"}}
+	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Style != module.StyleWarn {
+		t.Errorf("a swapped display must read hot: %+v", got)
+	}
+}
+
+// No enumeration is not evidence of a change: a bare test bus, or a CG
+// call that came back empty, must not paint the pad red.
+func TestNoEnumerationIsNotAMove(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.local = nil
+	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Style == module.StyleWarn {
+		t.Errorf("absent enumeration must not read as moved: %+v", got)
 	}
 }

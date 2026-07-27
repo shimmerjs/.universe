@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
@@ -65,9 +66,13 @@ type Mod struct {
 	// the run journal at arm. Scripted runs take their script's config
 	// instead -- a leftover pending knob must never hijack a show.
 	pending renocore.RecordConfig
-	// inventory is the last obs probe's device enumeration (menu
+	// inventory is the last obs probe's device enumeration (button
 	// source); the module never dials OBS itself.
 	inventory *renocore.ObsInventory
+	// local is the machine's display set as of the last recorder poll,
+	// enumerated OUTSIDE mu. It is what tells the pad an inventory has
+	// gone wrong by identity rather than by age.
+	local []cgdisplay.Display
 	// notes is the ad hoc speaker-notes body (notes without a script),
 	// with the path it was read from for the status row.
 	notes     string
@@ -536,12 +541,19 @@ func (m *Mod) statusLocked() Status {
 // because there is nothing to wait on.
 func (m *Mod) Poll(_ context.Context, params map[string]any) (module.Data, error) {
 	view, _ := params["view"].(string)
+	if view != "recorder" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.presenterData(), nil
+	}
+	// enumerate BEFORE taking mu: a display-server call under the module
+	// lock would put every ctl and act behind it, and only the recorder
+	// pad has anything to say about displays
+	local := localDisplays()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if view == "recorder" {
-		return m.recorderData(), nil
-	}
-	return m.presenterData(), nil
+	m.local = local
+	return m.recorderData(), nil
 }
 
 func fmtClock(d time.Duration) string {

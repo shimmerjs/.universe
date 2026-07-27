@@ -9,7 +9,12 @@
 package cgdisplay
 
 /*
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation
+// ColorSync is not decoration: CGDisplayCreateUUIDFromDisplayID moved
+// there, and CoreGraphics alone does not export it. Until something else
+// in the binary pulled in ApplicationServices (internal/ax does), this
+// package linked only by accident -- any importer without that neighbour
+// failed at link time.
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework ColorSync
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
 

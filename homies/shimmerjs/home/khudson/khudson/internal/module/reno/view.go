@@ -315,12 +315,15 @@ func (m *Mod) recorderTiles() []module.Row {
 
 	inv := m.inventory
 	if inv == nil {
-		// nothing probed yet: the OBS button above is the whole surface,
-		// and saying so beats a band of buttons that select nothing
+		// nothing probed yet: say so where the device bands would be, but
+		// say it on a LIVE button -- imperative text on a dead tile is the
+		// pad telling you to tap something that ignores taps
 		return append(tiles, module.Row{Kind: module.RowPad, Section: secScreens,
-			Key: "cfg:unprobed", Text: "probe OBS first", Style: module.StyleDim})
+			Key: "cfg:unprobed", Glyph: glyphProbe, Text: "probe OBS first",
+			Style: module.StyleHighlight, Act: []string{actProbe}})
 	}
 
+	gone := displaysMoved(inv, m.local)
 	for _, it := range inv.Screens {
 		t := module.Row{Kind: module.RowPad, Section: secScreens,
 			Key: KeyCfgScreens + ":" + it.Value, Glyph: glyphScreen, Text: it.Name,
@@ -333,6 +336,11 @@ func (m *Mod) recorderTiles() []module.Row {
 				}
 				break
 			}
+		}
+		if gone {
+			// keep the button live -- the selection is still journalled and
+			// still yours to clear -- but never let it read healthy
+			t.Style, t.Value = module.StyleWarn, "re-probe"
 		}
 		tiles = append(tiles, t)
 	}
@@ -412,6 +420,12 @@ func (m *Mod) probeTile() module.Row {
 		return t
 	}
 	t.Value = inv.ObsVersion
+	if displaysMoved(inv, m.local) {
+		// louder than stale: the enumeration is not merely old, its screen
+		// selectors point at displays that are not there any more
+		t.Text, t.Value, t.Style = "RE-PROBE", "displays moved", module.StyleWarn
+		return t
+	}
 	if m.now().Sub(inv.At) > invStale {
 		t.Value = inv.ObsVersion + " stale"
 		return t

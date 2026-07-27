@@ -12,8 +12,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
 	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
@@ -153,6 +155,41 @@ func (m *Mod) saveInventoryLocked() {
 	if err := os.Rename(tmp, filepath.Join(m.stateDir, inventoryFile)); err != nil {
 		log.Printf("khudson reno: obs inventory cache: %v", err)
 	}
+}
+
+// localDisplays is the CG enumeration seam (tests fake it), mirroring the
+// bus's. Enumeration is local, unrestricted, and cheap -- no OBS, no TCC.
+var localDisplays = cgdisplay.Active
+
+// displaysMoved reports that the machine's display set no longer matches
+// the one the inventory was probed against. Screens are the one part of
+// an OBS enumeration that changes without warning: undock, and a cached
+// inventory still looks current -- its clock has not run out -- while its
+// selectors point at displays that are gone. A time-based staleness check
+// cannot see that, so the pad checks identity, not age.
+//
+// The probe records display selectors straight from CoreGraphics (UUID
+// for SCK, CGDirectDisplayID for the legacy source, chosen by the OBS
+// source kind), so both forms are accepted here rather than plumbing
+// which one was used.
+func displaysMoved(inv *renocore.ObsInventory, local []cgdisplay.Display) bool {
+	if inv == nil || len(local) == 0 {
+		return false // nothing probed, or no enumeration to judge against
+	}
+	if len(local) != len(inv.Screens) {
+		return true
+	}
+	have := make(map[string]bool, len(local)*2)
+	for _, d := range local {
+		have[d.UUID] = true
+		have[strconv.FormatUint(uint64(d.ID), 10)] = true
+	}
+	for _, s := range inv.Screens {
+		if !have[s.Value] {
+			return true
+		}
+	}
+	return false
 }
 
 // handleCfgActLocked is the recorder view's config-menu dispatch.
