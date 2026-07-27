@@ -56,6 +56,12 @@ type StripEntry struct {
 	Label  string `json:"label"`
 	Target string `json:"target"`
 	Alt    string `json:"alt,omitempty"`
+	// AltLabel is what the tab reads while the ALT side is showing. A pair
+	// whose tab looks identical on both sides hides half of itself: you
+	// cannot tell whether the next tap flips or leaves. Empty keeps Label
+	// on both sides; both are padded to one width so flipping never
+	// reflows the strip under your thumb.
+	AltLabel string `json:"altLabel,omitempty"`
 }
 
 // StripToggle is one strip state toggle; Kind names the bus state it
@@ -364,6 +370,9 @@ func (c *Config) checkStrip() error {
 		if e.Alt != "" {
 			if _, ok := c.Layouts[e.Alt]; !ok {
 				return fmt.Errorf("strip: entry %q alt layout %q is not defined in layouts", e.Label, e.Alt)
+			}
+			if e.AltLabel != "" && e.Alt == "" {
+				return fmt.Errorf("strip: entry %q sets altLabel with no alt target", e.Label)
 			}
 			if e.Alt == e.Target {
 				return fmt.Errorf("strip: entry %q alt and target name the same layout %q", e.Label, e.Target)

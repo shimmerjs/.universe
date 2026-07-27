@@ -237,12 +237,15 @@ caffeinate: on: true
 // off; tap toggles.
 strip: {
 	entries: [
+		// reno leads the strip. alt makes the tab a pair: active on either
+		// reno layout, tap flips to the other side. The RECORDER (the
+		// control pad) is the first tap -- it is the half reached for
+		// without a script loaded -- and altLabel names the side showing,
+		// so the presenter half is not hidden behind an identical tab.
+		{label: "reno", target: "reno-recorder", alt: "reno-presenter", altLabel: "notes"},
 		{label: "kb", target: "keyboard"},
 		{label: "clod", target: "claude"},
 		{label: "sys", target: "monitor"},
-		// alt makes the tab a pair: active on either reno layout, tap
-		// flips to the other side (presenter <-> recorder).
-		{label: "reno", target: "reno-presenter", alt: "reno-recorder"},
 	]
 	toggles: [
 		{kind: "caffeinate", on: "\U000F0176", off: "\U000F06CA"},

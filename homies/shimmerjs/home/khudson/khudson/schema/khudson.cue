@@ -41,8 +41,10 @@ import "time"
 #Strip: {
 	// alt is an optional second target: while the active layout is target
 	// or alt, the tab reads active and its tap flips to the other (the
-	// reno presenter<->recorder pair); Go checks alt against layouts.
-	entries: [...{label: string, target: string, alt?: string}] | *[]
+	// reno recorder<->presenter pair); Go checks alt against layouts.
+	// altLabel is what the tab reads on the alt side, so a pair does not
+	// look identical whichever half is showing.
+	entries: [...{label: string, target: string, alt?: string, altLabel?: string}] | *[]
 	toggles: [...{kind: string, on?: string, off?: string}] | *[]
 	// configured kitty_mod chord, rendered as a compact modifier-glyph note;
 	// unset renders nothing

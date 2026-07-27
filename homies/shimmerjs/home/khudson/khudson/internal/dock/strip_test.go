@@ -570,3 +570,34 @@ func TestStripKittyModNote(t *testing.T) {
 		t.Error("empty kitty_mod still rendered the chord glyphs")
 	}
 }
+
+// A pair's tab names the side it is SHOWING. An identical label on both
+// halves hides that the other half exists -- which is how the reno control
+// pad sat one unmarked tap away and read as missing.
+func TestStripAltLabelNamesTheShowingSide(t *testing.T) {
+	m := stripModel()
+	m.cfg.Layouts["pad"] = config.Layout{Kind: "home", Regions: []config.Region{
+		{Widget: "cpumem", Edge: "fill"}}}
+	m.cfg.Layouts["notes"] = config.Layout{Kind: "home", Regions: []config.Region{
+		{Widget: "cpumem", Edge: "fill"}}}
+	m.cfg.Strip.Entries = append(m.cfg.Strip.Entries,
+		config.StripEntry{Label: "reno", Target: "pad", Alt: "notes", AltLabel: "notes"})
+
+	m.layout = "pad"
+	if got := ansi.Strip(stripLines(t, m)); !strings.Contains(got, "reno") {
+		t.Errorf("target side must read its own label: %q", got)
+	}
+	m.layout = "notes"
+	if got := ansi.Strip(stripLines(t, m)); !strings.Contains(got, "notes") {
+		t.Errorf("alt side must read altLabel: %q", got)
+	}
+
+	// both halves budget one width, so flipping does not reflow the strip
+	// out from under the thumb that flipped it
+	m.layout = "pad"
+	wide := len(ansi.Strip(stripLines(t, m)))
+	m.layout = "notes"
+	if narrow := len(ansi.Strip(stripLines(t, m))); narrow != wide {
+		t.Errorf("strip width moved on flip: %d vs %d", wide, narrow)
+	}
+}

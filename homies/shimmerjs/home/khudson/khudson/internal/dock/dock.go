@@ -1167,10 +1167,22 @@ func (m *model) renderStrip() string {
 			// pair); plain tabs keep the one-target exact match
 			active := e.Target == m.layout || (e.Alt != "" && e.Alt == m.layout)
 			target := e.Target
+			// a pair's tab names the side it is SHOWING, not the side it
+			// goes to: an identical label on both halves hides that the
+			// other half exists, which is how a control pad behind an alt
+			// stayed invisible
+			text := e.Label
 			if e.Alt != "" && m.layout == e.Target {
 				target = e.Alt
+			} else if e.Alt != "" && m.layout == e.Alt && e.AltLabel != "" {
+				text = e.AltLabel
 			}
-			label, style := e.Label, srf.label(chromeFG)
+			// both halves budget one width, so flipping never reflows the
+			// strip out from under the thumb that flipped it
+			if w := max(lipgloss.Width(e.Label), lipgloss.Width(e.AltLabel)); w > lipgloss.Width(text) {
+				text += strings.Repeat(" ", w-lipgloss.Width(text))
+			}
+			label, style := text, srf.label(chromeFG)
 			if active {
 				style = chromeAccent.Bold(true)
 			}
