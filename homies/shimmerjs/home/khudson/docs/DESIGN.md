@@ -89,8 +89,14 @@ gotchas and the verified-constraint history live in the author's memory
 ## Fullscreen + launch
 
 - Plain stock-kitty window + native fullscreen (`--position` onto the Edge +
-  `--start-as fullscreen`). NOT panels -- they refuse fullscreen; the
-  menubar-cover patch is shelved. Display-gated launcher: never opens with the
+  `--start-as fullscreen`). NOT panels -- they refuse fullscreen. The
+  menubar-cover patch is deleted (2026-07-26): it was never wired into
+  `nixpkgs.overlays`, and kitty 0.48.0 shipped `macos_use_physical_screen_frame`
+  (screen frame instead of visible frame, so a panel can draw over the menu bar
+  and Dock) plus `macos_ns_window_layer`. If panels ever come back, reach for
+  those options -- and re-check whether upstream also suppresses
+  `constrainFrameRect:toScreen:`, which the patch needed and the options do not
+  obviously cover. Display-gated launcher: never opens with the
   display absent (clamps a junk window otherwise), computes `--position` from
   NSScreen at launch, tears down / relaunches on display or child change, no
   `macos_hide_from_tasks` (breaks fullscreen).
