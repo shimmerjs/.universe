@@ -24,26 +24,9 @@
         inherit (prev.stdenv.hostPlatform) system;
         config.allowUnfree = true;
       };
-      # 0.144.1 (nixpkgs master's current) ships a Guardian auto-review
-      # prompting regression, reverted upstream in 0.144.2; ride 0.144.3
-      # until master catches up, then drop this overrideAttrs and let the
-      # fresh set pick it (check: nix eval github:nixos/nixpkgs/master#codex.version).
-      codexSrc = prev.fetchzip {
-        url = "https://github.com/openai/codex/archive/refs/tags/rust-v0.144.3.tar.gz";
-        hash = "sha256-TtOzSLByGf+8K5fs0b92wJ4e9tBZvFbJqfMtvSuGU58=";
-      };
     in {
       claude-code = fresh.claude-code;
-      codex = fresh.codex.overrideAttrs (old: {
-        version = "0.144.3";
-        src = codexSrc;
-        cargoDeps = old.cargoDeps.overrideAttrs (_: {
-          src = codexSrc;
-          name = "codex-0.144.3-vendor";
-          outputHash = "sha256-w3iFC7b4m3FTgyFgQ1ZR508mOy9lcyOsubocq9LdSOM=";
-          outputHashMode = "recursive";
-        });
-      });
+      codex = fresh.codex;
     })
   ];
 }
