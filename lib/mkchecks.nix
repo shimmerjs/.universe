@@ -155,16 +155,6 @@ let
            value = import ../homies/shimmerjs/home/khudson/nix/posture-check.nix { inherit pkgs; hmCfg = hmUserCfg; }; }
     else null;
 
-  mkKhudsonKittyPinCheck = hostname: config: let
-    host = importHost hostname;
-    system = host.system;
-    pkgs = nixpkgs.legacyPackages.${system};
-    hmUserCfg = config.home-manager.users.${host.user} or {};
-  in if hmUserCfg.universe.home.khudson.enable or false
-    then { inherit system; name = "khudson-kitty-pin-${hostname}";
-           value = import ../homies/shimmerjs/home/khudson/nix/kitty-pin-check.nix { inherit pkgs; }; }
-    else null;
-
   # CUE-export drift guard for pkgs/krib/sheets: the committed JSON artifacts
   # (go:embed'd into krib) must equal `cue export` of their .cue sources.
   # Host-independent content, discovered per host like every other builder.
@@ -215,7 +205,7 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonKittyPinCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
