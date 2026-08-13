@@ -5,9 +5,13 @@
   hostname,
   config,
   inputs,
+  lib,
   pkgs,
   ...
 }:
+let
+  gc = import ./nix-gc.nix { inherit lib pkgs; nixPackage = config.nix.package; };
+in
 {
   imports = [
     ../nix.nix
@@ -56,39 +60,31 @@
   documentation.doc.enable = false;
   system.tools.darwin-uninstaller.enable = false;
 
-  nix = {
-    # GC configuration that is specific to nix-darwin
-    gc = {
-      interval = {
-        Hour = 3;
-        Minute = 0;
-        Weekday = 3;
-      };
-    };
-  };
+  # nix-darwin's collector is off on macOS: nix-collect-garbage aborts the whole
+  # run on the first dead `.app` bundle it tries to chmod (App Management TCC),
+  # skipping every remaining path and the .links sweep. ./nix-gc.nix does the
+  # collect with those bundles filtered out, so leaving the builtin enabled
+  # would only add a second job that fails weekly behind the same GC lock.
+  # nix.gc.options stays declared in ../nix.nix for the NixOS hosts.
+  nix.gc.automatic = lib.mkForce false;
 
-  # nix.gc runs nix-collect-garbage, which prunes only the invoking user's
-  # profiles -- never the nix-darwin `system` profile. Old system generations
-  # therefore accumulate as live GC roots and pin their whole closures, leaving
-  # the collector nothing to free. Prune them 15 min before the 03:00 collect so
-  # the newly-unreferenced paths get swept the same run. Window mirrors
-  # nix.gc.options (--delete-older-than 30d). Always keeps the current generation.
-  # ProgramArguments (not command=) so nix-darwin skips its /bin/sh -c wrapper
-  # and Login Items/BTM shows the script basename instead of "sh"; the attr
-  # rename (nix-gc-system -> nix-gc-system-profile) is deliberate -- BTM caches
-  # the display name per label, so only a fresh label picks the new name up.
+  # The one weekly GC job: prune system-profile generations, then collect with
+  # the .app filter. ProgramArguments (not command=) so nix-darwin skips its
+  # /bin/sh -c wrapper and Login Items/BTM shows the script basename instead of
+  # "sh"; the attr rename (nix-gc-system-profile -> nix-gc-weekly) is
+  # deliberate -- BTM caches the display name per label, so only a fresh label
+  # picks up the new name, and the job does more than the profile now.
   # Store-path executable is fine here: no RunAtLoad, and the store is long
-  # mounted by the 02:45 fire time.
-  launchd.daemons.nix-gc-system-profile = {
-    serviceConfig.ProgramArguments = [
-      "${pkgs.writeShellScript "nix-gc-system-profile" ''
-        exec ${config.nix.package}/bin/nix-env --profile /nix/var/nix/profiles/system --delete-generations 30d
-      ''}"
-    ];
+  # mounted by the fire time. Std{Out,Error}Path because the failure this
+  # replaces went to /dev/null every week for months.
+  launchd.daemons.nix-gc-weekly = {
+    serviceConfig.ProgramArguments = [ "${gc.collect}/bin/nix-gc-weekly" ];
     serviceConfig.RunAtLoad = false;
+    serviceConfig.StandardOutPath = gc.logFile;
+    serviceConfig.StandardErrorPath = gc.logFile;
     serviceConfig.StartCalendarInterval = {
-      Hour = 2;
-      Minute = 45;
+      Hour = 3;
+      Minute = 0;
       Weekday = 3;
     };
   };

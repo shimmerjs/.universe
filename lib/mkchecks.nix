@@ -19,6 +19,9 @@
 #   - zshrc-<host>:           zsh rc posture pins (single compinit, cached
 #                             -C, keymap/matcher/alias posture) + isolated
 #                             runtime init smoke.
+#   - nix-gc-<host>:          weekly-GC dead-path filter (.app bundles held
+#                             back, symlink farms not) + daemon posture, for
+#                             hosts with the darwin nix-gc-weekly daemon.
 { inputs }:
 
 let
@@ -205,7 +208,26 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck ];
+  # Weekly-GC filter + daemon posture for macOS hosts. Gated on the daemon
+  # existing, which is what makes it darwin-only.
+  mkNixGcCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    daemon = config.launchd.daemons.nix-gc-weekly or null;
+  in if daemon != null
+    then { inherit system; name = "nix-gc-${hostname}";
+           value = import ./nix-gc-check.nix {
+             inherit pkgs;
+             # from the rendered daemon, not a re-import: the check must run the
+             # artifact the host actually schedules
+             collect = builtins.head daemon.serviceConfig.ProgramArguments;
+             gcAutomatic = lib.boolToString config.nix.gc.automatic;
+             daemonJson = builtins.toJSON daemon.serviceConfig;
+           }; }
+    else null;
+
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck mkNixGcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
