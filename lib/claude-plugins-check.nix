@@ -43,7 +43,12 @@ pkgs.runCommand "claude-plugins-check" { nativeBuildInputs = [ pkgs.jq ]; } ''
   done
   [ -f "$skills/worktrunk/skills/worktrunk/SKILL.md" ] || { echo "FAIL: worktrunk skill gone"; fail=1; }
   [ -f "$skills/worktrunk/skills/wt-switch-create/SKILL.md" ] || { echo "FAIL: wt-switch-create skill gone"; fail=1; }
-  [ -e "$skills/worktrunk/hooks/claude-hooks.json" ] || { echo "FAIL: worktrunk hooks file gone"; fail=1; }
+  # hooks/hooks.json is the name claude-code auto-discovers, and worktrunk's
+  # manifest carries no `hooks` pointer, so the filename IS the wiring. Upstream
+  # renamed it from claude-hooks.json, which nothing discovered.
+  [ -f "$skills/worktrunk/hooks/hooks.json" ] || { echo "FAIL: worktrunk hooks/hooks.json gone"; fail=1; }
+  jq -e '.hooks | keys | length > 0' "$skills/worktrunk/hooks/hooks.json" > /dev/null \
+    || { echo "FAIL: worktrunk hooks/hooks.json declares no hooks"; fail=1; }
   [ "$fail" -eq 0 ] || exit 1
   touch $out
 ''
