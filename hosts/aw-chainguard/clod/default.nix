@@ -62,45 +62,8 @@ in
     ./plannotator
   ];
 
-  # An out-of-band, WRITABLE settings source. ~/.claude/settings.json is a store
-  # symlink, so a tool that installs its own hooks (twine) cannot register itself
-  # there -- it resolves the link, hits the read-only store, and refuses. CC's
-  # `--settings` loads an ADDITIONAL file and concatenates same-key hook lists
-  # (verified: a hook in the extra file and one in project settings both fired in
-  # one session), so installer-written hooks coexist with the declarative ones
-  # below. Nothing tool-specific lives in nix: only the flag and the file.
-  home.activation.claudeExtraSettings = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    f="$HOME/.claude/settings.extra.json"
-    # --settings on a MISSING file is fatal ("Settings file not found", exit 1),
-    # so the flag cannot ship without the file. Seeded once, never managed after:
-    # home.file would make it a read-only store symlink, defeating the point.
-    [ -f "$f" ] || echo '{}' > "$f"
-  '';
-
   programs.claude-code = {
     enable = true;
-    # symlinkJoin + wrapProgram: the stock nixpkgs way to add a flag, and the
-    # same shape the HM module's own legacy plugin wrapper uses. makeWrapper
-    # emits a bash wrapper, so `$HOME` expands at RUN time -- keep it off
-    # makeBinaryWrapper, whose compiled C wrapper would bake in the build-time
-    # value.
-    #
-    # version is load-bearing, not cosmetic: the module reads it with
-    # lib.getVersion and gates the plugin estate on it. Without one this takes
-    # the "non-null package, no detectable version" branch, which fails closed
-    # to the legacy --plugin-dir wrapper, sets supportsPersonalPlugins = false,
-    # and stops seeding ~/.claude/skills/<plugin> -- the managed plugin entries
-    # and their skills silently vanish.
-    package = pkgs.symlinkJoin {
-      name = "claude-code-extra-settings";
-      paths = [ pkgs.claude-code ];
-      nativeBuildInputs = [ pkgs.makeWrapper ];
-      postBuild = ''
-        wrapProgram $out/bin/claude \
-          --add-flags '--settings "$HOME/.claude/settings.extra.json"'
-      '';
-      inherit (pkgs.claude-code) version meta;
-    };
     context = ./SYSTEM_PROMPT.md;
 
     agents = {
