@@ -195,10 +195,7 @@ in
       macos_titlebar_color = "background";
 
       # Appearance
-      # vertical tab bar (kitty >= 0.48 takes left/right here); on a vertical
-      # edge tab_bar_margin_width is the margin ABOVE and BELOW the bar, and
-      # the bar sizes its width off the tab titles -- no explicit width knob
-      tab_bar_edge = "right";
+      tab_bar_edge = "bottom";
       tab_bar_margin_width = "5.0";
       tab_bar_style = "powerline";
 
