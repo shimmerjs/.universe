@@ -124,6 +124,12 @@ log(`research: fanout=${flags.fanout} passes=${flags.passes} verify=${flags.veri
 const RESEARCHER = stock ? undefined : 'researcher'
 const SKEPTIC    = stock ? undefined : 'skeptic'
 
+// WebSearch runs as its own sub-request with thinking hardcoded off but forwards
+// the session effort verbatim, so xhigh comes back 400 and the leg searches
+// blind. researcher/skeptic pin effort: high in frontmatter; stock legs fall back
+// to the session's, so pin it here too.
+const WEB_EFFORT = stock ? 'high' : undefined
+
 // name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
 // ONLY channel that reaches external observers -- khudson's clod panel reads
 // transcript heads for leg names and the run name; label: feeds only the
@@ -156,7 +162,7 @@ const codexLeg = flags.codex !== 'on' ? null : () => named('search:codex:1',
   '2. Read the output file. Drop claims with no source URL and count them in dropped; keep codex\'s wording in text.\n' +
   '3. Return available=true with the surviving claims. If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate claims.\n' +
   'Research question:\n' + prompt,
-  { phase: 'Search', agentType: RESEARCHER, schema: CODEX_CLAIMS })
+  { phase: 'Search', agentType: RESEARCHER, schema: CODEX_CLAIMS, effort: WEB_EFFORT })
 const CAP = VERIFY_CAP + (flags.codex === 'on' ? 4 : 0)
 
 // overhead: the codex leg + the synthesize agent.
@@ -180,7 +186,7 @@ for (let round = 0; round < flags.passes; round++) {
     const mode = flags.breadth[i % flags.breadth.length]
     return () => named(`search:${mode}:${i + 1}`,
       `Round ${round + 1}, searcher ${i + 1} (${mode}). Research from an angle no other searcher would take: ${prompt}. Return concrete, sourced claims.`,
-      { phase: 'Search', schema: CLAIM, agentType: RESEARCHER })
+      { phase: 'Search', schema: CLAIM, agentType: RESEARCHER, effort: WEB_EFFORT })
   })
   if (round === 0 && codexLeg) thunks.unshift(codexLeg)
   const results = (await parallel(thunks)).filter(Boolean)
@@ -216,7 +222,7 @@ for (let round = 0; round < flags.passes; round++) {
   const judged = await parallel(take.map(c => () =>
     parallel(Array.from({ length: flags.verify }, (_, k) => () =>
       named(`verify:${(c.text || '').replace(/[\]"\\]/g, '').slice(0, 24)}`, `Skeptic ${k + 1}: try to REFUTE this claim. Default refuted=true if you can't independently confirm it.\nClaim: ${c.text}\nSource: ${c.source || 'none'}`,
-        { phase: 'Verify', schema: VERDICT, agentType: SKEPTIC })))
+        { phase: 'Verify', schema: VERDICT, agentType: SKEPTIC, effort: WEB_EFFORT })))
       .then(votes => {
         const vv = votes.filter(Boolean)
         return { c, verdict: tallyVotes(vv, flags.verify), failed: flags.verify - vv.length }
@@ -241,5 +247,5 @@ const basisNote = confirmed.length
 const report = await named('synthesize',
   `Synthesize a cited answer to: ${prompt}\nUse ONLY these ${basisNote}:\n` +
   basis.map((c, i) => `[${i + 1}] ${c.text} (${c.source || 'unsourced'})`).join('\n'),
-  { phase: 'Synthesize', agentType: RESEARCHER })
+  { phase: 'Synthesize', agentType: RESEARCHER, effort: WEB_EFFORT })
 return { question: prompt, flags, verified: confirmed.length, refuted, unverified: unverified.length, failed, overCap, codexDown, codexDropped, report }

@@ -118,6 +118,12 @@ const stock = flags.subagents === 'stock'
 const RESEARCHER = stock ? undefined : 'researcher'
 const SKEPTIC = stock ? undefined : 'skeptic'
 
+// WebSearch runs as its own sub-request with thinking hardcoded off but forwards
+// the session effort verbatim, so xhigh comes back 400 and the leg searches
+// blind. researcher/skeptic pin effort: high in frontmatter; stock legs fall back
+// to the session's, so pin it here too.
+const WEB_EFFORT = stock ? 'high' : undefined
+
 // name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
 // ONLY channel that reaches external observers -- khudson's clod panel reads
 // transcript heads for leg names and the run name; label: feeds only the
@@ -149,7 +155,7 @@ if (!areas) {
     type: 'object', required: ['area', 'source'], properties: {
       area: { type: 'string' }, source: { type: 'string', enum: ['local', 'dep', 'web'] } } } } } }
   const planned = (await named('plan', 'Plan ' + flags.areas.count + ' distinct investigation areas for: ' + prompt + '. Tag each source local|dep|web.',
-    { phase: 'Plan', agentType: RESEARCHER, schema: A })).areas
+    { phase: 'Plan', agentType: RESEARCHER, schema: A, effort: WEB_EFFORT })).areas
   // The budget guard bounded the REQUESTED count; hold the plan agent to it,
   // or an over-generous plan re-admits the cap-death past the guard.
   if (planned.length > flags.areas.count) log('plan returned ' + planned.length + ' areas, clamping to the requested ' + flags.areas.count)
@@ -180,14 +186,14 @@ const codexLeg = flags.codex !== 'on' ? null : () => named('dig:codex',
   '2. Read the output file. Drop claims with no source URL and count them in dropped; keep codex\'s wording in text and map [load-bearing] to loadBearing=true.\n' +
   '3. Return available=true with the surviving claims. If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate claims.\n' +
   'Research question:\n' + prompt,
-  { phase: 'Dig', agentType: RESEARCHER, schema: CODEX_CLAIMS })
+  { phase: 'Dig', agentType: RESEARCHER, schema: CODEX_CLAIMS, effort: WEB_EFFORT })
 
 phase('Dig')
 // plate grammar bans ] " \ in legs (see the named() comment); claim/area text is untrusted.
 const plateLeg = (s) => String(s || '').replace(/[\]"\\]/g, '').slice(0, 24)
 const thunks = areas.map(a => () => named('dig:' + plateLeg(a.split(' [')[0]),
   'Deep-dive prior art for "' + prompt + '", area: ' + a + '. Prefer primary sources; cite each claim with a source. Mark load-bearing claims.',
-  { phase: 'Dig', agentType: RESEARCHER, schema: CLAIM }))
+  { phase: 'Dig', agentType: RESEARCHER, schema: CLAIM, effort: WEB_EFFORT }))
 if (codexLeg) thunks.unshift(codexLeg)
 const results = (await parallel(thunks)).filter(Boolean)
 let found = []
@@ -232,7 +238,7 @@ if (flags['verify-scope'] === 'none') {
   const judged = await parallel(take.map(c => () =>
     parallel(Array.from({ length: flags.votes }, (_, k) => () =>
       named('verify:' + plateLeg(c.text), 'Skeptic ' + (k + 1) + ': try to REFUTE this prior-art claim. Default refuted=true if you cannot confirm from a primary source. If it is partly wrong, give a correction.\nClaim: ' + c.text + '\nSource: ' + (c.source || 'none'),
-        { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
+        { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT, effort: WEB_EFFORT })))
       .then(votes => {
         const vv = votes.filter(Boolean)   // filter raw votes BEFORE wrapping: a wrapped null verdict is a truthy object
         for (const v of vv) if (v.correction) corrections.push({ claim: c.text, correction: v.correction })

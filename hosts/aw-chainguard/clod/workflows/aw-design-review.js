@@ -160,6 +160,12 @@ const stock = flags.subagents === 'stock'
 const DESIGNER = stock ? undefined : 'designer'
 const SKEPTIC = stock ? undefined : 'skeptic'
 
+// WebSearch runs as its own sub-request with thinking hardcoded off but forwards
+// the session effort verbatim, so xhigh comes back 400 and a skeptic that reaches
+// for docs gets nothing. skeptic pins effort: high in frontmatter; stock legs fall
+// back to the session's, so pin it here too.
+const WEB_EFFORT = stock ? 'high' : undefined
+
 // name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
 // ONLY channel that reaches external observers -- khudson's clod panel reads
 // transcript heads for leg names and the run name; label: feeds only the
@@ -277,7 +283,7 @@ const judged = (await parallel(take.map(f => () =>
   parallel(Array.from({ length: flags.votes }, (_, v) => () =>
     named('verify:' + f.lens, 'Skeptic ' + (v + 1) + ': is this a REAL flaw in the design, or a misread? Default real=false unless you confirm against the code/design. Check it is not a LOCKED choice.\n' +
       f.lens + ': ' + f.desc + '\nEvidence: ' + (f.evidence || 'none'),
-      { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT })))
+      { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT, effort: WEB_EFFORT })))
     .then(votes => {
       const vv = votes.filter(Boolean)
       return { ...f, verdict: tallyVotes(vv, flags.votes) }

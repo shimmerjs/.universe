@@ -86,6 +86,12 @@ const stock = flags.subagents === 'stock'
 const DESIGNER = stock ? undefined : 'designer'
 const REVIEWER = stock ? undefined : 'reviewer'
 const SKEPTIC  = stock ? undefined : 'skeptic'
+
+// WebSearch runs as its own sub-request with thinking hardcoded off but forwards
+// the session effort verbatim, so xhigh comes back 400 and a skeptic that reaches
+// for docs gets nothing. skeptic pins effort: high in frontmatter; stock legs fall
+// back to the session's, so pin it here too.
+const WEB_EFFORT = stock ? 'high' : undefined
 const iso = flags.isolation === 'worktree' ? 'worktree' : undefined
 
 // name-plate: prefix every agent prompt with [<wf>:<leg>]. The plate is the
@@ -156,7 +162,7 @@ const votes = (await parallel(Array.from({ length: flags.verify }, (_, i) => () 
   named('verify:' + (i + 1), 'Skeptic ' + (i + 1) + ': does the implementation actually satisfy the spec and its acceptance criteria? Default meetsSpec=false unless you confirm by reading the real diff/code.' +
     '\nSPEC:\n' + spec.spec + '\nACCEPTANCE: ' + (spec.acceptance || []).join(' ; ') +
     '\nEXECUTION SUMMARY: ' + exec.summary + '\nFiles: ' + (exec.filesChanged || []).join(', ') + where,
-    { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT }))) ).filter(Boolean)
+    { phase: 'Verify', agentType: SKEPTIC, schema: VERDICT, effort: WEB_EFFORT }))) ).filter(Boolean)
 const meets = votes.filter(v => v.meetsSpec).length
 const specVerdict = tallySpecVotes(votes, flags.verify)
 const gaps = votes.flatMap(v => v.gaps || [])
