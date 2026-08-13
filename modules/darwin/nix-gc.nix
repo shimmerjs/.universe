@@ -72,6 +72,11 @@ let
       nixbin=${nixPackage}/bin
       say() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) nix-gc: $*"; }
 
+      # launchd hands a daemon no HOME, but a manual `sudo` run leaks the
+      # invoking user's, and every nix call then warns that it is falling back to
+      # passwd's. Drop it: same environment either way, and the log stays readable.
+      unset HOME
+
       # The nix-darwin `system` profile needs an explicit prune: every old
       # generation is a live GC root pinning its whole closure, so without this
       # the collect below has nothing to free. Prune first, collect second, same
