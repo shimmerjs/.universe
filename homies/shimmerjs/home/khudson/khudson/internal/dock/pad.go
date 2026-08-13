@@ -89,8 +89,12 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 
 	y := rr.y + len(lines)
 	for bi, b := range bands {
-		// the section label rides its own dim row; the buttons take the rest
+		// the section label rides its own dim row; the buttons take the rest.
+		// y tracks the row the next appended line lands on, so it steps over
+		// the label here -- a tile rect that started at the label row drifted
+		// one row per band off the buttons it was supposed to be
 		lines = append(lines, fitCellPad(chromeDim.Render(" "+strings.ToUpper(b.label)), rr.w))
+		y++
 		tileH := min(bandH[bi]-1, padTileMaxH)
 		rowsUsed := 1 + tileH
 

@@ -10,7 +10,7 @@
 // baseline with nothing re-diverting behind it, and the config setters (DPI,
 // SmartShift, hi-res wheel, thumbwheel, haptic, button remaps) own the device.
 // On-device EFFECT still wants one confirmation pass -- every setter logs the
-// frame it sends plus the read-back echo, so a touchd.log read after a switch
+// frame it sends plus the read-back echo, so a magicbusd.log read after a switch
 // verifies the physical change (the setters build frames from Solaar/logiops-
 // sourced function ids cited in hidpp.go).
 package main

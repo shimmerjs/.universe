@@ -4,6 +4,13 @@
 // remains, so presence gates the launch, the child is
 // torn down if the display disconnects mid-run, and exits relaunch with
 // backoff once the display is back.
+//
+// Presence is necessary but not sufficient: --position is a global-coordinate
+// point, and every plug/unplug of ANY display re-lays out that space. A child
+// launched under one arrangement holds a position that names a different
+// display -- or nothing -- under the next, and macOS drags its fullscreen
+// window along. So the healthy tick tracks the target's frame, not just its
+// name, and relaunches when the position it was launched at goes stale.
 package hudlaunch
 
 import (
@@ -167,6 +174,11 @@ func Run(ctx context.Context, opts Options) error {
 			// not a crash: wait for the display, no backoff
 			opts.Logf("hud-launcher: display %q disconnected; HUD torn down", opts.DisplayName)
 			continue
+		case outcome == childMoved:
+			// not a crash either: re-place at the new position immediately.
+			// Converges -- the relaunch records the position the next tick
+			// compares against.
+			continue
 		case outcome == childSignaled:
 			// a signaled child (jetsam, OOM killer, manual kill) is system
 			// pressure, not health: escalate even after a long run. The
@@ -230,6 +242,7 @@ const (
 	childExited   childOutcome = iota
 	childSignaled              // died by signal: treat as pressure, never resets backoff
 	childDisplayLost
+	childMoved // the arrangement moved the target; relaunch at the new position
 )
 
 // runChild launches one HUD kitty and blocks until it exits, the display
@@ -284,9 +297,22 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 				opts.Logf("hud-launcher: display query: %v", err)
 				continue
 			}
-			if _, ok := find(screens, opts.DisplayName); !ok {
+			target, ok := find(screens, opts.DisplayName)
+			if !ok {
 				terminate(cmd, done, opts.Logf)
 				return childDisplayLost
+			}
+			nx, ny, err := LaunchPos(target, screens)
+			if err != nil {
+				// mid-reconfiguration there may be no display at the Cocoa
+				// origin: unresolvable is not moved, leave the child alone
+				opts.Logf("hud-launcher: %v", err)
+				continue
+			}
+			if nx != x || ny != y {
+				opts.Logf("hud-launcher: %q is now at %dx%d, HUD was placed at %dx%d; relaunching", opts.DisplayName, nx, ny, x, y)
+				terminate(cmd, done, opts.Logf)
+				return childMoved
 			}
 		}
 	}

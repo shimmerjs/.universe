@@ -109,9 +109,27 @@ machine.
 
 Owed: glass eyes-on for swipe + recorder menus (next switch + bus/HUD
 restart), the Automation grant toward Chrome on first chrome-tab use,
-mpv-IPC scrub + moviemaker surfaces (P4 tail), P3 gmeet/vcam (user
-gates 1-2; NEW sub-gate: vcam refuses outside /Applications and the
-cask lands in ~/Applications), couch client.
+mpv-IPC scrub + moviemaker surfaces (P4 tail), P3 webcam FX, couch
+client.
+
+SCRAPPED 2026-08-10 (user): virtual cam / gmeet, entirely -- no phase,
+no gates, no code (there never was any; the leg lived only in docs).
+Verify-first gates 1-2 retired with it. P3 is now webcam FX alone and
+carries NO external gate: it is obs-websocket transform/filter work.
+The design doc's capture section holds the deep ledger (CMIO extension
++ MDM approval, the /Applications install precondition, the Meet
+"present content from camera" target, the NV12/Reactions pins, the
+zero-approval projector/present-a-tab alternatives, and two unpursued
+adjacent leads).
+
+Also corrected 2026-08-10: OBS is an UNPINNED homebrew cask
+(darwin.nix:107 -- nixpkgs obs-studio is linux-only) living in
+~/Applications, and zero OBS plugins are installed. reno-design.md's
+"OBS/Move/composite-blur ride nix inputs" was never true on darwin. So
+P3's plugin-free FX subset (SetSceneItemTransform,
+SetSceneItemEnabled, SerialFrame batches) is the default; Move and
+composite-blur are opt-in with a degraded path, guarded only by the
+connect-time capability probe.
 
 ## logiretch viewer, landed 2026-07-23 (binary: logiretch)
 

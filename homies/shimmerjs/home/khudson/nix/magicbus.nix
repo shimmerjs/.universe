@@ -127,8 +127,8 @@ let
       RunAtLoad = true;
       KeepAlive = true;
       ProcessType = "Interactive";
-      StandardOutPath = "${appSupport}/log/touchd.log";
-      StandardErrorPath = "${appSupport}/log/touchd.log";
+      StandardOutPath = "${appSupport}/log/magicbusd.log";
+      StandardErrorPath = "${appSupport}/log/magicbusd.log";
     }
   );
 in

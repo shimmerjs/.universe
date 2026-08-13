@@ -423,6 +423,75 @@ func TestRunChildDisplayLost(t *testing.T) {
 	}
 }
 
+// Unplugging a third display re-lays out the global coordinate space: the
+// Edge stays connected under the same name but its launch position moves, and
+// macOS drags the fullscreen HUD off it. Name presence cannot see that, so the
+// healthy tick compares the frame and relaunches.
+func TestRunChildTargetMoved(t *testing.T) {
+	sock := hudSockPath(t)
+	// laptop-only arrangement: Dell gone, laptop primary, Edge to its left
+	laptopOnly := []Screen{
+		{Name: "Built-in Retina Display", X: 0, Y: 0, W: 2056, H: 1329},
+		{Name: "XENEON EDGE", X: -2560, Y: -408, W: 2560, H: 720},
+	}
+	opts := Options{
+		KittyBin:    fakeChild(t, "sleep 30"),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        time.Hour,
+		HealthyPoll: 20 * time.Millisecond,
+		Query:       func(context.Context) ([]Screen, error) { return laptopOnly, nil },
+		Logf:        t.Logf,
+	}
+	// launched under the Dell arrangement (342x2160); the Edge now sits at
+	// -2560x1017
+	if got := runChild(context.Background(), opts, 342, 2160); got != childMoved {
+		t.Fatalf("outcome = %v, want childMoved", got)
+	}
+}
+
+// The converse: an unchanged arrangement must never tear down a healthy HUD,
+// however many healthy ticks fire.
+func TestRunChildStaysPutWhenArrangementHolds(t *testing.T) {
+	sock := hudSockPath(t)
+	edge, _ := find(liveScreens, "XENEON EDGE")
+	x, y, err := LaunchPos(edge, liveScreens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{
+		KittyBin:    fakeChild(t, "sleep 0.3"),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        time.Hour,
+		HealthyPoll: 20 * time.Millisecond,
+		Query:       func(context.Context) ([]Screen, error) { return liveScreens, nil },
+		Logf:        t.Logf,
+	}
+	if got := runChild(context.Background(), opts, x, y); got != childExited {
+		t.Fatalf("outcome = %v, want childExited (steady arrangement must not relaunch)", got)
+	}
+}
+
+// A display set with nothing at the Cocoa origin (seen mid-reconfiguration)
+// makes LaunchPos unresolvable. Unresolvable is not moved: keep the child.
+func TestRunChildKeepsChildWhenPositionUnresolvable(t *testing.T) {
+	sock := hudSockPath(t)
+	floating := []Screen{{Name: "XENEON EDGE", X: 342, Y: -720, W: 2560, H: 720}}
+	opts := Options{
+		KittyBin:    fakeChild(t, "sleep 0.3"),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		Poll:        time.Hour,
+		HealthyPoll: 20 * time.Millisecond,
+		Query:       func(context.Context) ([]Screen, error) { return floating, nil },
+		Logf:        t.Logf,
+	}
+	if got := runChild(context.Background(), opts, 342, 2160); got != childExited {
+		t.Fatalf("outcome = %v, want childExited (no primary must not tear the HUD down)", got)
+	}
+}
+
 func TestFind(t *testing.T) {
 	if _, ok := find(liveScreens, "NOPE"); ok {
 		t.Fatal("found a display that is not there")

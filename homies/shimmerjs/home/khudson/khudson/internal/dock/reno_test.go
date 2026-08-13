@@ -205,6 +205,66 @@ func TestRenoRecorderPadGridAndHits(t *testing.T) {
 	}
 }
 
+// padBandRows is a recorder payload spanning every band the real pad
+// publishes -- the drift this guards against grows one row per band, so a
+// two-section payload cannot see it.
+func padBandRows() module.Data {
+	d := module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowSpans, Key: reno.KeyHead, Spans: []module.Span{{Text: "run r-123"}}},
+	}}
+	for _, section := range []string{"transport", "screens", "mic", "cam"} {
+		for i := range 3 {
+			key := section + ":" + strconv.Itoa(i)
+			d.Rows = append(d.Rows, module.Row{Kind: module.RowPad, Section: section,
+				Key: key, Text: strings.ToUpper(section) + strconv.Itoa(i),
+				Act: []string{"act", key}})
+		}
+	}
+	return d
+}
+
+// Every button's tap rect IS the button it paints, and the tap lands on
+// that button's act. The rect used to start on the section label row and
+// slide one further per band, so the last band's buttons drew where
+// nothing was listening and took their taps from the band above -- a pad
+// whose bottom rows quietly stopped being buttons.
+func TestRenoRecorderPadHitsFrameTheirButtons(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = padBandRows()
+	m.invalidateHome("reno-presenter")
+
+	grid := strings.Split(ansi.Strip(m.View().Content), "\n")
+	msgs := busSink(t, m)
+	pads := 0
+	for _, h := range m.hits {
+		key, ok := strings.CutPrefix(h.pressKey, "reno-presenter:pad:")
+		if !ok {
+			continue
+		}
+		pads++
+		for _, corner := range []struct {
+			y    int
+			want string
+		}{{h.area.y, "┌"}, {h.area.y + h.area.h - 1, "└"}} {
+			if corner.y >= len(grid) {
+				t.Fatalf("%s: rect row %d past the glass", key, corner.y)
+			}
+			if got := ansi.Cut(grid[corner.y], h.area.x, h.area.x+1); got != corner.want {
+				t.Errorf("%s: rect corner at (%d,%d) = %q, want %q -- the rect is not on the button:\n%s",
+					key, h.area.x, corner.y, got, corner.want, strings.Join(grid, "\n"))
+			}
+		}
+		m.resolveTap(h.area.x+h.area.w/2, h.area.y+h.area.h/2)
+		if got := <-msgs; got.Type != proto.TypeRowAct || got.Argv[1] != key {
+			t.Errorf("tap on %s sent %+v", key, got)
+		}
+	}
+	if pads != 12 {
+		t.Errorf("registered %d button rects, want 12", pads)
+	}
+}
+
 // A tile whose only control is a menu opens it on a PLAIN tap: a pad has
 // no discoverable long-press, so a menu-only button that ignores taps is
 // a dead button.
