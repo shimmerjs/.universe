@@ -38,7 +38,7 @@ pkgs.runCommand "claude-plugins-check" { nativeBuildInputs = [ pkgs.jq ]; } ''
     fi
   done
   # load-bearing pins: the three plugin entries, and worktrunk's full set
-  for want in worktrunk hook claude-code-home-manager; do
+  for want in worktrunk plannotator claude-code-home-manager; do
     [ -e "$skills/$want" ] || { echo "FAIL: expected plugin entry $want missing"; fail=1; }
   done
   [ -f "$skills/worktrunk/skills/worktrunk/SKILL.md" ] || { echo "FAIL: worktrunk skill gone"; fail=1; }

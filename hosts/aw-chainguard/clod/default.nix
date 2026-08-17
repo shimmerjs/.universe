@@ -15,13 +15,9 @@ let
   # symlinks (home-manager's personal-plugin linking would leave them
   # dangling). Same flake input as the wt binary so hooks and CLI never
   # skew.
-  # The plugin lives in a named subdir: home-manager keys the installed
-  # plugin (and its ~/.claude/skills/<name> link) off the path BASENAME,
-  # and a bare $out would leak the hash-prefixed store name.
   worktrunkPlugin = pkgs.runCommand "worktrunk-claude-plugin" { } ''
-    mkdir $out
-    cp -RL ${inputs.worktrunk}/plugins/worktrunk $out/worktrunk
-    chmod -R u+w $out/worktrunk
+    cp -RL ${inputs.worktrunk}/plugins/worktrunk $out
+    chmod -R u+w $out
   '';
   # Agent-panel row renderer (settings.subagentStatusLine). Go: one process per
   # refresh tick regardless of task count; unit tests run in the check phase.
@@ -124,11 +120,15 @@ in
       };
     };
 
-    plugins = [
+    # attrset, not list: the key IS the ~/.claude/skills/<name> directory
+    # name. The list form derives it from the source basename, which for a
+    # bare store path yields the hash-prefixed name -- home-manager warns on
+    # it as of ec16115.
+    plugins = {
       # sideloaded from the nix input, no marketplace / mutable plugin cache;
-      # see worktrunkPlugin above for the manifest/skills re-seating
-      "${worktrunkPlugin}/worktrunk"
-    ];
+      # see worktrunkPlugin above for the escape-symlink materialization
+      worktrunk = worktrunkPlugin;
+    };
 
     settings = {
       model = "claude-opus-5";

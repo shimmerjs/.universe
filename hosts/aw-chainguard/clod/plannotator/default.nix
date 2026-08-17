@@ -29,9 +29,9 @@ let
 in
 {
   programs.claude-code = {
-    plugins = [
-      "${inputs.plannotator}/apps/hook"
-    ];
+    # key names the ~/.claude/skills/<name> entry; matches the manifest's
+    # own `name` rather than the "hook" the source basename used to derive
+    plugins.plannotator = "${inputs.plannotator}/apps/hook";
     # the plan-mode hooks above almost never fire here (transcript history:
     # 1 of 224 sessions used plan mode) -- planning lives in design/DEVPLAN
     # markdown. The annotate skill bridges that culture to the same review

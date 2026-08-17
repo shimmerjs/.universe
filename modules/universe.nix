@@ -9,7 +9,7 @@
 }:
 let
   cmd =
-    if pkgs.stdenv.isDarwin then
+    if pkgs.stdenv.hostPlatform.isDarwin then
       "sudo ${lib.getExe inputs.darwin.packages.${pkgs.stdenv.hostPlatform.system}.darwin-rebuild}"
     else
       "sudo nixos-rebuild";
