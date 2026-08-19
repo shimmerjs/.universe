@@ -116,8 +116,8 @@ in
       "kitty_mod+enter" = "launch --location=hsplit --cwd=current"; # One above the other
       "kitty_mod+cmd+enter" = "launch --location=vsplit --cwd=current"; # One beside the other
       "ctrl+shift+enter" = "launch --location=split --cwd=current"; # Dynamic based on the current split
-      "ctrl+shift+r" = "layout_action rotate"; # Rotate orientation of active split
-      "ctrl+shift+e" = "layout_action equalize"; # Even out every split along each axis
+      "kitty_mod+r" = "layout_action rotate"; # Rotate orientation of active split
+      "kitty_mod+e" = "layout_action equalize"; # Even out every split along each axis
 
       # Tab management
       "cmd+t" = "new_tab_with_cwd";
@@ -205,9 +205,11 @@ in
       font_family = "FiraCode Nerd Font Mono";
       disable_ligatures = "always"; # render ->, =>, !=, etc. as plain glyphs
 
-      # equalize_on_close keeps the survivors balanced instead of handing
-      # the closed window's space to whichever neighbour happened to abut it
-      enabled_layouts = "splits:split_axis=vertical;equalize_on_close=true,fat:bias=50;full_size=2,vertical";
+      # equalize on close keeps the survivors balanced instead of handing
+      # the closed window's space to whichever neighbour happened to abut it.
+      # the splits parser reads equalize_on_window_close; 0.48.2's docs name it
+      # equalize_on_close, which it silently ignores (kitty #10312 fixed the docs).
+      enabled_layouts = "splits:split_axis=vertical;equalize_on_window_close=true,fat:bias=50;full_size=2,vertical";
 
       # Scrollback
       scrollback_lines = 5000;
