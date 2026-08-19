@@ -17,7 +17,7 @@
   pkgs,
   nixPackage,
   # mirrors nix.gc.options in ../nix.nix
-  window ? "30d",
+  window ? "14d",
   logFile ? "/var/log/nix-gc.log",
 }:
 let
