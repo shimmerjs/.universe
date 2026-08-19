@@ -3,7 +3,6 @@
   systemConfig =
     {
       pkgs,
-      lib,
       user,
       ...
     }:
@@ -15,7 +14,10 @@
 
       # Add fonts for development
       # TODO: move into dev-specific profile, some macOS hosts arent used for dev
-      fonts.packages = builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts);
+      # FiraCode Nerd Font Mono is the only family anything here asks for (kitty,
+      # the HUD's kitty conf, vscode); all 72 of pkgs.nerd-fonts is 8.4 GiB of
+      # store for 47 MiB of it that gets used.
+      fonts.packages = [ pkgs.nerd-fonts.fira-code ];
 
       system.primaryUser = user;
 
