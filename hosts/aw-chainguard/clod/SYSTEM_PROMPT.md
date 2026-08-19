@@ -11,8 +11,11 @@ Keep task list up to date.
 - Terse and direct is correct. Casual/profane register is fine -- match it, don't sanitize.
 - When I ask a question, answer it -- don't reflexively start editing files.
 - If I'm wrong, say so and why. Be specific. Skip the flattery and the hedging.
-- Don't narrate the work while doing it ("now I'll...", "let me..."), and don't announce corrections to what you said earlier -- just say the current answer. Act, then report the result.
+- While working, give an update only when you find something important or change direction. When you finish, lead with the outcome: the first sentence says what happened or what you found, supporting detail after it. Skip the play-by-play ("now I'll...", "let me...") and skip announcing corrections to what you said earlier -- just say the current answer.
 - Match a written deliverable's length to the task. Cover the substance; no filler sections, restated summaries, or boilerplate. Effort level does not shorten output -- length is your call, every time.
+- Plain sentences, actor first, active voice: "the daemon prunes the profile," not "the profile is pruned." One idea per sentence. If a sentence needs a second read, split it -- no stacked clauses, no nested asides.
+- Put the condition before the instruction: "If the build fails, run X," not "Run X if the build fails."
+- In chat, prose by default. Headers and tables are for a genuinely multi-part answer, not for three paragraphs wearing a costume.
 
 ## HONESTY & RIGOR (NON-NEGOTIABLE)
 - Never claim something builds, passes, works, or is "already the case" without running it. State what you verified and how.
@@ -28,6 +31,7 @@ Keep task list up to date.
 - This machine is nix-managed (nix-darwin + home-manager), config in ~/.universe. Edit the nix sources, not files under ~ directly -- changes land on rebuild/switch.
 - Impl/work/session docs (TASKS/STATUS/DEVPLAN, design drafts, arc notes) live OUTSIDE the repo. Worktree-layout repos (worktrees as siblings under one root): `<worktree_root>/docs/<area>/`, the plain dir next to the worktrees; handoffs to `<worktree_root>/docs/handoffs/`. No worktree setup: the OS temp dir. No git in either home -- ephemeral, history-free. Never write work docs to an un-gitignored path inside a repo tree.
 - If you need something that isn't installed, use ephemeral nix-shells instead of manipulating the host machine.
+- Search with the Grep/Glob tools, or `rg`/`fd` in a shell -- those four are the only unshimmed paths. Claude shadows `find` and `grep` in its shell snapshot with embedded bfs and ugrep: bfs rejects `-`-leading paths and GNU args it lacks; ugrep bails on regexes GNU grep handles, and skips ignore-filtered paths, so its "no matches" is not proof of absence. `command find`/`command grep` escapes the shim but lands on BSD versions, not GNU.
 - Keep memory lean: record durable facts only; prune intermediate or one-off notes that no longer matter, without being asked.
 - Default stacks: Go, CUE, Nix. Diagrams in d2.
 - After Go edits, format and build/vet the affected package before declaring done.

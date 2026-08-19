@@ -9,6 +9,39 @@ let
   # writeShellApplication-wrapped hook programs (nix-pinned binaries), defined in
   # ./hooks/default.nix alongside the scripts they wrap.
   hooks = import ./hooks { inherit pkgs; };
+  # Binaries reachable from claude, every Bash tool call, and every subagent,
+  # without touching the interactive profile. claude's nixpkgs wrapper already
+  # --prefix'es procps+ripgrep onto PATH; the shell snapshot claude sources per
+  # Bash call re-exports whatever PATH it inherited, so extending that wrapper
+  # reaches agents and nothing else. GNU builds on purpose: agents write GNU
+  # flags (`stat -c`, `sed -i` with no arg, `date -d`), and escaping claude's
+  # find/grep shims via `command find`/`command grep` otherwise lands on BSD.
+  # Duplicating userland packages is deliberate -- this is the agent contract,
+  # not a side effect of what happens to be installed.
+  agentTools = with pkgs; [
+    coreutils
+    findutils
+    gnugrep
+    gnused
+    gawk
+    ripgrep
+    fd
+    jq
+  ];
+  # symlinkJoin, not overrideAttrs: keeps every path the module reads (it gates
+  # managed MCP/LSP/plugins on lib.getVersion of this package, so name/version
+  # must survive) and re-wraps only bin/claude.
+  claudeWithTools = pkgs.symlinkJoin {
+    name = "claude-code-${pkgs.claude-code.version}";
+    inherit (pkgs.claude-code) version meta;
+    paths = [ pkgs.claude-code ];
+    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+    postBuild = ''
+      rm $out/bin/claude
+      makeWrapper ${pkgs.claude-code}/bin/claude $out/bin/claude \
+        --prefix PATH : ${lib.makeBinPath agentTools}
+    '';
+  };
   # worktrunk's in-repo claude plugin. Upstream ships the manifest at
   # .claude-plugin/plugin.json itself as of f14fa69 (2026-07-22) -- the
   # re-seat this drv used to do -- but cp -RL still materializes any escape
@@ -60,7 +93,15 @@ in
 
   programs.claude-code = {
     enable = true;
+    package = claudeWithTools;
     context = ./SYSTEM_PROMPT.md;
+
+    # Main-thread voice, in the system prompt rather than the CLAUDE.md user
+    # message, and it carries per-turn adherence reminders. Selected by
+    # settings.outputStyle below. keep-coding-instructions keeps the built-in
+    # engineering block; without it the style REPLACES it. Subagents never load an
+    # output style, which is why SYSTEM_PROMPT.md keeps its own VOICE section.
+    outputStyles.terse = ./output-styles/terse.md;
 
     agents = {
       researcher = ./agents/researcher.md;
@@ -132,7 +173,10 @@ in
 
     settings = {
       model = "claude-opus-5";
-      effortLevel = "xhigh";
+      # Opus 5 default; xhigh is scoped to long-horizon legs and pinned per-stage
+      # in workflows/aw-*.js. /effort bumps a single session.
+      effortLevel = "high";
+      outputStyle = "terse";
       autoScrollEnabled = true;
       includeCoAuthoredBy = false;
       spinnerTipsEnabled = false;
@@ -307,6 +351,13 @@ in
       };
 
       env = {
+        # Bash-tool executor: pinned bash, not detected zsh. zsh's `=` expansion
+        # kills `echo ===foo` and NOMATCH aborts on an unmatched glob; detection
+        # would otherwise land on /bin/zsh or Apple's bash 3.2. Undocumented, and
+        # claude falls back to detection if the path lacks bash/zsh -- recheck on
+        # bumps. Interactive shell stays zsh.
+        CLAUDE_CODE_SHELL = "${pkgs.bashInteractive}/bin/bash";
+
         # Local OpenTelemetry master switch.
         CLAUDE_CODE_ENABLE_TELEMETRY = "1";
 

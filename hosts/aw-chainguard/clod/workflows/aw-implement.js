@@ -1,6 +1,6 @@
 export const meta = {
   name: 'aw-implement',
-  description: '[spec= verify=3 review=on codex=off isolation=inplace intensity=5 subagents=custom|stock] Spec-driven execution: lock a written spec, implement it in a fresh subagent seeded ONLY by the spec, build/verify, then adversarially review the diff. codex=on adds the cross-model finder leg to the review phase. Informal word=value flags (long or short, anywhere in the prompt).',
+  description: '[spec= verify=1 review=on codex=off isolation=inplace intensity=5 subagents=custom|stock] Spec-driven execution: lock a written spec, implement it in a fresh subagent seeded ONLY by the spec, build/verify, then adversarially review the diff. codex=on adds the cross-model finder leg to the review phase. Informal word=value flags (long or short, anywhere in the prompt).',
   whenToUse: 'Executing a well-scoped change end-to-end; tune spec, verify, review, isolation',
   phases: [{ title: 'Spec' }, { title: 'Execute' }, { title: 'Verify' }, { title: 'Review' }],
 }
@@ -11,7 +11,7 @@ export const meta = {
 // running the body, so the body can only reach a plain const.
 const FLAGS = {
   spec:      { short: 'e', type: 'path', default: '', help: 'path to a written spec/design doc; else the prompt is the task' },
-  verify:    { short: 'v', type: 'int', default: 3, min: 1, max: 5, help: 'skeptics judging the diff against the spec' },
+  verify:    { short: 'v', type: 'int', default: 1, min: 1, max: 5, help: 'skeptics judging the diff against the spec' },
   review:    { short: 'r', type: 'str', default: 'on', choices: ['on', 'off'], help: 'adversarial correctness review of the diff' },
   codex:     { short: 'x', type: 'str', default: 'off', choices: ['on', 'off'], help: 'cross-model codex finder leg in the review phase, never the write path (default off: the arc-end aw-review carries the codex leg; flip on when this run IS the arc gate)' },
   isolation: { short: 'n', type: 'str', default: 'inplace', choices: ['inplace', 'worktree'], help: 'where execution writes' },
@@ -150,10 +150,21 @@ const specText = 'SPEC (implement exactly this; if the spec itself is wrong, STO
 const exec = await named('execute', specText +
   '\n\nImplement the spec. Match the surrounding code. After editing, run the acceptance build/test commands and report whether they pass, with the real output (not an assumption). Stay within the spec.' +
   (iso ? ' You are in an isolated git worktree -- report its absolute path.' : ' Report the files you changed.'),
-  { phase: 'Execute', isolation: iso, schema: EXEC })
+  // xhigh: the long-horizon coding leg. Costs this leg WebSearch (thinking-off
+  // sub-request 400s above high), which it never needs -- it implements a locked
+  // spec against local code.
+  { phase: 'Execute', isolation: iso, schema: EXEC, effort: 'xhigh' })
 log('execute: ' + (exec.filesChanged || []).length + ' files changed, acceptance ' + (exec.built ? 'PASS' : 'FAIL/unrun'))
 
 // Phase 3: refute-default skeptics judge the diff against the spec's acceptance.
+// Quorum defaults to 1, not 3: this is the executing model's own work being
+// re-checked, and Opus 5 already self-verifies -- stacked skeptics here buy
+// over-verification rather than precision. The deterministic gates (go-check
+// Stop hook, the spec's acceptance commands) are the real proof the diff builds;
+// the skeptic judges spec CONFORMANCE, which the compiler cannot. Raise it for a
+// spec whose acceptance criteria are subjective. The quorums in aw-review /
+// aw-audit are a different job -- they refute FINDINGS to buy precision on
+// claims, not to double-check work the same agent just did.
 phase('Verify')
 const VERDICT = { type: 'object', required: ['meetsSpec'], properties: {
   meetsSpec: { type: 'boolean' }, gaps: { type: 'array', items: { type: 'string' } }, why: { type: 'string' } } }
@@ -189,7 +200,7 @@ if (flags.review !== 'off') {
     const cx = await named('review:codex',
       'Cross-model finder leg: relay codex, do NOT add findings of your own.\n' +
       '1. Run codex from the tree that holds the change' + (exec.worktree ? ' (worktree: ' + exec.worktree + ')' : '') + ':\n' +
-      '   codex exec -s read-only -o <mktemp-out> "Review the uncommitted diff (git diff; files: ' + (exec.filesChanged || []).join(', ') + ') for correctness / security / perf defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; no style nits, no praise."\n' +
+      '   codex exec -s read-only -o <mktemp-out> "Review the uncommitted diff (git diff; files: ' + (exec.filesChanged || []).join(', ') + ') for correctness / security / perf defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; report every defect you find, including low-severity ones, and let the severity label do the ranking. No praise."\n' +
       '2. Read the output file. For EACH codex finding, verify the cited file/symbol exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
       '3. Return available=true with the surviving findings (keep codex\'s wording in desc). If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate findings.',
       { phase: 'Review', agentType: REVIEWER, schema: CODEX_FIND })
@@ -203,7 +214,7 @@ if (flags.review !== 'off') {
         cf.map(f => f.file + (f.line ? ':' + f.line : '') + ' [' + f.severity + '] ' + f.desc).join('\n')
     }
   }
-  review = await named('review', 'Review the diff this change introduced for correctness / security / perf bugs (file:line, concrete, no style nits). Apply ~/.claude/workflows/partials/SYNTHESIS.md: confirmed-only, name the trade-off, one reconciled verdict.' +
+  review = await named('review', 'Review the diff this change introduced for correctness / security / perf bugs (file:line, concrete, report everything you find and let severity rank it). Apply ~/.claude/workflows/partials/SYNTHESIS.md: confirmed-only, name the trade-off, one reconciled verdict.' +
     '\nEXECUTION SUMMARY: ' + exec.summary + '\nFiles: ' + (exec.filesChanged || []).join(', ') + where + codexNote,
     { phase: 'Review', agentType: REVIEWER })
 }

@@ -298,6 +298,6 @@ const report = await named('synthesize',
   'Synthesize a design review. CONFIRMED flaws (verified against code):\n' + JSON.stringify(confirmed, null, 2) + '\n' +
   'A single fatal flaw vetoes the design regardless of the rest (there ' + (fatal ? 'IS' : 'is NO') + ' confirmed fatal flaw). ' +
   'Output a prioritized change list (fatal, then major, then minor), each grounded in file:line, ending in one go/no-go.',
-  { phase: 'Synthesize' })
+  { phase: 'Synthesize', effort: 'xhigh' })
 
 return { kind: framed.kind, lenses, confirmed: confirmed.length, unverified: unverified.length, fatal, overCap: over.length, codexDown, codexDropped, report }

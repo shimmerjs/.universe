@@ -231,7 +231,7 @@ const CODEX_FIND = { type: 'object', required: ['available', 'findings', 'droppe
 let codexDown = false, codexDropped = 0
 const codexLeg = flags.codex !== 'on' ? null : () => named('review:codex:r1',
   'Cross-model finder leg: relay codex, do NOT add findings of your own.\n' +
-  '1. Run: codex exec -s read-only -o <mktemp-out> "Review the change ' + scoped.target + ' (focus: ' + focus + '). Files:\\n' + scoped.files.join('\\n') + '\\nFind real, specific defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; no style nits, no praise."\n' +
+  '1. Run: codex exec -s read-only -o <mktemp-out> "Review the change ' + scoped.target + ' (focus: ' + focus + '). Files:\\n' + scoped.files.join('\\n') + '\\nFind real, specific defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; report every defect you find, including low-severity ones, and let the severity label do the ranking. No praise."\n' +
   '2. Read the output file. For EACH codex finding, verify the cited file/symbol exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
   '3. Return available=true with the surviving findings (keep codex\'s wording in desc). If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate findings.',
   { phase: 'Review', agentType: REVIEWER, schema: CODEX_FIND })
@@ -251,7 +251,7 @@ for (let round = 0; round < flags.passes; round++) {
   const thunks = lenses.map(lens => () => named('review:' + lens + ':r' + (round + 1),
     'Round ' + (round + 1) + '. Review ' + scoped.target + ' through the ' + lens + ' lens. Focus: ' + focus + '. Files:\n' + scoped.files.join('\n') +
     knownNote + '\n' +
-    'Find real, specific issues (file:line). Be concrete; no style nits, no speculation.',
+    'Find real, specific issues (file:line). Be concrete, and report every issue in your lens -- the severity floor and the verify quorum downstream do the filtering, so do not pre-filter here. No speculation.',
     { phase: 'Review', agentType: REVIEWER, schema: FIND }))
   if (round === 0 && codexLeg) thunks.unshift(codexLeg)
   const results = (await parallel(thunks)).filter(Boolean)
@@ -312,7 +312,7 @@ const report = await named('synthesize',
   JSON.stringify(confirmed, null, 2) + '\n' +
   belowFloor.length + ' below-floor findings exist and are UNVERIFIED - do not present them as confirmed. ' +
   'Group confirmed by severity with a one-line fix each.',
-  { phase: 'Synthesize' })
+  { phase: 'Synthesize', effort: 'xhigh' })
 
 const tally = {
   found: foundTotal, fresh: freshTotal, confirmed: confirmed.length,
