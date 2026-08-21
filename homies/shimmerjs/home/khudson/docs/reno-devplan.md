@@ -1,43 +1,45 @@
 # reno devplan -- from here
 
-state: written 2026-08-21, after `bdcb1d0`. companion to reno-design.md (the doctrine); this file is the ordered work list and dies when it empties.
+state: rewritten 2026-08-21 after the queue's first four items landed. companion to reno-design.md (the doctrine); this file is the ordered work list and dies when it empties.
 
-VERIFIED as of that commit: `gofmt`/`go vet` clean, 36 khudson packages plus touchd green, and `nix build .#darwinConfigurations.aw-chainguard.system` exit 0 -- run against the whole tree, not per-commit. NEVER `nix flake check` (kraken's darwinConfiguration fails eval, pre-existing).
+VERIFIED at that point: `go build ./...`, `go vet ./...` and `go test ./...` (36 packages) clean, and `nix build .#darwinConfigurations.aw-chainguard.system` exit 0. NEVER `nix flake check` (kraken's darwinConfiguration fails eval, pre-existing).
 
 UNVERIFIED: all of it on glass, and all of it against real OBS. see gate 0. do not repeat a "works" claim from this file or from git history without running it.
 
-where the new code lives: transport button + tiles `internal/module/reno/view.go` (`transportTile`, `armed`, `probeTile`, `obsWindowTile`); latches and acts `internal/module/reno/adhoc.go`; arm/release/window verbs `internal/bus/renoarm.go`; FX core `internal/reno/fx.go`, plan executor `internal/bus/renofx.go`, frame-locked batch `internal/bus/obsbatch.go`; ini seed + drift `internal/bus/obsini.go`.
+where the new code lives: pad geometry (gutter labels, band budgeting) `internal/dock/pad.go` (`budgetBands`, `padBand.ask`, `padTile`); transport weight + tiles `internal/module/reno/view.go` (`transportTileH`, `transportTile`, `vcamTile`, `appendClip`, `probeTile`, `obsWindowTile`); latches and acts `internal/module/reno/adhoc.go` (`vcamEffectsLocked`, `noteVCamLocked`); verbs `internal/bus/renoarm.go` (`ArmRig`, `Release`, `ObsWindow`, `VirtualCam`, `OpenClip`); workspace root `internal/reno/run.go` (`WorkspaceRoot`); FX core `internal/reno/fx.go`, plan executor `internal/bus/renofx.go`, frame-locked batch `internal/bus/obsbatch.go`; ini seed + drift `internal/bus/obsini.go`.
 
 ## gate 0 -- eyes on glass (blocks everything)
 
-nothing in the last four commits has run against real OBS or been seen on the Edge. that is the single biggest risk carried forward, and it grew with every commit.
+nothing in the last five commits has run against real OBS or been seen on the Edge. that is the single biggest risk carried forward, and it grew with every commit.
 
-- switch + HUD restart, then look at the recorder pad. expect: one transport button reading ARM, a `devices` tile with an age, an `obs window` tile, and the fx band.
-- the readouts are the specific thing to check. they were invisible before `a718c83` and the fold that fixed them is arithmetic, not eyes -- if a tile still shows only its label, the fold is not landing at the real tile height.
+- switch + HUD restart, then look at the recorder pad. expect: section labels in a LEFT GUTTER (not their own rows), a tall transport band whose tiles carry their glyph on a line of its own, and four tight bands under it -- screens, mic, cam, fx. about four blank rows at the bottom of the grid are deliberate; see item 1.
+- the transport band should hold ARM, devices, obs window, VCAM, and END RUN once a run is live. a clip tile joins them after a take stops.
 - first live FX: `khudson reno obs cam move big 600ms bounce` with a preset already applied. the frame-locked batch has only ever run against a protocol stub.
 - first live arm/release: `khudson reno obs arm`, then END RUN, then confirm the camera light is actually off. the release path is the one that reaches for the virtual camera and it has never run.
+- first live vcam: `khudson reno obs vcam status` with OBS up. arm and release both note this readout now, so the VCAM tile should be honest without a deliberate tap.
+- first live clip: stop a take, tap the clip tile, confirm it opens. `reno open-clip` refuses anything resolving outside the workspace root, and that check is unit-tested but has never run against a real clip path.
 - `scale_filter` pixelate settings (`resolution`, `sampling`) are from the core filter's known schema, unconfirmed on this machine. if wrong it fails loudly inside the batch; move/jump/show/hide are unaffected.
-- `glyphArm` (U+F140B), `glyphWindow` (U+F05E7) and `glyphCamOff` (U+F0568) are inferred codepoints. tofu is a one-character fix each.
+- `glyphArm` (U+F140B), `glyphWindow` (U+F05E7) and `glyphCamOff` (U+F0568) are inferred codepoints. tofu is a one-character fix each. the clip tile deliberately reuses `glyphCam` rather than add a fourth guess.
 
 ## settled -- do not relitigate
 
 the transport is the USER'S design, given verbatim 2026-08-21: one button, ARM -> REC -> STOP; "end = disconnect / unarm"; "stop = pause stream but reno is still armed". REC deliberately does NOT appear while unarmed, so recording from cold is two taps on glass -- that is the point, not an oversight. the CLI `reno record` still does both phases so scripts are unaffected.
 
+section labels ride a left gutter, chosen by the user 2026-08-21 over stacked label rows. the pad is far wider than its buttons need and its rows are the scarce axis; five label rows out of twenty-one was what starved the transport and dropped the last band.
+
 ## queued, in order
 
-1. **clip button.** after a take the head row flashes the clip name and nothing can be done with it. the header is unpressable by contract ("anything you can press is a tile"), so this is a tile that appears only when a stopped recording has an output, tapping to open the clip. needs a reno verb -- the effect executor only admits `khudson reno <verb>` argvs -- so `reno open-clip <path>`, path-checked against the workspace root. later this becomes the entry to the P4 scrub surface instead of a plain open.
+1. **what to do with the grid's slack.** band heights now depend only on the tiles in them (`padBand.ask`), never on how much grid is going spare -- so the pad does not reflow under a thumb when a header alarm appears. the cost is about four blank rows at the bottom on a 196x24 glass. options, in preference order: leave it (space reads as space), one blank row BETWEEN bands as separation, or give it to the transport. USER'S CALL after they see it. do not spend it on taller choice tiles: a band stretched into room it has nothing to put in gets a dead row inside every tile, which reads as a column of buttons whose readouts all failed. that was tried and reverted before it shipped.
 
-2. **virtual camera readout.** `Release` stops it, but nothing SHOWS it. it reads back over the socket (`GetVirtualCamStatus`), so by this pad's own rule it earns a tile. the case that matters: an output you never started, holding your camera, with the pad reporting idle.
+2. **`probeTile`'s "displays moved" value truncates.** tiles are ~20 interior cells at the current widths but the value is `fitCell`ed against `inner`, and at a narrower key size "displays moved" (14) crops. this is the pad's loudest alarm and it is the one most likely to be cropped, because the warn state is the only one with a long value. pre-existing, not from the band work.
 
-3. **band budgeting + the round REC button.** the fold in `a718c83` is a workaround, not the fix. the arithmetic, from `internal/dock/pad.go`: `bandH = gridH / len(bands)`, `tileH = min(bandH-1, padTileMaxH)`, and `padTile` draws Value on its own line only at `h >= 4` and renders BLANK below `h < 3`. five bands over a real recorder gives `tileH` 2-3, so no tile can be taller than the choice tiles and at `gridH=16` `maxBands` drops to 4 and the fx band is discarded outright. a red blob with REC under it needs four interior rows against the one it has. transport should carry weight, choice bands take the remainder.
+3. **END RUN's representation.** parked BY THE USER until they have a better idea -- do not restyle it unasked. today it shares `glyphStop` with the transport's STOP face, so two identically-shaped buttons sit adjacent doing different things. a proposal they have not answered: STOP becomes `STOP TAKE`, and END RUN gets its own glyph.
 
-4. **END RUN's representation.** parked BY THE USER until they have a better idea -- do not restyle it unasked. today it shares `glyphStop` with the transport's STOP face, so two identically-shaped buttons sit adjacent doing different things. a proposal they have not answered: STOP becomes `STOP TAKE`, and END RUN gets its own glyph.
-
-5. **`invStale` is now dead.** the constant survives with no consumer after the age warning came out. delete it or give it a job.
+4. **the screens band's glyph joins inconsistently.** `display 1 3840x2160` is one cell too wide for `glyph + " " + text`, so that tile renders bare while its neighbour keeps its monitor icon. the band reads ragged. either shorten the generated label or let a too-wide tile drop the label rather than the glyph.
 
 ## carried from the design doc
 
-- P4 post: mpv-IPC scrub surface + the moviemaker surfaces (reno-tab touch view and main-display app over one core). item 1 above is the on-ramp.
+- P4 post: mpv-IPC scrub surface + the moviemaker surfaces (reno-tab touch view and main-display app over one core). the clip tile is the on-ramp -- today it hands the file to the OS, later it opens the scrub surface instead.
 - P3 remainder: the motion vocabulary landed; dynamic paths beyond a single eased move, and filter-value animation, did not.
 - couch client: standalone presenter TUI, blocked behind panel-surfaces phase 2.
 
