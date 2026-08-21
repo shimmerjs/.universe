@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
@@ -42,11 +43,18 @@ type Bus struct {
 	opts    Options
 	started time.Time
 
-	mu        sync.Mutex
-	cfg       *config.Config
-	reg       *Registry
-	docks     map[net.Conn]*json.Encoder
-	needAdopt bool
+	mu    sync.Mutex
+	cfg   *config.Config
+	reg   *Registry
+	docks map[net.Conn]*json.Encoder
+	// activeDock owns the bus singletons: the cell grid, the panel region,
+	// and the recognizer's output. Exactly one dock holds the slot -- the
+	// first to claim it -- and it frees on that dock's disconnect. Before
+	// this, any dock's hello repointed the recognizer at its own grid, so a
+	// second or reconnecting dock stole the live surface's taps and sized
+	// scraped windows to a panel nobody was looking at.
+	activeDock net.Conn
+	needAdopt  bool
 	// pending is a reloaded config awaiting a quiesced scheduler tick; the
 	// scheduler swaps it in once no single-flight RC call is in flight.
 	pending *config.Config
@@ -310,8 +318,15 @@ func (b *Bus) serve(ctx context.Context, conn net.Conn) {
 }
 
 func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hello proto.Msg) {
-	b.setGrid(hello.Cols, hello.Rows)
-	b.setPanel(hello.PanelCols, hello.PanelRows)
+	if b.claimActive(conn) {
+		b.setGrid(hello.Cols, hello.Rows)
+		b.setPanel(hello.PanelCols, hello.PanelRows)
+	} else {
+		// it still renders and still gets state; it just does not get to move
+		// the recognizer under the surface the user is touching
+		log.Printf("khudson bus: second dock connected (%dx%d cells); singletons stay with the active dock",
+			hello.Cols, hello.Rows)
+	}
 
 	// registration + greeting share one critical section so a concurrent
 	// setLayout cannot land between them and get overwritten by a stale
@@ -377,8 +392,12 @@ func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hel
 		case proto.TypePing:
 			// keepalive only; the deadline re-arm above is the effect
 		case proto.TypeGrid:
-			b.setGrid(m.Cols, m.Rows)
-			b.setPanel(m.PanelCols, m.PanelRows)
+			// a resize claims the free slot: the owner disconnecting must not
+			// leave a lone survivor unable to point the recognizer at itself
+			if b.claimActive(conn) {
+				b.setGrid(m.Cols, m.Rows)
+				b.setPanel(m.PanelCols, m.PanelRows)
+			}
 		case proto.TypeCtl:
 			// dock-initiated verbs get no resp; the state broadcast is the ack
 			switch m.Cmd {
@@ -404,9 +423,30 @@ func (b *Bus) serveDock(conn net.Conn, enc *json.Encoder, dec *json.Decoder, hel
 		}
 	}
 	b.mu.Lock()
-	delete(b.docks, conn)
+	b.removeDockLocked(conn)
 	b.mu.Unlock()
 	log.Printf("khudson bus: dock %s", why)
+}
+
+// claimActive gives conn the singleton slot when it is free, reporting
+// whether conn holds it now. Claiming is FIRST-come, not last: last-hello-wins
+// is what let a reconnecting dock repoint the recognizer mid-touch.
+func (b *Bus) claimActive(conn net.Conn) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.activeDock == nil {
+		b.activeDock = conn
+	}
+	return b.activeDock == conn
+}
+
+// removeDockLocked drops a dock and frees the slot if it held it. Caller
+// holds b.mu.
+func (b *Bus) removeDockLocked(conn net.Conn) {
+	delete(b.docks, conn)
+	if b.activeDock == conn {
+		b.activeDock = nil
+	}
 }
 
 func (b *Bus) serveCtl(enc *json.Encoder, dec *json.Decoder) {
@@ -627,15 +667,38 @@ func (b *Bus) broadcast(m proto.Msg) {
 // broadcastLocked fans m out to every dock; the caller holds b.mu.
 func (b *Bus) broadcastLocked(m proto.Msg) {
 	for conn, enc := range b.docks {
-		_ = conn.SetWriteDeadline(time.Now().Add(dockWriteGrace))
-		if err := enc.Encode(m); err != nil {
-			log.Printf("khudson bus: dock write failed, evicting: %v", err)
-			conn.Close()
-			delete(b.docks, conn)
-			continue
-		}
-		_ = conn.SetWriteDeadline(time.Time{})
+		b.writeDockLocked(conn, enc, m)
 	}
+}
+
+// sendActive delivers m to the dock holding the singleton slot, and to no
+// other. Gestures resolve against the ACTIVE dock's grid, so a cell that
+// means one thing there means something else on a dock with another layout
+// -- fanning them out fires phantom taps on every surface but the one under
+// the finger.
+func (b *Bus) sendActive(m proto.Msg) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	conn := b.activeDock
+	if conn == nil {
+		return
+	}
+	if enc, ok := b.docks[conn]; ok {
+		b.writeDockLocked(conn, enc, m)
+	}
+}
+
+// writeDockLocked writes one message, evicting the dock if the write fails.
+// Caller holds b.mu.
+func (b *Bus) writeDockLocked(conn net.Conn, enc *json.Encoder, m proto.Msg) {
+	_ = conn.SetWriteDeadline(time.Now().Add(dockWriteGrace))
+	if err := enc.Encode(m); err != nil {
+		log.Printf("khudson bus: dock write failed, evicting: %v", err)
+		conn.Close()
+		b.removeDockLocked(conn)
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
 }
 
 // setPanel records the dock's active-panel content region; the scheduler
@@ -693,6 +756,16 @@ func (b *Bus) setTouchOK(ok bool) {
 	b.recMu.Unlock()
 }
 
+// touch liveness. touchd beats every 5s while it holds an Edge collection
+// open, so three missed beats means dead glass, not an idle finger -- the
+// distinction a connected-but-silent socket cannot make on its own, and the
+// reason `ctl status` used to report working touch on a frozen panel. Vars:
+// tests shrink them.
+var (
+	touchStaleAfter = 16 * time.Second
+	touchCheckEvery = 2 * time.Second
+)
+
 // consumeFrames decodes ndjson TouchFrames and runs the recognizer loop.
 // Frames pass through a bounded drop-oldest channel so a burst
 // never blocks the socket reader; drops cost flick precision, not
@@ -700,6 +773,10 @@ func (b *Bus) setTouchOK(ok bool) {
 func (b *Bus) consumeFrames(ctx context.Context, conn net.Conn) {
 	frames := make(chan gesture.Frame, 64)
 	done := make(chan struct{})
+	// last line of ANY kind: a heartbeat proves the source as well as a
+	// report does, and the reader is the only writer
+	var lastLine atomic.Int64
+	lastLine.Store(time.Now().UnixNano())
 
 	go func() {
 		defer close(done)
@@ -708,6 +785,10 @@ func (b *Bus) consumeFrames(ctx context.Context, conn net.Conn) {
 			var tf proto.TouchFrame
 			if err := dec.Decode(&tf); err != nil {
 				return
+			}
+			lastLine.Store(time.Now().UnixNano())
+			if tf.HB {
+				continue // liveness only: never a recognizer input
 			}
 			f := toFrame(tf)
 			select {
@@ -735,6 +816,12 @@ func (b *Bus) consumeFrames(ctx context.Context, conn net.Conn) {
 	}
 	defer stopTimer()
 
+	// the connection stays up across a stale spell: touchd may be holding a
+	// device that went quiet, and the beat resuming is what un-flips the
+	// status. Only a decode error tears the connection down.
+	live := time.NewTicker(touchCheckEvery)
+	defer live.Stop()
+
 	for {
 		var tick <-chan time.Time
 		b.recMu.Lock()
@@ -753,6 +840,7 @@ func (b *Bus) consumeFrames(ctx context.Context, conn net.Conn) {
 			return
 		case f := <-frames:
 			stopTimer()
+			b.setTouchOK(true)
 			b.recMu.Lock()
 			evs := b.rec.Frame(f)
 			b.recMu.Unlock()
@@ -763,8 +851,17 @@ func (b *Bus) consumeFrames(ctx context.Context, conn net.Conn) {
 			evs := b.rec.Tick(now)
 			b.recMu.Unlock()
 			b.emit(evs)
+		case now := <-live.C:
+			b.setTouchOK(!touchStale(time.Unix(0, lastLine.Load()), now))
 		}
 	}
+}
+
+// touchStale is the pure liveness decision: no line from touchd within the
+// window. It is time-since-last-LINE, not last gesture -- an hour of nobody
+// touching the glass is healthy, a minute of no heartbeat is not.
+func touchStale(last, now time.Time) bool {
+	return now.Sub(last) > touchStaleAfter
 }
 
 func toFrame(tf proto.TouchFrame) gesture.Frame {
@@ -786,7 +883,7 @@ func (b *Bus) emit(evs []gesture.Event) {
 		if g == nil {
 			continue
 		}
-		b.broadcast(proto.Msg{Type: proto.TypeGesture, Gesture: g})
+		b.sendActive(proto.Msg{Type: proto.TypeGesture, Gesture: g})
 	}
 }
 

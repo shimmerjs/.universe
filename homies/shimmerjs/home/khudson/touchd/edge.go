@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,14 @@ var (
 // reasserts device mode on every reopen and de-asserts on shutdown.
 type edgeModule struct {
 	noMode bool
+	// open counts collections currently held open; the heartbeat rides it.
+	open atomic.Int64
 }
+
+// heartbeatEvery paces the liveness line. The bus flips touch dead after
+// three missed beats, so this sets the worst-case lag between the Edge going
+// away and `ctl status` admitting it.
+const heartbeatEvery = 5 * time.Second
 
 func (m *edgeModule) Name() string { return "edge" }
 
@@ -39,6 +47,11 @@ func (m *edgeModule) Run(ctx context.Context, env Env) error {
 		}
 	}
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.heartbeat(ctx, env)
+	}()
 	for _, mouse := range []bool{false, true} {
 		wg.Add(1)
 		go func() {
@@ -48,6 +61,26 @@ func (m *edgeModule) Run(ctx context.Context, env Env) error {
 	}
 	wg.Wait()
 	return nil
+}
+
+// heartbeat publishes a liveness line while at least one collection is open.
+// It is gated on an OPEN COLLECTION, not on the daemon merely running: the
+// claim is "the Edge is present and being read", which is what a consumer
+// needs to distinguish idle glass from dead glass. Unplugged, seized, or
+// ungranted, the collections are shut and the line stops.
+func (m *edgeModule) heartbeat(ctx context.Context, env Env) {
+	t := time.NewTicker(heartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if m.open.Load() > 0 {
+				env.Publish(Frame{T: time.Now().UnixNano(), HB: true})
+			}
+		}
+	}
 }
 
 // collectionLoop pumps one collection into emit, reopening via AwaitDevice
@@ -81,7 +114,9 @@ func (m *edgeModule) collectionLoop(ctx context.Context, env Env, mouse bool, em
 		lastErr = ""
 		fmt.Printf("%s open (mode asserted: %v)\n", name, asserted)
 
+		m.open.Add(1)
 		err = readLoop(ctx, dev, emit)
+		m.open.Add(-1)
 		if ctx.Err() != nil {
 			if asserted {
 				deassertMode(dev)

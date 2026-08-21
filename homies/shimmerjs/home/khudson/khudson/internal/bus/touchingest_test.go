@@ -130,3 +130,89 @@ func TestTouchIngestEndToEnd(t *testing.T) {
 		t.Fatal("touchLoop did not exit on ctx cancel")
 	}
 }
+
+func TestTouchStale(t *testing.T) {
+	now := time.Now()
+	if touchStale(now.Add(-touchStaleAfter+time.Second), now) {
+		t.Error("a line inside the window is live")
+	}
+	if !touchStale(now.Add(-touchStaleAfter-time.Second), now) {
+		t.Error("silence past the window is dead glass")
+	}
+}
+
+func (b *Bus) touchState() bool {
+	b.recMu.Lock()
+	defer b.recMu.Unlock()
+	return b.touchOK
+}
+
+// A heartbeat proves the source without touching the recognizer, and silence
+// past the window flips touch dead even though the socket stays connected --
+// the "touch liveness is a lie" wedge.
+func TestTouchHeartbeatLiveness(t *testing.T) {
+	oldStale, oldCheck := touchStaleAfter, touchCheckEvery
+	// the window must clear pollUntil's 250ms granularity, or a revived beat
+	// goes stale again between two polls
+	touchStaleAfter, touchCheckEvery = time.Second, 20*time.Millisecond
+	t.Cleanup(func() { touchStaleAfter, touchCheckEvery = oldStale, oldCheck })
+
+	b, dockCh, p := touchTestBus(t)
+	ln, err := net.Listen("unix", p.TouchSocket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	connCh := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			connCh <- c
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.touchLoop(ctx)
+
+	var src net.Conn
+	select {
+	case src = <-connCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("touchLoop never dialed the touch socket")
+	}
+	defer src.Close()
+
+	enc := json.NewEncoder(src)
+	beat := func() {
+		if err := enc.Encode(proto.TouchFrame{TimeNS: time.Now().UnixNano(), HB: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// beats alone, no contact for well past the window: nobody is touching
+	// the glass and touch must still read live
+	deadline := time.Now().Add(2 * touchStaleAfter)
+	for time.Now().Before(deadline) {
+		beat()
+		if !b.touchState() {
+			t.Fatal("heartbeats alone must hold touch live")
+		}
+		time.Sleep(touchStaleAfter / 5)
+	}
+	// a heartbeat carries no contacts: fed to the recognizer it would read as
+	// a lift, so none of those beats may have produced a broadcast
+	select {
+	case m := <-dockCh:
+		if m.Type == proto.TypeGesture {
+			t.Fatalf("heartbeat reached the recognizer: %+v", m.Gesture)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if !pollUntil(3*time.Second, func() bool { return !b.touchState() }) {
+		t.Fatal("silence past the window must flip touch dead")
+	}
+	beat()
+	if !pollUntil(3*time.Second, func() bool { return b.touchState() }) {
+		t.Fatal("a resumed beat must revive touch without a reconnect")
+	}
+}

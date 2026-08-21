@@ -21,6 +21,13 @@ type Frame struct {
 	Scan     uint16    `json:"scan"`
 	Count    uint8     `json:"count"`
 	Contacts []Contact `json:"contacts"`
+	// HB marks a heartbeat rather than a digitizer report. Silence on this
+	// socket is the NORMAL state -- nobody is touching the glass most of the
+	// time -- so a consumer cannot tell an idle Edge from a dead one without
+	// a positive liveness line. A heartbeat is never a report: it carries no
+	// contacts and must never reach a gesture recognizer, or every one would
+	// read as an all-fingers-lifted event mid-hold.
+	HB bool `json:"hb,omitempty"`
 }
 
 type Contact struct {

@@ -156,6 +156,9 @@ func addDecodingDock(t *testing.T, b *Bus) <-chan proto.Msg {
 	}()
 	b.mu.Lock()
 	b.docks[server] = json.NewEncoder(server)
+	if b.activeDock == nil {
+		b.activeDock = server // a real dock claims the slot at hello
+	}
 	b.mu.Unlock()
 	return ch
 }

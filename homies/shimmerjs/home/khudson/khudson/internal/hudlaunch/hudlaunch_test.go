@@ -555,20 +555,25 @@ func TestBackoffStateRoundtrip(t *testing.T) {
 func TestOrphanMatch(t *testing.T) {
 	kitty, sock := "/nix/store/x/.kitty-wrapped", "/state/kitty-panel.sock"
 	argv := kitty + " -o allow_remote_control=socket-only --listen-on unix:" + sock
-	if !orphanMatch(argv, kitty, sock) {
+	if !orphanMatch(argv, sock) {
 		t.Fatal("live matching argv must be a kill")
 	}
-	if orphanMatch("", kitty, sock) {
+	// the bug: an orphan launched by the PREVIOUS store's kitty is still ours,
+	// and keying the match on the binary let a bump strand it forever
+	if !orphanMatch("/nix/store/OLD/.kitty-wrapped --listen-on unix:"+sock, sock) {
+		t.Fatal("a kitty bump must not disarm the sweep")
+	}
+	if orphanMatch("", sock) {
 		t.Fatal("dead pid (empty argv) must never be a kill")
 	}
-	if orphanMatch("/usr/bin/vim notes.txt", kitty, sock) {
+	if orphanMatch("/usr/bin/vim notes.txt", sock) {
 		t.Fatal("reused pid running something else must never be a kill")
 	}
-	if orphanMatch(argv, kitty, "/other/socket") {
+	if orphanMatch(argv, "/other/socket") {
 		t.Fatal("a kitty on a different socket is not ours")
 	}
-	if orphanMatch(argv, "", "") {
-		t.Fatal("empty binary/socket must never match")
+	if orphanMatch(argv, "") {
+		t.Fatal("an empty socket must never match")
 	}
 }
 
@@ -661,5 +666,31 @@ func TestSweepOrphan(t *testing.T) {
 	sweepOrphan(opts, pidPath)
 	if _, err := os.Stat(pidPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("stale pidfile not removed")
+	}
+}
+
+// A live pid whose argv ps cannot read KEEPS its pidfile: that file is the
+// only handle on the process, and dropping it is what made the orphan
+// unrecoverable instead of merely unswept.
+func TestSweepOrphanKeepsUnverifiablePidfile(t *testing.T) {
+	old := psCommand
+	psCommand = func(int) string { return "" }
+	t.Cleanup(func() { psCommand = old })
+
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "hud-kitty.pid")
+	opts := Options{Socket: filepath.Join(dir, "kitty-panel.sock"), Logf: t.Logf}
+
+	writePidfile(pidPath, os.Getpid()) // alive by construction
+	sweepOrphan(opts, pidPath)
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("pidfile of a live unverifiable pid must survive: %v", err)
+	}
+
+	// a legible argv that is not ours stays a removal: that one we KNOW
+	psCommand = func(int) string { return "/usr/bin/vim notes.txt" }
+	sweepOrphan(opts, pidPath)
+	if _, err := os.Stat(pidPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("a pid legibly not ours must clear the pidfile")
 	}
 }

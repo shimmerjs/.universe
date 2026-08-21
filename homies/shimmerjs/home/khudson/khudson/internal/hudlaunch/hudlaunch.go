@@ -369,7 +369,7 @@ func acquireLock(path string) (func(), error) {
 
 // sweepOrphan reaps the previous launcher's child if it is still running: the
 // pidfile names the group leader, and the kill decision requires a live argv
-// matching OUR kitty binary and OUR socket -- never kill by name or title.
+// carrying OUR socket -- never kill by name or title.
 func sweepOrphan(opts Options, pidPath string) {
 	b, err := os.ReadFile(pidPath)
 	if err != nil {
@@ -381,12 +381,17 @@ func sweepOrphan(opts Options, pidPath string) {
 		return
 	}
 	argv := psCommand(pid)
-	if !orphanMatch(argv, opts.KittyBin, opts.Socket) {
-		// dead, pid reused by something not ours, or ps unusable -- refuse to
-		// kill what we cannot identify, but say so when the pid is live.
+	if !orphanMatch(argv, opts.Socket) {
 		if argv == "" && processAlive(pid) {
-			opts.Logf("hud-launcher: pidfile pid %d alive but unverifiable (ps returned nothing); not killing", pid)
+			// unverifiable, not gone: ps failed us, and the pidfile is the ONLY
+			// handle on that process. Removing it here is what turned a bad
+			// sweep into an unrecoverable one -- sockclaim then refuses the
+			// live holder forever and the launcher loops at its backoff cap
+			// with no way left to name what to kill. Keep it and try next boot.
+			opts.Logf("hud-launcher: pidfile pid %d alive but unverifiable (ps returned nothing); not killing, pidfile kept", pid)
+			return
 		}
+		// dead, or a reused pid running something legibly not ours
 		os.Remove(pidPath)
 		return
 	}
@@ -403,13 +408,20 @@ func sweepOrphan(opts Options, pidPath string) {
 	os.Remove(pidPath)
 }
 
-// orphanMatch is the pure kill decision behind sweepOrphan.
-func orphanMatch(argv, kittyBin, socket string) bool {
-	return argv != "" && kittyBin != "" && socket != "" &&
-		strings.Contains(argv, kittyBin) && strings.Contains(argv, socket)
+// orphanMatch is the pure kill decision behind sweepOrphan. It keys on the
+// SOCKET alone. The socket path is khudson's own, stable across rebuilds, and
+// no process but our child ever listens on it; the kitty binary is a STORE
+// path that moves on every kitty bump, so requiring it meant a bump silently
+// disarmed the sweep and stranded a live HUD the launcher could no longer
+// name.
+func orphanMatch(argv, socket string) bool {
+	return argv != "" && socket != "" && strings.Contains(argv, socket)
 }
 
-func psCommand(pid int) string {
+// psCommand reads a pid's argv; "" means gone OR unreadable, and sweepOrphan
+// keeps those two apart. Seam: tests fake the unreadable-but-live case, which
+// no real ps invocation can be made to produce on demand.
+var psCommand = func(pid int) string {
 	out, err := exec.Command("/bin/ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return ""

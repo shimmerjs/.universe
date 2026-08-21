@@ -172,6 +172,11 @@ type TouchFrame struct {
 	Count    uint8          `json:"count"`
 	TimeNS   int64          `json:"t"` // wall clock, unix nanoseconds
 	Contacts []TouchContact `json:"contacts,omitempty"`
+	// HB marks touchd's liveness line, not a digitizer report. Silence is
+	// the normal state on this socket, so only a positive beat separates
+	// idle glass from dead glass. A heartbeat must never reach the
+	// recognizer: with no contacts it would read as a lift mid-hold.
+	HB bool `json:"hb,omitempty"`
 }
 
 // KeyEvent kinds. Key and layer lines come from touchd's Moonlander reader
