@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>khudson ecosystem</title>
+<style>
+  :root {
+    --bg: #2d353b;
+    --bg2: #343f44;
+    --bg3: #3d484d;
+    --fg: #d3c6aa;
+    --dim: #859289;
+    --green: #a7c080;
+    --aqua: #83c092;
+    --blue: #7fbbb3;
+    --yellow: #dbbc7f;
+    --orange: #e69875;
+    --red: #e67e80;
+    --purple: #d699b6;
+    --line: #4f585e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 ui-monospace, "SF Mono", "FiraCode Nerd Font Mono", Menlo, monospace;
+  }
+  header {
+    padding: 20px 24px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0 0 4px; font-size: 17px; font-weight: 600; letter-spacing: 0.02em; }
+  .sub { color: var(--dim); font-size: 12.5px; margin: 0; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    align-items: center;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12.5px;
+  }
+  .group { display: flex; align-items: center; gap: 8px; }
+  .group > .label { color: var(--dim); }
+  button.seg {
+    background: var(--bg2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    padding: 4px 11px;
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  button.seg[aria-pressed="true"] { background: var(--green); color: var(--bg); border-color: var(--green); }
+  button.seg:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  label.chk { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--dim); }
+  label.chk input { accent-color: var(--green); }
+  main { display: flex; gap: 0; align-items: flex-start; }
+  .canvas-wrap { flex: 1 1 auto; overflow: auto; padding: 16px 8px 32px 16px; }
+  svg { display: block; }
+  aside {
+    flex: 0 0 320px;
+    border-left: 1px solid var(--line);
+    padding: 18px 20px 40px;
+    min-height: 60vh;
+    position: sticky;
+    top: 0;
+    align-self: stretch;
+  }
+  aside h2 { font-size: 14px; margin: 0 0 2px; }
+  aside .kind { color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+  aside p { margin: 0 0 12px; font-size: 12.5px; }
+  aside dl { margin: 0 0 14px; font-size: 12px; }
+  aside dt { color: var(--dim); margin-top: 8px; }
+  aside dd { margin: 2px 0 0; word-break: break-all; }
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    margin: 0 4px 4px 0;
+    color: var(--dim);
+  }
+  .tag.tcc { border-color: var(--orange); color: var(--orange); }
+  .tag.nix { border-color: var(--purple); color: var(--purple); }
+  .tag.prop { border-color: var(--yellow); color: var(--yellow); }
+  .node rect { transition: opacity .15s, stroke .15s; }
+  @media (prefers-reduced-motion: reduce) { .node rect, .edge { transition: none; } }
+  .node text { pointer-events: none; }
+  .node .title { font-size: 13px; font-weight: 600; }
+  .node .meta { font-size: 11px; }
+  .node:focus { outline: none; }
+  .node:focus-visible rect { stroke: var(--blue); stroke-width: 2.5; }
+  .node { cursor: pointer; }
+  .edge { fill: none; stroke: var(--line); stroke-width: 1.6; }
+  .edge.hid { stroke: var(--orange); }
+  .edge.sock { stroke: var(--blue); }
+  .edge.rc { stroke: var(--aqua); }
+  .edge.host { stroke: var(--dim); stroke-dasharray: 2 3; }
+  .edge.render { stroke: var(--green); }
+  .edge.proposed { stroke: var(--yellow); stroke-dasharray: 6 4; }
+  .elabel { font-size: 10.5px; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+  .band { fill: var(--bg2); stroke: var(--line); }
+  .bandlabel { fill: var(--dim); font-size: 11px; letter-spacing: 0.1em; }
+  .faded { opacity: 0.16; }
+  .legend { padding: 4px 24px 28px; color: var(--dim); font-size: 12px; display: flex; gap: 20px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
+  @media (max-width: 1100px) {
+    main { flex-direction: column; }
+    aside { flex: 1 1 auto; border-left: 0; border-top: 1px solid var(--line); position: static; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>khudson ecosystem</h1>
+  <p class="sub">processes, sockets, surfaces, and the layers that own them. click any node for detail; hover or focus to trace its edges.</p>
+</header>
+
+<div class="controls">
+  <div class="group">
+    <span class="label">state</span>
+    <button class="seg" id="m-today" aria-pressed="true">today</button>
+    <button class="seg" id="m-proposed" aria-pressed="false">proposed</button>
+  </div>
+  <div class="group">
+    <span class="label">lens</span>
+    <button class="seg lens" data-lens="all" aria-pressed="true">all</button>
+    <button class="seg lens" data-lens="sock" aria-pressed="false">sockets</button>
+    <button class="seg lens" data-lens="tcc" aria-pressed="false">TCC grants</button>
+    <button class="seg lens" data-lens="nix" aria-pressed="false">nix-owned</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="alllabels"> show all edge labels</label>
+</div>
+
+<main>
+  <div class="canvas-wrap">
+    <svg id="svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="svgtitle svgdesc">
+      <title id="svgtitle">khudson ecosystem topology</title>
+      <desc id="svgdesc">A layered topology: HID devices feed one magicbus daemon, which serves khudson's bus over unix sockets; the bus drives kitty instances that render surfaces onto the Edge display and the built-in display; a nix layer owns every process definition and config.</desc>
+    </svg>
+  </div>
+  <aside id="detail" aria-live="polite">
+    <h2>khudson ecosystem</h2>
+    <div class="kind">overview</div>
+    <p>One HID daemon, one render bus, and N kitty surfaces. Every arrow is a real socket, spawn, or render path; nothing here is aspirational except the dashed yellow edges, which appear only in the proposed state.</p>
+    <p>Select a node to see what it owns, which paths it binds, and what changes under the panel-surfaces design.</p>
+  </aside>
+</main>
+
+<div class="legend">
+  <span><i class="swatch" style="border-color:#e69875"></i> HID</span>
+  <span><i class="swatch" style="border-color:#7fbbb3"></i> unix socket</span>
+  <span><i class="swatch" style="border-color:#83c092"></i> kitty remote control</span>
+  <span><i class="swatch" style="border-color:#a7c080"></i> renders to</span>
+  <span><i class="swatch" style="border-color:#859289;border-top-style:dashed"></i> hosts process</span>
+  <span><i class="swatch" style="border-color:#dbbc7f;border-top-style:dashed"></i> proposed</span>
+</div>
+
+<script>
+"use strict";
+
+var NODES = [
+  { id:"moonlander", x:60,  y:40,  w:170, h:52, title:"Moonlander", meta:"ZSA keyboard", kind:"device",
+    desc:"Raw-HID vendor channel streams per-key matrix events passively. No keyboard seize, so presses reach macOS normally and khudson sees them regardless of focus.",
+    facts:{ "interface":"1, usage page 0xFF60", "visibility":"focus-independent" } },
+  { id:"edgetouch", x:250, y:40,  w:190, h:52, title:"Edge digitizer", meta:"touch HID", kind:"device",
+    desc:"Single-contact only, refuted on hardware in 2026-07: contact count is always 1 regardless of the device-mode feature write. Two-finger gestures are dead on this glass.",
+    facts:{ "device":"0x27C0:0x0859", "contacts":"1 (hardware limit)" } },
+  { id:"mx", x:460, y:40, w:150, h:52, title:"MX Master 4", meta:"pointer", kind:"device",
+    desc:"Battery, config-apply and divert-reset source for the logiretch viewer.", facts:{} },
+
+  { id:"touchd", x:60, y:152, w:550, h:60, title:"magicbusd / touchd", meta:"one HID daemon, one grant", kind:"daemon",
+    desc:"The HID backbone. Owns every device open and the Input Monitoring grant, and serves three sockets. Never embedded per app: one daemon, never N.",
+    tcc:["Input Monitoring"], nix:"magicbus.nix",
+    facts:{ "serves":"touch.sock, keys.sock, logiretch.sock", "identity":"signed at a fixed install path" } },
+
+  { id:"bus", x:310, y:268, w:250, h:64, title:"khudson bus", meta:"render orchestrator", kind:"daemon",
+    desc:"Gesture recognition, module poll scheduling, RC client, widget supervision. Owns khudson.sock and fans frames to docks. Arbiter of surface mode under the proposal.",
+    tcc:["Accessibility"], nix:"module.nix (launchd agent)",
+    facts:{ "binds":"khudson.sock", "config":"edge.cue, vetted at build" } },
+  { id:"hudlaunch", x:620, y:268, w:200, h:64, title:"hud-launcher", meta:"supervisor", kind:"daemon",
+    desc:"Polls NSScreen for Edge presence and supervises the HUD kitty child. Deliberately independent of the bus today: it imports stdlib and sockclaim, nothing else.",
+    nix:"module.nix (launchd agent)",
+    facts:{ "gate":"display presence", "today":"also owns position math + staleness relaunch" } },
+  { id:"kuiboard", x:1060, y:268, w:160, h:64, title:"kuiboard", meta:"standalone TUI", kind:"client",
+    desc:"Couch-mode keyboard panel. No dock, no render bus, no kitty dependency; dials keys.sock directly and renders through the shared kbview core.",
+    facts:{ "reads":"keys.sock", "input":"mouse + ctrl-c only" } },
+
+  { id:"hudkitty", x:310, y:392, w:250, h:64, title:"HUD kitty", meta:"khudson.app copy", kind:"surface",
+    desc:"The Edge pane of glass. A rebranded kitty.app copy so Dock, Cmd-Tab and permission prompts read khudson, not kitty.",
+    nix:"hud-app.nix + hud-kitty.conf",
+    today:"plain OS window forced to native fullscreen via --position and --start-as fullscreen",
+    proposed:"kitten panel, edge=center, pinned by output_name, physical screen frame",
+    facts:{ "RC socket":"kitty-panel.sock", "grid":"196x24 at font 20" } },
+  { id:"substrate", x:620, y:392, w:200, h:64, title:"substrate kitty", meta:"hidden host", kind:"surface",
+    desc:"Windowless kitty hosting scraped TUIs. Separate instance because panel instances never paint invisible windows.",
+    facts:{ "RC socket":"kitty.sock", "state":"start-as hidden" } },
+  { id:"dailykitty", x:880, y:392, w:200, h:64, title:"daily kitty", meta:"your terminal", kind:"surface",
+    desc:"The everyday terminal. Fixed RC socket delivered as a launch option, because a config-form listen_on would get a PID suffix.",
+    nix:"home/kitty/default.nix",
+    facts:{ "RC socket":"main-kitty.sock", "RC mode":"socket-only" } },
+
+  { id:"dock", x:330, y:504, w:210, h:56, title:"khudson dock", meta:"bubbletea v2", kind:"payload",
+    desc:"The composed HUD: dock rail, claude panel, resources, kb-live, strip. Renders through ultraviolet, which forwards only SGR and OSC 8.",
+    facts:{ "layout":"CUE regions, edge-peel + fill", "input":"gestures via the bus, not the window" } },
+  { id:"scraped", x:630, y:504, w:180, h:56, title:"scraped TUIs", meta:"btop, spotatui", kind:"payload",
+    desc:"Foreign terminal programs living in the substrate, captured with get-text and blitted into dock regions.", facts:{} },
+  { id:"couch", x:880, y:504, w:200, h:56, title:"quick-access panel", meta:"ctrl+opt+shift+K", kind:"payload",
+    today:"a plain left-edge terminal, 180 columns, auto-hide on focus loss",
+    proposed:"khudson dock under a couch config: same widgets minus dock-rail, sized to the couch grid",
+    desc:"Summoned by a macOS Service whose shortcut lives in pbs.plist. The invocation is fixed inside kitty's nested quick-access bundle, so all configuration arrives through the conf file.",
+    nix:"quickAccessTerminalConfig + pbs binding",
+    facts:{ "socket":"no fixed path possible; config-form listen_on is randomized", "escape":"KITTY_LISTEN_ON in the child env" } },
+  { id:"krib", x:1120, y:504, w:100, h:56, title:"krib", meta:"cheatsheets", kind:"client",
+    desc:"Cheatsheet and palette engine. Not a bubbletea app: one lipgloss dependency, fzf as the interactive frontend. Its pager is a pure cell-rect packer with no kitty coupling.",
+    facts:{ "module":"pkgs/krib", "shareable":"pager (imports only fmt)" } },
+
+  { id:"edgedisplay", x:310, y:616, w:250, h:56, title:"XENEON EDGE", meta:"2560x720 at 1x", kind:"glass",
+    desc:"The HUD display. Wider in points than the built-in panel, which is why the couch surface cannot simply reuse the Edge's column budget.", facts:{} },
+  { id:"builtin", x:820, y:616, w:300, h:56, title:"built-in Retina", meta:"2056x1329 points at 2x", kind:"glass",
+    desc:"The laptop panel. At font 20 a full-width panel is roughly 158 columns; at font 16 roughly 197, which is where the existing column budget would fit.", facts:{} }
+];
+
+var EDGES = [
+  { s:"moonlander", t:"touchd", cls:"hid", label:"raw HID", mode:"both" },
+  { s:"edgetouch", t:"touchd", cls:"hid", label:"digitizer", mode:"both" },
+  { s:"mx", t:"touchd", cls:"hid", label:"HID", mode:"both" },
+  { s:"touchd", t:"bus", cls:"sock", label:"touch.sock / keys.sock / logiretch.sock", mode:"both" },
+  { s:"touchd", t:"kuiboard", cls:"sock", label:"keys.sock", mode:"both" },
+  { s:"bus", t:"dock", cls:"sock", label:"khudson.sock: frames, config, theme", mode:"both" },
+  { s:"bus", t:"substrate", cls:"rc", label:"kitty.sock: launch, resize, get-text", mode:"both" },
+  { s:"bus", t:"hudkitty", cls:"rc", label:"kitty-panel.sock: get-colors only", mode:"both" },
+  { s:"bus", t:"dailykitty", cls:"rc", label:"main-kitty.sock: sessions", mode:"both" },
+  { s:"hudlaunch", t:"hudkitty", cls:"host", label:"spawn + supervise", mode:"both" },
+  { s:"hudlaunch", t:"edgedisplay", cls:"host", label:"NSScreen presence poll", mode:"both" },
+  { s:"hudkitty", t:"dock", cls:"host", label:"hosts", mode:"both" },
+  { s:"substrate", t:"scraped", cls:"host", label:"hosts, hidden", mode:"both" },
+  { s:"dailykitty", t:"couch", cls:"host", label:"Service summon", mode:"both" },
+  { s:"dailykitty", t:"krib", cls:"host", label:"f2 / f3 overlay", mode:"both" },
+  { s:"hudkitty", t:"edgedisplay", cls:"render", label:"renders", mode:"both" },
+  { s:"couch", t:"builtin", cls:"render", label:"renders", mode:"both" },
+  { s:"hudlaunch", t:"bus", cls:"proposed", label:"Edge presence", mode:"proposed" },
+  { s:"bus", t:"hudlaunch", cls:"proposed", label:"TypeSurface: auto | edge | couch", mode:"proposed" },
+  { s:"couch", t:"bus", cls:"proposed", label:"khudson.sock + KITTY_LISTEN_ON", mode:"proposed" }
+];
+
+var KINDCOLOR = {
+  device: "#e69875", daemon: "#a7c080", surface: "#7fbbb3",
+  payload: "#d699b6", client: "#dbbc7f", glass: "#859289"
+};
+
+var svg = document.getElementById("svg");
+var detail = document.getElementById("detail");
+var mode = "today";
+var lens = "all";
+var selected = null;
+var hovered = null;
+var showAllLabels = false;
+var NS = "http://www.w3.org/2000/svg";
+
+function el(name, attrs) {
+  var n = document.createElementNS(NS, name);
+  for (var k in attrs) { if (attrs[k] !== undefined && attrs[k] !== null) n.setAttribute(k, attrs[k]); }
+  return n;
+}
+function byId(id) { for (var i = 0; i < NODES.length; i++) { if (NODES[i].id === id) return NODES[i]; } return null; }
+
+function anchors(a, b) {
+  var ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+  var bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  var dy = bc.y - ac.y, dx = bc.x - ac.x;
+  if (Math.abs(dy) > a.h) {
+    if (dy > 0) return { p1:{x:ac.x, y:a.y + a.h}, p2:{x:bc.x, y:b.y}, vert:true };
+    return { p1:{x:ac.x, y:a.y}, p2:{x:bc.x, y:b.y + b.h}, vert:true };
+  }
+  if (dx > 0) return { p1:{x:a.x + a.w, y:ac.y}, p2:{x:b.x, y:bc.y}, vert:false };
+  return { p1:{x:a.x, y:ac.y}, p2:{x:b.x + b.w, y:bc.y}, vert:false };
+}
+
+function pathFor(a, b, bow) {
+  var an = anchors(a, b), p1 = an.p1, p2 = an.p2;
+  var off = bow || 0;
+  if (an.vert) {
+    var my = (p1.y + p2.y) / 2;
+    return { d: "M" + p1.x + "," + p1.y + " C" + (p1.x + off) + "," + my + " " + (p2.x + off) + "," + my + " " + p2.x + "," + p2.y,
+             mid: { x: (p1.x + p2.x) / 2 + off * 0.75, y: my } };
+  }
+  var mx = (p1.x + p2.x) / 2;
+  return { d: "M" + p1.x + "," + p1.y + " C" + mx + "," + (p1.y + off) + " " + mx + "," + (p2.y + off) + " " + p2.x + "," + p2.y,
+           mid: { x: mx, y: (p1.y + p2.y) / 2 + off * 0.75 } };
+}
+
+function nodeMatchesLens(n) {
+  if (lens === "all") return true;
+  if (lens === "tcc") return !!n.tcc;
+  if (lens === "nix") return !!n.nix;
+  if (lens === "sock") return n.kind === "daemon" || n.kind === "surface" || n.kind === "client";
+  return true;
+}
+function edgeMatchesLens(e) {
+  if (lens === "all") return true;
+  if (lens === "sock") return e.cls === "sock" || e.cls === "rc";
+  if (lens === "tcc") return e.cls === "hid";
+  if (lens === "nix") return false;
+  return true;
+}
+
+function connected(id) {
+  var set = {};
+  EDGES.forEach(function (e) {
+    if (e.mode === "proposed" && mode !== "proposed") return;
+    if (e.s === id) set[e.t] = true;
+    if (e.t === id) set[e.s] = true;
+  });
+  return set;
+}
+
+function render() {
+  while (svg.firstChild) { svg.removeChild(svg.firstChild); }
+
+  var band = el("g", {});
+  band.appendChild(el("rect", { x:60, y:724, width:1160, height:88, rx:4, "class":"band" }));
+  var bl = el("text", { x:76, y:748, "class":"bandlabel" });
+  bl.textContent = "NIX LAYER -- owns every box above: launchd agents, bundle identity, confs, config vet, flake checks";
+  band.appendChild(bl);
+  var items = [
+    "module.nix: agents, activation, state root",
+    "hud-app.nix: khudson.app identity",
+    "edge.cue: layout config, vetted at build",
+    "home/kitty: daily kitty, QAT conf, pbs binding",
+    "posture-check.nix: flake-check legs"
+  ];
+  items.forEach(function (t, i) {
+    var tx = el("text", { x: 76 + (i % 3) * 380, y: 772 + Math.floor(i / 3) * 20, fill: "#d3c6aa", "font-size": "11.5" });
+    tx.textContent = "- " + t;
+    band.appendChild(tx);
+  });
+  svg.appendChild(band);
+
+  var focusId = hovered || selected;
+  var conn = focusId ? connected(focusId) : null;
+
+  var bows = {};
+  EDGES.forEach(function (e) {
+    if (e.mode === "proposed" && mode !== "proposed") return;
+    var a = byId(e.s), b = byId(e.t);
+    if (!a || !b) return;
+    var key = [e.s, e.t].sort().join("|");
+    bows[key] = (bows[key] || 0) + 1;
+    var bow = (bows[key] - 1) * 46 * (e.s < e.t ? 1 : -1);
+    var pf = pathFor(a, b, bow);
+    var dim = !edgeMatchesLens(e) || (focusId && e.s !== focusId && e.t !== focusId);
+    var p = el("path", { d: pf.d, "class": "edge " + e.cls + (dim ? " faded" : "") });
+    svg.appendChild(p);
+    var showLabel = showAllLabels || (focusId && (e.s === focusId || e.t === focusId));
+    if (showLabel && !dim) {
+      var t = el("text", { x: pf.mid.x, y: pf.mid.y - 3, "class": "elabel", "text-anchor": "middle" });
+      t.textContent = e.label;
+      svg.appendChild(t);
+    }
+  });
+
+  NODES.forEach(function (n) {
+    var dim = !nodeMatchesLens(n) || (focusId && n.id !== focusId && !(conn && conn[n.id]));
+    var g = el("g", { "class": "node" + (dim ? " faded" : ""), tabindex: "0", role: "button",
+                      "aria-label": n.title + ". " + n.meta + ". press enter for detail." });
+    var color = KINDCOLOR[n.kind] || "#859289";
+    var isSel = selected === n.id;
+    g.appendChild(el("rect", { x:n.x, y:n.y, width:n.w, height:n.h, rx:4,
+      fill: isSel ? "#3d484d" : "#343f44", stroke: color, "stroke-width": isSel ? 2.5 : 1.4 }));
+    var t1 = el("text", { x:n.x + 12, y:n.y + 22, "class":"title", fill: color });
+    t1.textContent = n.title;
+    g.appendChild(t1);
+    var t2 = el("text", { x:n.x + 12, y:n.y + 39, "class":"meta", fill:"#859289" });
+    var metaText = n.meta;
+    if (mode === "proposed" && n.proposed) { metaText = n.meta + "  [changes]"; }
+    t2.textContent = metaText;
+    g.appendChild(t2);
+    if (n.h > 56) {
+      var badges = [];
+      if (n.tcc) badges.push("TCC");
+      if (n.nix) badges.push("nix");
+      if (badges.length) {
+        var t3 = el("text", { x:n.x + n.w - 12, y:n.y + 22, "class":"meta", fill:"#859289", "text-anchor":"end" });
+        t3.textContent = badges.join(" / ");
+        g.appendChild(t3);
+      }
+    }
+    g.addEventListener("mouseenter", function () { hovered = n.id; render(); });
+    g.addEventListener("mouseleave", function () { hovered = null; render(); });
+    g.addEventListener("focus", function () { hovered = n.id; render(); });
+    g.addEventListener("blur", function () { hovered = null; render(); });
+    g.addEventListener("click", function () { selected = (selected === n.id) ? null : n.id; showDetail(n); render(); });
+    g.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selected = n.id; showDetail(n); render(); }
+    });
+    svg.appendChild(g);
+  });
+}
+
+function showDetail(n) {
+  var h = "";
+  h += "<h2>" + n.title + "</h2>";
+  h += '<div class="kind">' + n.kind + "</div>";
+  if (n.tcc) { n.tcc.forEach(function (t) { h += '<span class="tag tcc">' + t + "</span>"; }); }
+  if (n.nix) { h += '<span class="tag nix">' + n.nix + "</span>"; }
+  h += "<p>" + n.desc + "</p>";
+  if (n.today || n.proposed) {
+    h += "<dl>";
+    if (n.today) { h += "<dt>today</dt><dd>" + n.today + "</dd>"; }
+    if (n.proposed) { h += "<dt>proposed</dt><dd>" + n.proposed + "</dd>"; }
+    h += "</dl>";
+  }
+  var keys = Object.keys(n.facts || {});
+  if (keys.length) {
+    h += "<dl>";
+    keys.forEach(function (k) { h += "<dt>" + k + "</dt><dd>" + n.facts[k] + "</dd>"; });
+    h += "</dl>";
+  }
+  detail.innerHTML = h;
+}
+
+document.getElementById("m-today").addEventListener("click", function () {
+  mode = "today";
+  this.setAttribute("aria-pressed", "true");
+  document.getElementById("m-proposed").setAttribute("aria-pressed", "false");
+  render();
+});
+document.getElementById("m-proposed").addEventListener("click", function () {
+  mode = "proposed";
+  this.setAttribute("aria-pressed", "true");
+  document.getElementById("m-today").setAttribute("aria-pressed", "false");
+  render();
+});
+Array.prototype.forEach.call(document.querySelectorAll(".lens"), function (b) {
+  b.addEventListener("click", function () {
+    lens = b.dataset.lens;
+    Array.prototype.forEach.call(document.querySelectorAll(".lens"), function (o) {
+      o.setAttribute("aria-pressed", o === b ? "true" : "false");
+    });
+    render();
+  });
+});
+document.getElementById("alllabels").addEventListener("change", function () {
+  showAllLabels = this.checked;
+  render();
+});
+
+render();
+</script>
+</body>
+</html>

@@ -94,9 +94,13 @@ gotchas and the verified-constraint history live in the author's memory
   `nixpkgs.overlays`, and kitty 0.48.0 shipped `macos_use_physical_screen_frame`
   (screen frame instead of visible frame, so a panel can draw over the menu bar
   and Dock) plus `macos_ns_window_layer`. If panels ever come back, reach for
-  those options -- and re-check whether upstream also suppresses
-  `constrainFrameRect:toScreen:`, which the patch needed and the options do not
-  obviously cover. Display-gated launcher: never opens with the
+  those options -- ANSWERED 2026-08-18 (panel-surfaces-design.md, which proposes
+  exactly that: edge + couch both as panels): upstream
+  does NOT suppress `constrainFrameRect:toScreen:` for panels (the override is
+  cocoa_window.m:2288, but `suppress_frame_constraints` is set only during
+  traditional-fullscreen restore), so physical-frame placement stays an
+  eyes-on check. The acceptsFirstMouse patch is also obsolete -- 0.48.0 returns
+  YES unconditionally. Display-gated launcher: never opens with the
   display absent (clamps a junk window otherwise), computes `--position` from
   NSScreen at launch, tears down / relaunches on display or child change, no
   `macos_hide_from_tasks` (breaks fullscreen).
