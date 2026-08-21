@@ -261,8 +261,8 @@ func (v *RenoVerbs) OpenURL(ctx context.Context, url string, corr RenoCorr) erro
 // the record verbs' handshake seam (arm before OBS, note after).
 type CtlCall func(args []string) (json.RawMessage, error)
 
-// ArmResult mirrors the module's record-arm payload.
-type ArmResult struct {
+// RecordOpen mirrors the module's record-arm payload.
+type RecordOpen struct {
 	Run       string                 `json:"run"`
 	Directory string                 `json:"directory"`
 	Scene     string                 `json:"scene,omitempty"`
@@ -274,59 +274,70 @@ type ArmResult struct {
 // point OBS at it and start. Failures note back so the journal owns the
 // truth; the started note carries the OBS version (recording identity).
 func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr) error {
-	raw, err := ctl([]string{"record-arm", corr.Run})
+	raw, err := ctl([]string{"record-open", corr.Run})
 	if err != nil {
-		return v.Act(corr, "record", "", "error", "arm: "+err.Error(), err)
+		return v.Act(corr, "record", "", "error", "open: "+err.Error(), err)
 	}
-	var arm ArmResult
-	if err := json.Unmarshal(raw, &arm); err != nil {
-		return v.Act(corr, "record", "", "error", "arm decode: "+err.Error(), err)
+	var intent RecordOpen
+	if err := json.Unmarshal(raw, &intent); err != nil {
+		return v.Act(corr, "record", "", "error", "open decode: "+err.Error(), err)
 	}
-	corr.Run = arm.Run
+	corr.Run = intent.Run
 	failNote := func(stage string, err error) error {
-		if _, nerr := ctl([]string{"record-note", arm.Run, "failed", stage + ": " + err.Error()}); nerr != nil {
+		if _, nerr := ctl([]string{"record-note", intent.Run, "failed", stage + ": " + err.Error()}); nerr != nil {
 			err = errors.Join(err, nerr)
 		}
-		return v.Act(corr, "record", arm.Run, "error", stage+": "+err.Error(), err)
+		return v.Act(corr, "record", intent.Run, "error", stage+": "+err.Error(), err)
 	}
+	// phase one, named on glass. Record always ends up rolling, but when
+	// OBS is cold it pays the launch first, and a pad that said nothing for
+	// two minutes read as a dead button. Best effort: a phase note is
+	// decoration, and losing it must never fail a take.
+	phase := func(s string) {
+		if _, err := ctl([]string{"record-phase", s}); err != nil {
+			fmt.Fprintf(os.Stderr, "khudson reno record: phase note %q: %v\n", s, err)
+		}
+	}
+	phase("standby")
+	defer phase("")
 	obs, err := dial()
 	if err != nil {
 		return failNote("dial", err)
 	}
 	defer obs.Close()
-	if err := os.MkdirAll(arm.Directory, 0o700); err != nil {
+	if err := os.MkdirAll(intent.Directory, 0o700); err != nil {
 		return failNote("workspace", err)
 	}
 	if obs.CanSetRecordDirectory() {
-		if err := obs.SetRecordDirectory(arm.Directory); err != nil {
+		if err := obs.SetRecordDirectory(intent.Directory); err != nil {
 			return failNote("record-directory", err)
 		}
 	} else {
 		fmt.Fprintln(os.Stderr, "khudson reno record: obs lacks SetRecordDirectory; clip lands in the OBS default directory (journal still owns the path at stop)")
 	}
 	switch {
-	case arm.Config != nil && !arm.Config.Empty():
+	case intent.Config != nil && !intent.Config.Empty():
 		// the one-core config path: ensure the reno scene matches and
 		// switch to it (scripted headers, `reno config`, and view taps
 		// all land here identically)
-		if err := ApplyRecordConfig(obs, *arm.Config); err != nil {
-			return failNote("config ("+arm.Config.Summary()+")", err)
+		if err := ApplyRecordConfig(obs, *intent.Config); err != nil {
+			return failNote("config ("+intent.Config.Summary()+")", err)
 		}
-	case arm.Scene != "":
-		if err := obs.SetScene(arm.Scene); err != nil {
-			return failNote("scene "+arm.Scene, err)
+	case intent.Scene != "":
+		if err := obs.SetScene(intent.Scene); err != nil {
+			return failNote("scene "+intent.Scene, err)
 		}
 	}
 	if err := obs.StartRecord(); err != nil {
 		return failNote("start", err)
 	}
-	if err := noteWithRetry(ctl, []string{"record-note", arm.Run, "started", obs.Version()}); err != nil {
+	if err := noteWithRetry(ctl, []string{"record-note", intent.Run, "started", obs.Version()}); err != nil {
 		// the run-stop path still owns the orphan (stop-worthy covers
 		// unproven starts), but the failure stays loud
-		return v.Act(corr, "record", arm.Run, "unconfirmed",
+		return v.Act(corr, "record", intent.Run, "unconfirmed",
 			"recording live but the started note failed: "+err.Error(), err)
 	}
-	return v.Act(corr, "record", arm.Run, "ok", "obs "+obs.Version()+" -> "+arm.Directory, nil)
+	return v.Act(corr, "record", intent.Run, "ok", "obs "+obs.Version()+" -> "+intent.Directory, nil)
 }
 
 // ApplyRequest mirrors the module's apply-begin payload.

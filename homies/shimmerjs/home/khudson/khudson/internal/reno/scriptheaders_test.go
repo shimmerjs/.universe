@@ -53,3 +53,48 @@ func TestRecordConfigHeaderVet(t *testing.T) {
 		}
 	}
 }
+
+// cam FX are step commands, gated twice: the script must record, and it
+// must stage a webcam for them to animate.
+func TestCamStepCommand(t *testing.T) {
+	src := []byte(`demo talk
+record
+webcam br
+step intro
+cam move big 600ms bounce
+cam hide
+`)
+	s, err := Parse("", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := s.Steps[0].Commands
+	if len(cmds) != 2 || cmds[0].Name != "cam" {
+		t.Fatalf("commands = %+v", cmds)
+	}
+	fx, err := ParseCamFX(cmds[0].Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.Kind != FXMove || fx.Preset != "big" || fx.Ease != "bounce" {
+		t.Errorf("fx = %+v", fx)
+	}
+}
+
+func TestCamStepVet(t *testing.T) {
+	cases := []struct {
+		name, src, want string
+	}{
+		{"no record", "demo d\nstep s\ncam hide\n", "never records"},
+		{"no webcam header", "demo d\nrecord\nstep s\ncam hide\n", "stages no webcam"},
+		{"bad kind", "demo d\nrecord\nwebcam br\nstep s\ncam wiggle\n", "wants one of"},
+		{"bad ease", "demo d\nrecord\nwebcam br\nstep s\ncam move big fast\n", "ease"},
+		{"off is not a target", "demo d\nrecord\nwebcam br\nstep s\ncam move off\n", "cam target"},
+	}
+	for _, c := range cases {
+		_, err := Parse("", []byte(c.src))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", c.name, err, c.want)
+		}
+	}
+}

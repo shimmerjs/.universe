@@ -95,6 +95,9 @@ var commands = map[string]cmdSpec{
 	// error, not a dead op
 	"scene":  {minArgs: 1, maxArgs: 1},
 	"record": {minArgs: 1, maxArgs: 1, check: checkRecordOp},
+	// webcam FX one-shots; the placement they animate comes from the
+	// webcam header, so they are record-gated twice over
+	"cam": {minArgs: 1, maxArgs: 4, check: checkCamFXArgs},
 	// window visibility (spaces retired, user 2026-07-22) + chrome tabs
 	"chrome-tab": {minArgs: 1, maxArgs: 1},
 	"hide-app":   {minArgs: 1, maxArgs: 1, check: checkBundleID},
@@ -112,7 +115,7 @@ func checkBundleID(args []string) error {
 }
 
 // recordCommands need the header's recording intent to vet.
-var recordCommands = map[string]bool{"scene": true, "record": true}
+var recordCommands = map[string]bool{"scene": true, "record": true, "cam": true}
 
 // reservedP2 names vet loudly as not-yet-landed instead of unknown, so a
 // script written against the full design fails with the real reason.
@@ -125,6 +128,11 @@ func checkRecordOp(args []string) error {
 		return fmt.Errorf("record wants pause or resume as a step command, got %q", args[0])
 	}
 	return nil
+}
+
+func checkCamFXArgs(args []string) error {
+	_, err := ParseCamFX(args)
+	return err
 }
 
 func checkHandle(args []string) error {
@@ -416,6 +424,18 @@ func Parse(path string, src []byte) (*Script, error) {
 	}
 	if s.Scene != "" && !s.RecordCfg.Empty() {
 		errs = append(errs, errors.New("scene header and screen/audio/webcam headers are exclusive: the config path owns the scene"))
+	}
+	if s.RecordCfg.Webcam == "" {
+		// a cam FX animates the reno-cam item, and only the webcam header
+		// puts one in the scene: without it every cam step would die at
+		// exec on a source that was never staged
+		for _, step := range s.Steps {
+			for _, c := range step.Commands {
+				if c.Name == "cam" {
+					fail(c.Line, "cam: the script stages no webcam (add a `webcam <preset>` header)")
+				}
+			}
+		}
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)

@@ -84,8 +84,8 @@ func TestObsLiveOrchestration(t *testing.T) {
 	}
 	notes := [][]string{}
 	ctl := func(args []string) (json.RawMessage, error) {
-		if args[0] == "record-arm" {
-			raw, _ := json.Marshal(ArmResult{Run: "live-test", Directory: dir, Config: cfg})
+		if args[0] == "record-open" {
+			raw, _ := json.Marshal(RecordOpen{Run: "live-test", Directory: dir, Config: cfg})
 			return raw, nil
 		}
 		notes = append(notes, args)

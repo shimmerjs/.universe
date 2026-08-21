@@ -95,9 +95,15 @@ func usage() {
                       vet + stage a demo script on the bus
   reno start|stop|status|next|prev
                       drive the staged demo run (goto <step-id> jumps)
-  reno record         start recording: ad hoc run when nothing is live,
-                      the live run's clip otherwise (arms write-ahead,
-                      then drives OBS over its websocket)
+  reno obs standby    phase one: boot OBS and match the scene to the
+                      configured posture, then stop. The slow half, so
+                      running it early makes the record tap instant
+  reno record         phase two: roll. Starts frames immediately when
+                      standby already happened, and runs standby itself
+                      when it did not -- record always ends up rolling
+  reno obs window show|hide|toggle
+                      OBS's own window (AX, not obs-websocket -- the
+                      protocol cannot touch it)
   reno obs stop|pause|resume|scene <name>
                       recording transport ops (exec'd as step effects
                       for scene/record script commands)

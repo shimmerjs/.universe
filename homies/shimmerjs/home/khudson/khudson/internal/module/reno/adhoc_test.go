@@ -222,11 +222,11 @@ func TestArmConfigSelection(t *testing.T) {
 func TestRecorderPadChoiceButtons(t *testing.T) {
 	m, _ := testMod(t)
 
-	// nothing probed: the OBS button is the whole surface, and the pad
+	// nothing probed: the device button is the whole surface, and the pad
 	// says so rather than offering bands that select nothing
 	d := m.recorderData()
 	probe := padTile(d.Rows, KeyActProbe)
-	if probe == nil || probe.Act[0] != actProbe || probe.Value != "cold" {
+	if probe == nil || probe.Act[0] != actProbe || probe.Value != "not probed" {
 		t.Fatalf("no probe button without inventory: %+v", d.Rows)
 	}
 	if padTile(d.Rows, "cfg:unprobed") == nil {
@@ -291,12 +291,16 @@ func TestRecorderPadChoiceButtons(t *testing.T) {
 		}
 	}
 
-	// a stale inventory keeps its buttons but says so on the OBS key: a
-	// cached enumeration beats booting cold with nothing selectable
+	// an old list keeps every button and reports its AGE, not an alarm: a
+	// device list an hour old is not wrong, and a warning that fired on a
+	// timer taught the eye to skip the one tile that carries a real one
 	m.inventory.At = m.now().Add(-2 * invStale)
 	d = m.recorderData()
-	if probe = padTile(d.Rows, KeyActProbe); probe == nil || !strings.Contains(probe.Value, "stale") {
-		t.Errorf("stale inventory must offer re-probe: %+v", probe)
+	if probe = padTile(d.Rows, KeyActProbe); probe == nil || probe.Style == module.StyleWarn {
+		t.Errorf("age alone must not raise an alarm: %+v", probe)
+	}
+	if probe.Value != "2h old" {
+		t.Errorf("probe tile value = %q, want the age", probe.Value)
 	}
 	if padTile(d.Rows, KeyCfgAudio+":uid-mbp") == nil {
 		t.Errorf("stale inventory must keep its device buttons: %+v", d.Rows)
@@ -321,8 +325,10 @@ func TestObsInventorySurvivesRestart(t *testing.T) {
 	if got := padTile(next.recorderData().Rows, KeyCfgAudio+":uid-mbp"); got == nil {
 		t.Errorf("recovered inventory must rebuild the device buttons: %+v", next.recorderData().Rows)
 	}
-	if got := padTile(next.recorderData().Rows, KeyActProbe); got == nil || got.Value != "32.2.0" {
-		t.Errorf("recovered pad must not read cold: %+v", got)
+	// the tile reports the LIST's age, not OBS: a recovered cache is a
+	// probed one, however old, so it must never read as never-probed
+	if got := padTile(next.recorderData().Rows, KeyActProbe); got == nil || got.Value == "not probed" {
+		t.Errorf("recovered pad must not read unprobed: %+v", got)
 	}
 }
 
@@ -421,41 +427,67 @@ func TestEveryPadTileIsPressable(t *testing.T) {
 }
 
 // Screens are the one part of an OBS enumeration that changes without
-// warning. A dock unplugged mid-setup leaves an inventory whose clock has
-// not run out but whose selectors point at displays that are gone, so the
-// pad checks display IDENTITY, not age.
-func TestDisplayChangeOutranksTheStalenessClock(t *testing.T) {
+// warning -- and the one part that needs no OBS to re-derive, because the
+// selectors come from CoreGraphics and OBS only ever supplied the label.
+// So a moved display REPAIRS itself, and what earns a warning is the thing
+// repair cannot fix: a configured display that is no longer attached.
+func TestMovedDisplaysHealAndOrphansWarn(t *testing.T) {
 	m, _ := testMod(t)
 	freshInv(t, m)
 	// the fixture inventory enumerates uuid-b and uuid-d
 	m.local = []cgdisplay.Display{{UUID: "uuid-b"}, {UUID: "uuid-d"}}
-	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Value != "32.2.0" {
+	if m.healDisplaysLocked() {
+		t.Error("a matching enumeration must heal nothing")
+	}
+	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Style == module.StyleWarn {
 		t.Fatalf("matching display set must read healthy: %+v", got)
 	}
 
-	// unplug one: fresh clock, wrong screens
+	// unplug one. Poll heals before rendering, so the list follows the
+	// hardware and the surviving display KEEPS the name the probe gave it
 	m.local = []cgdisplay.Display{{UUID: "uuid-b"}}
-	probe := padTile(m.recorderData().Rows, KeyActProbe)
-	if probe == nil || probe.Style != module.StyleWarn {
-		t.Errorf("a moved display set must read hot: %+v", probe)
+	if !m.healDisplaysLocked() {
+		t.Fatal("an unplugged display must heal the cached list")
 	}
-	if probe.Value != "displays moved" {
-		t.Errorf("probe tile value = %q, want the reason", probe.Value)
+	if n := len(m.inventory.Screens); n != 1 {
+		t.Fatalf("healed list has %d screens, want 1", n)
 	}
-	// the screen buttons stay live -- the selection is still yours to
-	// clear -- but must not read healthy
-	screen := padTile(m.recorderData().Rows, KeyCfgScreens+":uuid-d")
-	if screen == nil || len(screen.Act) == 0 {
-		t.Fatalf("screen button went dead: %+v", screen)
+	if got := m.inventory.Screens[0]; got.Value != "uuid-b" || got.Name == "" {
+		t.Errorf("healed screen = %+v, want uuid-b with its probed label", got)
 	}
-	if screen.Style != module.StyleWarn || screen.Value != "re-probe" {
-		t.Errorf("stale screen button = %+v, want a warning", screen)
+	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Style == module.StyleWarn {
+		t.Errorf("a healed list must not keep warning: %+v", got)
 	}
 
-	// swapped for a different display: same count, different identity
-	m.local = []cgdisplay.Display{{UUID: "uuid-b"}, {UUID: "uuid-new"}}
-	if got := padTile(m.recorderData().Rows, KeyActProbe); got == nil || got.Style != module.StyleWarn {
-		t.Errorf("a swapped display must read hot: %+v", got)
+	// but a SELECTED display that went away is not repairable -- it keeps a
+	// tile of its own so the config cannot silently point at nothing
+	m.desired.Screens = []renocore.ScreenSel{{Display: "uuid-d"}}
+	orphan := padTile(m.recorderData().Rows, KeyCfgScreens+":uuid-d")
+	if orphan == nil || len(orphan.Act) == 0 {
+		t.Fatalf("an orphaned selection needs a live tile: %+v", m.recorderData().Rows)
+	}
+	if orphan.Style != module.StyleWarn || orphan.Value != "not attached" {
+		t.Errorf("orphaned screen tile = %+v, want a warning", orphan)
+	}
+	// and tapping it clears the selection
+	m.handleCfgActLocked(orphan.Act)
+	if len(m.desired.Screens) != 0 {
+		t.Errorf("tapping an orphan must drop it: %+v", m.desired.Screens)
+	}
+
+	// a brand new display arrives with a synthesized label, not a blank
+	m.local = []cgdisplay.Display{{UUID: "uuid-b"}, {UUID: "uuid-new", W: 1920, H: 1080}}
+	if !m.healDisplaysLocked() {
+		t.Fatal("a swapped-in display must heal the cached list")
+	}
+	var found bool
+	for _, s := range m.inventory.Screens {
+		if s.Value == "uuid-new" {
+			found = s.Name != ""
+		}
+	}
+	if !found {
+		t.Errorf("new display missing a label: %+v", m.inventory.Screens)
 	}
 }
 
@@ -678,5 +710,280 @@ func TestConfigCacheCorrupt(t *testing.T) {
 	m.recoverConfig()
 	if !m.desired.Empty() {
 		t.Errorf("garbage cache produced %+v", m.desired)
+	}
+}
+
+// An FX move is a one-shot, not a config apply: it fires the cam verb
+// directly. It still carries the placement into the pending config --
+// the cam band would otherwise stay lit on a corner the camera left.
+func TestFXMoveTapFiresTheCamVerb(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+
+	handled, effects := m.HandleActEffects([]string{actFXMove, "big"})
+	if !handled || len(effects) != 1 {
+		t.Fatalf("handled=%v effects=%+v", handled, effects)
+	}
+	want := []string{"/inst/khudson", "reno", "obs", "cam", "move", "big", "500ms", "smooth"}
+	if !slices.Equal(effects[0].Argv, want) {
+		t.Errorf("argv = %v", effects[0].Argv)
+	}
+	if m.desired.Webcam != "big" {
+		t.Errorf("pending webcam = %q", m.desired.Webcam)
+	}
+	// each tap is its own deliberate one-shot, never a debounce candidate
+	_, again := m.HandleActEffects([]string{actFXMove, "tl"})
+	if len(again) != 1 || again[0].Key == effects[0].Key {
+		t.Errorf("keys collided: %v", again)
+	}
+	if _, e := m.HandleActEffects([]string{actFXMove, "sideways"}); len(e) != 0 {
+		t.Errorf("bad preset fired %v", e)
+	}
+}
+
+// A camera that was never configured has no item to animate, so the
+// first tap goes through the ordinary apply and lands the device.
+func TestFXMoveOnAnUnconfiguredCamApplies(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	_, effects := m.HandleActEffects([]string{actFXMove, "big"})
+	if len(effects) != 1 || !slices.Contains(effects[0].Argv, "apply") {
+		t.Fatalf("effects = %+v", effects)
+	}
+	if m.desired.Webcam != "big" {
+		t.Errorf("pending webcam = %q", m.desired.Webcam)
+	}
+}
+
+func TestFXHideTap(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	// nothing staged: hiding an absent camera is a no-op, not an error
+	if handled, effects := m.HandleActEffects([]string{actFXHide}); !handled || len(effects) != 0 {
+		t.Fatalf("handled=%v effects=%+v", handled, effects)
+	}
+
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+	_, effects := m.HandleActEffects([]string{actFXHide})
+	if len(effects) != 1 || !slices.Contains(effects[0].Argv, "hide") {
+		t.Fatalf("effects = %+v", effects)
+	}
+	if m.desired.Webcam != "off" {
+		t.Errorf("pending webcam = %q", m.desired.Webcam)
+	}
+}
+
+// The FX readout is its own: an fx note must never clear the config
+// reconciler's in-flight latch, or a queued config change would strand.
+func TestFXNoteIsNotTheApplyLatch(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+	if !m.applyLive {
+		t.Fatal("config tap must leave an apply in flight")
+	}
+	ctl(t, m, "fx-note", "ok", "move big 500ms smooth")
+	if !m.applyLive {
+		t.Error("fx-note cleared the apply latch")
+	}
+	if !strings.Contains(headText(m.recorderHeadRows()), "move big") {
+		t.Errorf("head = %q", headText(m.recorderHeadRows()))
+	}
+
+	ctl(t, m, "fx-note", "error", "obs cold")
+	if !m.fxFail {
+		t.Error("error note must read as a failure")
+	}
+	if _, _, err := m.HandleCtl([]string{"fx-note", "maybe"}); err == nil {
+		t.Error("unknown outcome must fail")
+	}
+}
+
+// headText flattens the recorder head row's spans.
+func headText(rows []module.Row) string {
+	var b strings.Builder
+	for _, r := range rows {
+		for _, s := range r.Spans {
+			b.WriteString(s.Text)
+		}
+	}
+	return b.String()
+}
+
+// The FX band draws the same placements as an eased path, lit off the
+// same selection: a move that landed IS the current placement.
+func TestRecorderFXBand(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgWebcam, "big"})
+	rows := m.recorderData().Rows
+
+	for _, p := range renocore.FXPlacements() {
+		tile := padTile(rows, KeyFXMove+":"+p)
+		if tile == nil || tile.Section != secFX {
+			t.Fatalf("no fx tile for %q", p)
+		}
+		if lit := tile.Style == module.StyleAccent; lit != (p == "big") {
+			t.Errorf("%s lit=%v", p, lit)
+		}
+	}
+	if padTile(rows, KeyFXHide) == nil {
+		t.Error("fx band needs a hide button")
+	}
+	// "off" is a visibility state, not a place to slide to
+	if padTile(rows, KeyFXMove+":off") != nil {
+		t.Error("off must not be an fx target")
+	}
+}
+
+// Standby is phase one on its own button, and it reports its own state:
+// the whole point of splitting the phases is that the slow half becomes
+// The transport is ONE button cycling ARM -> REC -> STOP. Each face only
+// appears when it can honour its name: REC never shows unless recording
+// starts now, because ARM already paid for the OBS launch and the scene.
+func TestTransportCyclesArmRecStop(t *testing.T) {
+	m, _ := testMod(t)
+
+	// unarmed: the button offers to bring the rig up, not to record
+	tile := padTile(m.recorderData().Rows, KeyActRecord)
+	if tile == nil || tile.Text != "ARM" || tile.Act[0] != actArm {
+		t.Fatalf("cold pad must offer ARM: %+v", tile)
+	}
+
+	handled, effects := m.handleCfgActLocked([]string{actArm})
+	if !handled || len(effects) != 1 {
+		t.Fatalf("arm tap = %v, %+v", handled, effects)
+	}
+	if want := []string{m.exe, "reno", "obs", "arm"}; !slices.Equal(effects[0].Argv, want) {
+		t.Errorf("arm argv = %v, want %v", effects[0].Argv, want)
+	}
+	if got := padTile(m.recorderData().Rows, KeyActRecord); got.Value != "arming..." {
+		t.Errorf("in-flight arm must say so: %+v", got)
+	}
+	// one at a time: a second tap during a cold OBS launch is impatience
+	if _, again := m.handleCfgActLocked([]string{actArm}); len(again) != 0 {
+		t.Errorf("second tap fired a duplicate arm: %+v", again)
+	}
+
+	// armed: the face becomes REC and means it
+	if err := m.noteArmLocked([]string{"ok", "obs 32.2.0, screen built-in"}); err != nil {
+		t.Fatal(err)
+	}
+	got := padTile(m.recorderData().Rows, KeyActRecord)
+	if got.Text != "REC" || got.Act[0] != actRecord || got.Value != "ready" {
+		t.Fatalf("armed transport = %+v, want a live REC", got)
+	}
+
+	// rolling: the stop square, and stopping leaves the rig ARMED so the
+	// next take is instant
+	m.HandleActEffects([]string{actRecord})
+	ctl(t, m, "record-note", m.run.ID, "started", "32.2.0")
+	if got := padTile(m.recorderData().Rows, KeyActRecord); got.Text != "STOP" {
+		t.Fatalf("rolling transport = %+v, want STOP", got)
+	}
+	ctl(t, m, "record-note", m.run.ID, "stopped", "/clips/take1.mkv")
+	if !m.armed() {
+		t.Error("stopping a take must leave the rig armed")
+	}
+
+	// a failed arm reports the reason and stays on ARM
+	if err := m.noteArmLocked([]string{"error", "obs did not answer"}); err != nil {
+		t.Fatal(err)
+	}
+	got = padTile(m.recorderData().Rows, KeyActRecord)
+	if got.Text != "ARM" || got.Style != module.StyleWarn || got.Value != "obs did not answer" {
+		t.Errorf("failed arm = %+v, want ARM with the reason", got)
+	}
+}
+
+// END RUN is the unarm: it releases the scene and the virtual camera with
+// it, because the failure worth designing against is walking away with the
+// camera light still on.
+func TestEndRunReleasesTheRig(t *testing.T) {
+	m, _ := testMod(t)
+	if err := m.noteArmLocked([]string{"ok", "obs 32.2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	m.HandleActEffects([]string{actRecord}) // opens an ad hoc run
+	ctl(t, m, "record-note", m.run.ID, "started", "32.2.0")
+	ctl(t, m, "record-note", m.run.ID, "stopped", "/clips/take1.mkv")
+
+	_, effects := m.HandleActEffects([]string{actStop})
+	var released bool
+	for _, e := range effects {
+		if slices.Equal(e.Argv, []string{m.exe, "reno", "obs", "release"}) {
+			released = true
+		}
+	}
+	if !released {
+		t.Fatalf("END RUN must release the rig: %+v", effects)
+	}
+	// and the verb's note unarms, so the transport falls back to ARM
+	if err := m.noteArmLocked([]string{"released", "2 sources released"}); err != nil {
+		t.Fatal(err)
+	}
+	if m.armed() {
+		t.Error("a released rig must read unarmed")
+	}
+	if got := padTile(m.recorderData().Rows, KeyActRecord); got.Text != "ARM" {
+		t.Errorf("released transport = %+v, want ARM", got)
+	}
+}
+
+// The window tile reports where OBS's window actually is. It is allowed to
+// show state precisely because kAXHidden reads back -- an error resolves to
+// unknown rather than a guess.
+func TestObsWindowTile(t *testing.T) {
+	m, _ := testMod(t)
+	if got := padTile(m.recorderData().Rows, KeyActWindow); got == nil || got.Value != "?" {
+		t.Fatalf("unqueried window tile = %+v", got)
+	}
+	handled, effects := m.handleCfgActLocked([]string{actWindow})
+	if !handled || len(effects) != 1 {
+		t.Fatalf("window tap = %v, %+v", handled, effects)
+	}
+	want := []string{m.exe, "reno", "obs", "window", "toggle"}
+	if !slices.Equal(effects[0].Argv, want) {
+		t.Errorf("window argv = %v, want %v", effects[0].Argv, want)
+	}
+	for _, tc := range []struct{ note, value, style string }{
+		{"hidden", "hidden", module.StyleDim},
+		{"shown", "shown", module.StyleAccent},
+	} {
+		if err := m.noteWindowLocked([]string{tc.note}); err != nil {
+			t.Fatal(err)
+		}
+		got := padTile(m.recorderData().Rows, KeyActWindow)
+		if got.Value != tc.value || got.Style != tc.style {
+			t.Errorf("after %q: %+v", tc.note, got)
+		}
+	}
+	// an error is not a state: OBS may not even be running
+	if err := m.noteWindowLocked([]string{"error", "not running"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := padTile(m.recorderData().Rows, KeyActWindow); got.Value != "unknown" || got.Style != module.StyleWarn {
+		t.Errorf("errored window tile = %+v", got)
+	}
+	if err := m.noteWindowLocked([]string{"sideways"}); err == nil {
+		t.Error("an unknown state must be rejected")
+	}
+}
+
+func TestFmtAge(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{-time.Second, "0s"},
+		{45 * time.Second, "45s"},
+		{90 * time.Second, "1m"},
+		{3 * time.Hour, "3h"},
+		{50 * time.Hour, "2d"},
+	} {
+		if got := fmtAge(tc.d); got != tc.want {
+			t.Errorf("fmtAge(%s) = %q, want %q", tc.d, got, tc.want)
+		}
 	}
 }

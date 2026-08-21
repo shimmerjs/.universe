@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +95,37 @@ type Mod struct {
 	applyGen   uint64
 	applyNote  string
 	applyFail  bool
+
+	// fx one-shots keep their own generation and readout: they never
+	// touch the apply latch, so a tapped effect cannot strand a queued
+	// config change.
+	fxGen  uint64
+	fxNote string
+	fxFail bool
+
+	// standby is phase one of recording: OBS up, scene matching. It gets
+	// its own latch and readout because the whole point of splitting the
+	// phases is that this one is separately runnable and separately
+	// reportable -- welded to record, its cost was invisible.
+	armLive bool
+	armAt   time.Time
+	armGen  uint64
+	armNote string
+	armFail bool
+
+	// winState is OBS's own window: "" unknown, "shown", "hidden". Unlike
+	// an OBS filter this reads back (kAXHidden), so the tile is allowed to
+	// show its state instead of being a button that lies.
+	winState string
+	winLive  bool
+	winAt    time.Time
+	winGen   uint64
+	winFail  bool
+
+	// recPhase names what the record verb is doing between the tap and the
+	// first frame. Pure readout, never journal state: the run's recording
+	// truth stays with the record notes.
+	recPhase string
 
 	stateDir string // <state>/reno; "" on bare test buses
 	runsDir  string // "" on bare test buses: journal writes error loudly
@@ -271,7 +303,7 @@ func (m *Mod) transition(to int, viaGlass bool) []module.Effect {
 		// (ordered executor: the chain is sequential). A failed start
 		// re-arms so a transient OBS error does not kill the whole run's
 		// recording.
-		if _, err := m.armRecordingLocked(""); err == nil {
+		if _, err := m.openRecordingLocked(""); err == nil {
 			effects = append(effects, m.recordEffect())
 		} else {
 			m.journalErr = err.Error()
@@ -301,6 +333,8 @@ func (m *Mod) commandArgv(c renocore.Command, step, act int) []string {
 		return append([]string{m.exe, "reno", "obs", "scene", c.Args[0]}, corr...)
 	case "record":
 		return append([]string{m.exe, "reno", "obs", c.Args[0]}, corr...)
+	case "cam":
+		return append(append([]string{m.exe, "reno", "obs", "cam"}, c.Args...), corr...)
 	case "launch-session":
 		// correlation flags must precede the -- tail
 		argv = append(argv, c.Args[0])
@@ -346,6 +380,16 @@ func (m *Mod) stopLocked() []module.Effect {
 	m.stale = ""
 	m.journal()
 	effects := []module.Effect{module.Boundary()}
+	// ending the session puts the rig down. Stopping a take deliberately
+	// does not -- the devices stay held so the next take is instant -- so
+	// this is the only path that turns the camera light back off.
+	if m.armed() {
+		m.armLive, m.armNote, m.armFail = false, "", false
+		effects = append(effects, module.Effect{
+			Key:  fmt.Sprintf("%s/release/%d", m.run.ID, m.now().UnixNano()),
+			Argv: []string{m.exe, "reno", "obs", "release"},
+		})
+	}
 	if rec := m.run.Recording; rec != nil && rec.StoppedAt.IsZero() &&
 		(rec.Failed == "" || !rec.StartedAt.IsZero()) {
 		// stop-worthy = any recording intent not yet stopped and not
@@ -383,12 +427,12 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 		return nil, m.stopLocked(), nil
 	case "status":
 		return m.statusLocked(), nil, nil
-	case "record-arm":
+	case "record-open":
 		runID := ""
 		if len(args) > 1 {
 			runID = args[1]
 		}
-		arm, err := m.armRecordingLocked(runID)
+		arm, err := m.openRecordingLocked(runID)
 		return arm, nil, err
 	case "record-note":
 		if len(args) < 2 {
@@ -407,6 +451,17 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 	case "apply-note":
 		effects, err := m.noteApplyLocked(args[1:])
 		return nil, effects, err
+	case "fx-note":
+		return nil, nil, m.noteFXLocked(args[1:])
+	case "arm-note":
+		return nil, nil, m.noteArmLocked(args[1:])
+	case "window-note":
+		return nil, nil, m.noteWindowLocked(args[1:])
+	case "record-phase":
+		// pure readout: what the record verb is doing between the tap and
+		// the first frame. Never journal state -- the record notes own that
+		m.recPhase = strings.Join(args[1:], " ")
+		return nil, nil, nil
 	case "obs-inventory":
 		if len(args) != 2 {
 			return nil, nil, errors.New("reno obs-inventory: need one JSON payload")
@@ -581,7 +636,31 @@ func (m *Mod) Poll(_ context.Context, params map[string]any) (module.Data, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.local = local
+	// a moved display is repaired here rather than reported: the fix needs
+	// no OBS, so the pad has no business asking for a tap it could make
+	// itself. Costs nothing on the ordinary tick -- it returns immediately
+	// unless the enumeration actually disagrees.
+	m.healDisplaysLocked()
 	return m.recorderData(), nil
+}
+
+// fmtAge renders an age as ONE coarse unit. A pad value is read at arm's
+// length off glass, so "2h" carries the whole meaning and "2h13m4.2s"
+// costs a squint to say the same thing.
+func fmtAge(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours())/24)
+	}
 }
 
 func fmtClock(d time.Duration) string {

@@ -3,6 +3,7 @@ package reno
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,11 +45,11 @@ func TestAdhocRecordLifecycle(t *testing.T) {
 	}
 
 	// the verb's handshake: re-arm is idempotent while unproven, then notes
-	data, _, err := m.HandleCtl([]string{"record-arm"})
+	data, _, err := m.HandleCtl([]string{"record-open"})
 	if err != nil {
 		t.Fatalf("re-arm: %v", err)
 	}
-	arm := data.(ArmResult)
+	arm := data.(RecordOpen)
 	if arm.Run != m.run.ID || arm.Directory != rec.Directory {
 		t.Fatalf("re-arm mismatch: %+v", arm)
 	}
@@ -60,7 +61,7 @@ func TestAdhocRecordLifecycle(t *testing.T) {
 	}
 
 	// live recording: arm refuses, glass tap flips to the stop effect
-	if _, _, err := m.HandleCtl([]string{"record-arm"}); err == nil || !strings.Contains(err.Error(), "already recording") {
+	if _, _, err := m.HandleCtl([]string{"record-open"}); err == nil || !strings.Contains(err.Error(), "already recording") {
 		t.Fatalf("arm over live: %v", err)
 	}
 	_, effects = m.HandleActEffects([]string{actRecord})
@@ -142,13 +143,17 @@ func TestScriptedAutoRecord(t *testing.T) {
 func TestRecorderViewStates(t *testing.T) {
 	m, _ := testMod(t)
 	rows := mustRows(t, m, "recorder")
-	if tile := padTile(rows, KeyActRecord); tile == nil || tile.Text != "REC" || len(tile.Act) == 0 {
-		t.Fatalf("idle recorder needs the record tile: %+v", rows)
+	// cold and unarmed, the transport offers ARM -- REC only appears once
+	// the rig is up, so it never promises an instant start it cannot make
+	if tile := padTile(rows, KeyActRecord); tile == nil || tile.Text != "ARM" || len(tile.Act) == 0 {
+		t.Fatalf("idle recorder needs the transport tile: %+v", rows)
 	}
 
 	m.HandleActEffects([]string{actRecord})
-	if tile := padTile(mustRows(t, m, "recorder"), KeyActRecord); tile == nil || tile.Value != "arming" {
-		t.Errorf("armed state: %+v", tile)
+	// the write-ahead is open and no note has landed: "starting", never a
+	// claim that frames are going
+	if tile := padTile(mustRows(t, m, "recorder"), KeyActRecord); tile == nil || tile.Value != "starting" {
+		t.Errorf("opened-take state: %+v", tile)
 	}
 	ctl(t, m, "record-note", m.run.ID, "started", "31")
 	rows = mustRows(t, m, "recorder")
@@ -186,10 +191,10 @@ func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o600)
 }
 
-// TestArmResultWire pins the ctl payload shape the record verb decodes.
-func TestArmResultWire(t *testing.T) {
+// TestRecordOpenWire pins the ctl payload shape the record verb decodes.
+func TestRecordOpenWire(t *testing.T) {
 	m, _ := testMod(t)
-	data, _, err := m.HandleCtl([]string{"record-arm"})
+	data, _, err := m.HandleCtl([]string{"record-open"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +240,7 @@ func TestRecordNoteReconcilesOldRun(t *testing.T) {
 	}
 
 	// arm scoped to a stale run refuses instead of hijacking the current
-	if _, _, err := m.HandleCtl([]string{"record-arm", oldID}); err == nil {
+	if _, _, err := m.HandleCtl([]string{"record-open", oldID}); err == nil {
 		t.Fatal("stale-run arm must refuse")
 	}
 }
@@ -255,5 +260,28 @@ func TestCtlTransitionsBypassGap(t *testing.T) {
 	// glass tap right after is still gap-guarded
 	if _, effects := m.HandleActEffects([]string{actNext}); len(effects) != 0 || m.run.Cursor != 1 {
 		t.Fatalf("glass retap must stay guarded: cursor=%d", m.run.Cursor)
+	}
+}
+
+// A scripted cam step execs the same verb the pad tap does -- one core,
+// correlated to its step like every other action.
+func TestScriptedCamStep(t *testing.T) {
+	m, base := testMod(t)
+	path := filepath.Join(filepath.Dir(base), "cam.txtar")
+	src := "demo camshow\nrecord\nwebcam br\n\nstep intro\ncam move big 600ms bounce\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl(t, m, "load", path)
+	ctl(t, m, "start")
+	_, effects := ctl(t, m, "next")
+	// the record arm leads the step's own actions
+	if len(effects) != 2 {
+		t.Fatalf("effects = %+v", effects)
+	}
+	argv := strings.Join(effects[1].Argv, " ")
+	want := "/inst/khudson reno obs cam move big 600ms bounce --run " + m.run.ID + " --step 0 --act 0"
+	if argv != want {
+		t.Errorf("cam effect = %q, want %q", argv, want)
 	}
 }

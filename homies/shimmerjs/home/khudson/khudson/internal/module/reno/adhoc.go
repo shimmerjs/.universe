@@ -29,6 +29,10 @@ const (
 	actCfgScreen = "reno:cfg-screen" // + display value (toggles membership)
 	actCfgWebcam = "reno:cfg-webcam" // + preset | default
 	actProbe     = "reno:probe"
+	actArm       = "reno:arm"
+	actWindow    = "reno:obs-window"
+	actFXMove    = "reno:fx-move" // + placement preset
+	actFXHide    = "reno:fx-hide"
 )
 
 // cfgDefault is the menu value for "leave OBS alone" (clears the knob).
@@ -44,6 +48,16 @@ const invStale = time.Hour
 // killed child) would otherwise hold it set forever and silently stop
 // applying every later tap. Past this the next change fires regardless.
 const applyWedge = 30 * time.Second
+
+// armWedge bounds an in-flight standby. Far longer than applyWedge
+// because standby may be COLD-LAUNCHING OBS, and the launch path budgets
+// two minutes plus a watchdog margin -- releasing the latch sooner would
+// fire a second launch at an app that is still starting.
+const armWedge = 3 * time.Minute
+
+// windowWedge bounds an in-flight window toggle: an AX write plus a
+// readback, so anything past a few seconds is a lost child, not slowness.
+const windowWedge = 10 * time.Second
 
 // maxNotesBytes bounds an ad hoc notes file read: notes are prose for a
 // talk, not a data file; a fat misload must not balloon the bus.
@@ -247,6 +261,61 @@ func displaysMoved(inv *renocore.ObsInventory, local []cgdisplay.Display) bool {
 	return false
 }
 
+// healDisplaysLocked rebuilds the cached screen list from the local CG
+// enumeration, reporting whether anything changed.
+//
+// It exists because the displays half of the inventory never needed OBS in
+// the first place: the SELECTORS come from CoreGraphics, and OBS only ever
+// supplied the pretty label. So when the displays move there is nothing to
+// go and ask -- the answer is already in hand, refreshed every Poll. A
+// warning you could clear yourself is just a warning you trained the user
+// to ignore.
+//
+// Labels survive by identity: a display still present keeps the name the
+// probe gave it, and only a genuinely new one falls back to CG geometry.
+// Mics and cams are untouched -- those DO need OBS, so they keep their age
+// readout and their deliberate tap. Caller holds mu.
+func (m *Mod) healDisplaysLocked() bool {
+	inv := m.inventory
+	if inv == nil || len(m.local) == 0 || !displaysMoved(inv, m.local) {
+		return false
+	}
+	// which selector form the probe used is not recorded, so infer it from
+	// what is already there: any non-numeric value means UUIDs (SCK), the
+	// same tolerance displaysMoved applies when matching
+	numeric := len(inv.Screens) > 0
+	for _, s := range inv.Screens {
+		if _, err := strconv.ParseUint(s.Value, 10, 32); err != nil {
+			numeric = false
+			break
+		}
+	}
+	named := make(map[string]string, len(inv.Screens))
+	for _, s := range inv.Screens {
+		named[s.Value] = s.Name
+	}
+	screens := make([]renocore.PropertyItem, 0, len(m.local))
+	for i, d := range m.local {
+		val := d.UUID
+		if numeric {
+			val = strconv.FormatUint(uint64(d.ID), 10)
+		}
+		name, ok := named[val]
+		if !ok {
+			main := ""
+			if d.Main {
+				main = " (main)"
+			}
+			name = fmt.Sprintf("display %d %dx%d%s", i+1, d.W, d.H, main)
+		}
+		screens = append(screens, renocore.PropertyItem{Name: name, Value: val})
+	}
+	inv.Screens = screens
+	m.saveInventoryLocked()
+	log.Printf("khudson reno: displays moved; screen list rebuilt locally (%d displays, no OBS needed)", len(screens))
+	return true
+}
+
 // handleCfgActLocked is the recorder view's config-menu dispatch. Every
 // knob that moves drives the reno scene right then -- the pad is a mixer
 // you tweak against live OBS, not a form you submit at record time.
@@ -263,8 +332,36 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 			Argv: []string{m.exe, "reno", "obs", "probe"},
 		}}
 	}
+	if argv[0] == actArm {
+		if len(argv) != 1 {
+			return false, nil
+		}
+		return true, m.armEffectsLocked()
+	}
+	if argv[0] == actWindow {
+		if len(argv) != 1 {
+			return false, nil
+		}
+		return true, m.windowEffectsLocked()
+	}
+	if argv[0] == actFXHide {
+		if len(argv) != 1 {
+			return false, nil
+		}
+		return true, m.fxEffectsLocked(renocore.CamFX{Kind: renocore.FXHide})
+	}
 	if len(argv) != 2 {
 		return false, nil
+	}
+	if argv[0] == actFXMove {
+		fx := renocore.CamFX{
+			Kind: renocore.FXMove, Preset: argv[1],
+			Dur: renocore.FXDefaultDur, Ease: renocore.FXDefaultEase,
+		}
+		if err := renocore.CheckCamFX(fx); err != nil {
+			return true, nil // rejected value: state unchanged, nothing to fire
+		}
+		return true, m.fxEffectsLocked(fx)
 	}
 	switch argv[0] {
 	case actCfgAudio:
@@ -320,6 +417,135 @@ func (m *Mod) applyEffectsLocked() []module.Effect {
 	}}
 }
 
+// armEffectsLocked emits phase one: boot OBS and match the scene. One
+// at a time, and NO dirty re-fire -- unlike an apply this carries no
+// pending edit that could be missed, so a second tap during a cold start
+// is impatience, not a change to converge on. Caller holds mu.
+func (m *Mod) armEffectsLocked() []module.Effect {
+	if m.armLive && m.now().Sub(m.armAt) < armWedge {
+		return nil
+	}
+	m.armLive, m.armAt = true, m.now()
+	m.armNote, m.armFail = "", false
+	m.armGen++
+	return []module.Effect{{
+		Key:  fmt.Sprintf("reno/arm/%d", m.armGen),
+		Argv: []string{m.exe, "reno", "obs", "arm"},
+	}}
+}
+
+// noteArmLocked closes a standby with its outcome. Caller holds mu.
+func (m *Mod) noteArmLocked(args []string) error {
+	if len(args) == 0 {
+		return errors.New("reno standby-note: need ok|error [detail]")
+	}
+	detail := strings.Join(args[1:], " ")
+	switch args[0] {
+	case "ok":
+		m.armNote, m.armFail = detail, false
+	case "released":
+		// the rig is down: unarmed, and the transport falls back to ARM
+		m.armNote, m.armFail = "", false
+	case "error":
+		m.armNote, m.armFail = detail, true
+	default:
+		return fmt.Errorf("reno standby-note: unknown outcome %q", args[0])
+	}
+	m.armLive = false
+	return nil
+}
+
+// windowEffectsLocked toggles OBS's own window. Caller holds mu.
+func (m *Mod) windowEffectsLocked() []module.Effect {
+	if m.winLive && m.now().Sub(m.winAt) < windowWedge {
+		return nil
+	}
+	m.winLive, m.winAt = true, m.now()
+	m.winGen++
+	return []module.Effect{{
+		Key:  fmt.Sprintf("reno/window/%d", m.winGen),
+		Argv: []string{m.exe, "reno", "obs", "window", "toggle"},
+	}}
+}
+
+// noteWindowLocked records where OBS's window ended up. The verb reports
+// the RESOLVED state rather than the requested one, so a toggle that lost
+// a race with the user's own cmd-H still leaves the tile honest. Caller
+// holds mu.
+func (m *Mod) noteWindowLocked(args []string) error {
+	if len(args) == 0 {
+		return errors.New("reno window-note: need shown|hidden|error [detail]")
+	}
+	switch args[0] {
+	case "shown", "hidden":
+		m.winState, m.winFail = args[0], false
+	case "error":
+		// state unknown now, not stale-but-plausible: OBS may not even be
+		// running, and a tile claiming "shown" would be inventing it
+		m.winState, m.winFail = "", true
+	default:
+		return fmt.Errorf("reno window-note: unknown state %q", args[0])
+	}
+	m.winLive = false
+	return nil
+}
+
+// fxEffectsLocked emits one webcam FX one-shot. An FX carries no desired
+// state of its own -- but a move IS a placement, so the pending webcam
+// preset follows it, or the cam band would stay lit on a corner the
+// camera has left. Two cases divert:
+//
+//   - never configured (Webcam == ""): there is no cam item to animate
+//     yet, and the FX verb refuses to conjure one, so the first tap goes
+//     through the ordinary full apply and lands the device.
+//   - hide with nothing staged: a no-op, not an error -- the camera is
+//     already as absent as it can get.
+//
+// Caller holds mu.
+func (m *Mod) fxEffectsLocked(fx renocore.CamFX) []module.Effect {
+	switch fx.Kind {
+	case renocore.FXMove, renocore.FXJump:
+		unconfigured := m.desired.Webcam == ""
+		m.desired.Webcam = fx.Preset
+		if unconfigured {
+			return m.applyEffectsLocked()
+		}
+	case renocore.FXHide:
+		if m.desired.Webcam == "" {
+			return nil
+		}
+		m.desired.Webcam = "off"
+	}
+	m.saveConfigLocked()
+	m.fxGen++
+	return []module.Effect{{
+		// unique key per emission: repeated taps of the same effect are
+		// each a deliberate one-shot, never a debounce candidate
+		Key:  fmt.Sprintf("reno/fx/%d", m.fxGen),
+		Argv: append([]string{m.exe, "reno", "obs", "cam"}, fx.Args()...),
+	}}
+}
+
+// noteFXLocked records the last FX one-shot's outcome for the pad
+// readout. Deliberately NOT apply-note: the apply latch belongs to the
+// config reconciler, and an FX that cleared it would strand a queued
+// config change. Caller holds mu.
+func (m *Mod) noteFXLocked(args []string) error {
+	if len(args) == 0 {
+		return errors.New("reno fx-note: need ok|error [detail]")
+	}
+	detail := strings.Join(args[1:], " ")
+	switch args[0] {
+	case "ok":
+		m.fxNote, m.fxFail = detail, false
+	case "error":
+		m.fxNote, m.fxFail = detail, true
+	default:
+		return fmt.Errorf("reno fx-note: unknown outcome %q", args[0])
+	}
+	return nil
+}
+
 // beginApplyLocked hands the apply verb the config to drive OBS to. The
 // dirty latch clears here, not at emission: the verb reads the CURRENT
 // pending, so every tap that landed before this moment is already
@@ -364,13 +590,13 @@ func (m *Mod) toggleScreenLocked(display string) {
 	m.desired.Screens = append(m.desired.Screens, renocore.ScreenSel{Display: display})
 }
 
-// armConfigLocked picks the config the arm journals: the script's for a
+// openConfigLocked picks the config the arm journals: the script's for a
 // scripted recording run, the pending one for ad hoc. The returned value
 // is a DEEP snapshot -- a shallow copy would alias the Screens backing
 // array, so a later screen toggle (in-place delete) would corrupt the
-// journaled config and race the post-unlock ArmResult marshal (arc-2
+// journaled config and race the post-unlock RecordOpen marshal (arc-2
 // review #3). Caller holds mu.
-func (m *Mod) armConfigLocked() *renocore.RecordConfig {
+func (m *Mod) openConfigLocked() *renocore.RecordConfig {
 	src := m.desired
 	if m.staged != nil && m.run != nil && m.run.Demo == m.staged.Name {
 		src = m.staged.RecordCfg

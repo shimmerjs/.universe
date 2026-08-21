@@ -17,8 +17,8 @@ import (
 // the screen manually" case -- no script anywhere.
 const actRecord = "reno:record"
 
-// ArmResult is the record-arm ctl payload the record verb consumes.
-type ArmResult struct {
+// RecordOpen is the record-arm ctl payload the record verb consumes.
+type RecordOpen struct {
 	Run       string                 `json:"run"`
 	Directory string                 `json:"directory"`
 	Scene     string                 `json:"scene,omitempty"`
@@ -35,17 +35,17 @@ func (m *Mod) wantRun(runID string) error {
 	return fmt.Errorf("reno: run %s is not current", runID)
 }
 
-// armRecordingLocked journals recording intent WRITE-AHEAD of any OBS
+// openRecordingLocked journals recording intent WRITE-AHEAD of any OBS
 // call, creating an ad hoc run when nothing is live. Idempotent while
 // the intent is unproven (the glass act arms in-process and the exec'd
 // verb re-arms over ctl -- both must land on one intent). Caller holds
 // mu.
-func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
+func (m *Mod) openRecordingLocked(runID string) (RecordOpen, error) {
 	if m.runsDir == "" {
-		return ArmResult{}, errors.New("reno record: no state root")
+		return RecordOpen{}, errors.New("reno record: no state root")
 	}
 	if err := m.wantRun(runID); err != nil {
-		return ArmResult{}, err
+		return RecordOpen{}, err
 	}
 	prevRun, prevRec := m.run, (*renocore.RecordingState)(nil)
 	if m.run != nil {
@@ -53,7 +53,7 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 	}
 	if m.run == nil || !m.run.Live() {
 		if runID != "" {
-			return ArmResult{}, fmt.Errorf("reno record: run %s already finished", runID)
+			return RecordOpen{}, fmt.Errorf("reno record: run %s already finished", runID)
 		}
 		now := m.now()
 		m.run = &renocore.Run{
@@ -75,10 +75,10 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 		// the one-core config: the script's for a scripted run, the
 		// pending ad hoc knobs otherwise -- journaled write-ahead with
 		// the rest of the intent
-		rec.Config = m.armConfigLocked()
+		rec.Config = m.openConfigLocked()
 		m.run.Recording = rec
 	case rec.Active():
-		return ArmResult{}, fmt.Errorf("reno record: run %s is already recording", m.run.ID)
+		return RecordOpen{}, fmt.Errorf("reno record: run %s is already recording", m.run.ID)
 	case rec.Failed != "" && rec.StartedAt.IsZero():
 		// a failed start is re-armable: swap in a FRESH intent (never
 		// mutate in place -- a journal failure below must be able to
@@ -88,11 +88,11 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 		fresh := *rec
 		fresh.Failed = ""
 		fresh.IntentAt = m.now()
-		fresh.Config = m.armConfigLocked()
+		fresh.Config = m.openConfigLocked()
 		rec = &fresh
 		m.run.Recording = rec
 	case !rec.StoppedAt.IsZero():
-		return ArmResult{}, fmt.Errorf("reno record: run %s already recorded (one clip per run; stop and re-record ad hoc)", m.run.ID)
+		return RecordOpen{}, fmt.Errorf("reno record: run %s already recorded (one clip per run; stop and re-record ad hoc)", m.run.ID)
 	}
 	m.journal()
 	if m.journalErr != "" {
@@ -105,9 +105,9 @@ func (m *Mod) armRecordingLocked(runID string) (ArmResult, error) {
 		if m.run != nil {
 			m.run.Recording = prevRec
 		}
-		return ArmResult{}, fmt.Errorf("reno record: journal: %s", m.journalErr)
+		return RecordOpen{}, fmt.Errorf("reno record: journal: %s", m.journalErr)
 	}
-	return ArmResult{Run: m.run.ID, Directory: rec.Directory, Scene: rec.Scene, Config: rec.Config}, nil
+	return RecordOpen{Run: m.run.ID, Directory: rec.Directory, Scene: rec.Scene, Config: rec.Config}, nil
 }
 
 // noteRecordingLocked applies a record verb's outcome note to the run it
@@ -211,7 +211,7 @@ func (m *Mod) handleRecordActLocked() []module.Effect {
 	if m.run != nil && m.run.Recording.Active() {
 		return []module.Effect{m.obsStopEffect()}
 	}
-	if _, err := m.armRecordingLocked(""); err != nil {
+	if _, err := m.openRecordingLocked(""); err != nil {
 		// surface on glass through the status row; no effect fires
 		m.journalErr = err.Error()
 		return nil

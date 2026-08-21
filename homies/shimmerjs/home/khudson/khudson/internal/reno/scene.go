@@ -213,11 +213,21 @@ func ScreenInputName(i int) string { return screenStem + strconv.Itoa(i) }
 // candidates).
 func IsScreenInput(name string) bool { return strings.HasPrefix(name, screenStem) }
 
+// IsRenoInput reports whether an input is one khudson created. The release
+// path disables only these: a source someone added to the reno scene by
+// hand is theirs, and a verb that reached past its own inputs would be
+// editing a scene it does not own.
+func IsRenoInput(name string) bool {
+	return name == MicInput || name == CamInput || IsScreenInput(name)
+}
+
 // ObsEnv is the probed OBS environment a plan is built against. The
 // verb gathers it fresh at apply time; nothing is trusted from an old
 // inventory.
 type ObsEnv struct {
 	CanvasW, CanvasH float64
+	// FPS is the canvas frame rate; FX sleeps are denominated in frames.
+	FPS float64
 	// ScreenKind/CamKind are the capture input kinds picked from
 	// GetInputKindList (screen_capture over display_capture,
 	// macos-avcapture over av_capture_input).

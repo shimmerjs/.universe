@@ -71,7 +71,7 @@ func ProbeEnv(obs ObsTransport) (renocore.ObsEnv, error) {
 	env.ScreenKind = renocore.PickKind(kinds, "screen_capture", "display_capture")
 	env.CamKind = renocore.PickKind(kinds, "macos-avcapture", "av_capture_input")
 
-	if env.CanvasW, env.CanvasH, err = obs.Canvas(); err != nil {
+	if env.CanvasW, env.CanvasH, env.FPS, err = obs.Canvas(); err != nil {
 		return env, fmt.Errorf("canvas: %w", err)
 	}
 	// OBS's monitor list contributes labels only; env.Monitors is rebuilt

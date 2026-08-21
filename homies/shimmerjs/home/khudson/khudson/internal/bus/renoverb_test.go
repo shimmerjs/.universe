@@ -216,24 +216,31 @@ func TestJournalFailureFailsTheVerb(t *testing.T) {
 // wires it; the base fake answers empty).
 type fakeObs struct {
 	ops     []string
+	vcam    bool
 	fail    map[string]error
 	canDir  bool
 	version string
 	output  string
 
-	kinds    []string
-	monitors []renocore.Monitor
-	canvasW  float64
-	canvasH  float64
-	scenes   []string
-	inputs   map[string]string                  // name -> kind
-	props    map[string][]renocore.PropertyItem // "input/prop" -> items
-	sizes    map[string][2]int                  // input -> source w,h
-	itemIDs  map[string]int                     // "scene/source" -> id
-	enabled  map[int]bool
-	tfs      map[int]renocore.Transform
-	mutes    map[string]bool
-	settings map[string]map[string]any
+	kinds     []string
+	monitors  []renocore.Monitor
+	canvasW   float64
+	canvasH   float64
+	canvasFPS float64
+	scenes    []string
+
+	filterKinds  []string
+	srcFilters   map[string][]string
+	batches      [][]renocore.FXRequest
+	batchBudgets []time.Duration
+	inputs       map[string]string                  // name -> kind
+	props        map[string][]renocore.PropertyItem // "input/prop" -> items
+	sizes        map[string][2]int                  // input -> source w,h
+	itemIDs      map[string]int                     // "scene/source" -> id
+	enabled      map[int]bool
+	tfs          map[int]renocore.Transform
+	mutes        map[string]bool
+	settings     map[string]map[string]any
 }
 
 func (f *fakeObs) op(name string) error {
@@ -257,8 +264,8 @@ func (f *fakeObs) InputKinds() ([]string, error) { return f.kinds, f.op("kinds")
 func (f *fakeObs) Monitors() ([]renocore.Monitor, error) {
 	return f.monitors, f.op("monitors")
 }
-func (f *fakeObs) Canvas() (float64, float64, error) {
-	return f.canvasW, f.canvasH, f.op("canvas")
+func (f *fakeObs) Canvas() (float64, float64, float64, error) {
+	return f.canvasW, f.canvasH, f.canvasFPS, f.op("canvas")
 }
 func (f *fakeObs) Scenes() ([]string, error) { return f.scenes, f.op("scenes") }
 func (f *fakeObs) CreateScene(name string) error {
@@ -341,14 +348,36 @@ func (f *fakeObs) SetSceneItemTransform(scene string, id int, tr renocore.Transf
 	return f.op(fmt.Sprintf("transform:%d", id))
 }
 
-// scriptedCtl returns arm data then records notes.
+func (f *fakeObs) ItemTransform(scene string, id int) (renocore.Transform, error) {
+	return f.tfs[id], f.op(fmt.Sprintf("get-transform:%d", id))
+}
+
+func (f *fakeObs) FilterKinds() ([]string, error) { return f.filterKinds, f.op("filter-kinds") }
+
+func (f *fakeObs) SourceFilters(source string) ([]string, error) {
+	return f.srcFilters[source], f.op("filters:" + source)
+}
+
+func (f *fakeObs) RunFrameBatch(id string, reqs []renocore.FXRequest, budget time.Duration) error {
+	f.batches = append(f.batches, reqs)
+	f.batchBudgets = append(f.batchBudgets, budget)
+	return f.op("batch")
+}
+
+// scriptedCtl returns arm data then records notes. record-phase is skipped
+// deliberately: it is readout decoration on the way to the first frame, not
+// a journal note, and folding it into the same list would let a UI tweak
+// break every assertion about what the run actually recorded.
 func scriptedCtl(t *testing.T, dir string) (CtlCall, *[][]string) {
 	t.Helper()
 	notes := &[][]string{}
 	return func(args []string) (json.RawMessage, error) {
-		if args[0] == "record-arm" {
-			raw, _ := json.Marshal(ArmResult{Run: "r9", Directory: dir, Scene: "main"})
+		if args[0] == "record-open" {
+			raw, _ := json.Marshal(RecordOpen{Run: "r9", Directory: dir, Scene: "main"})
 			return raw, nil
+		}
+		if args[0] == "record-phase" {
+			return nil, nil
 		}
 		*notes = append(*notes, args)
 		return nil, nil
@@ -548,4 +577,10 @@ func TestApplyConfigBeginFailure(t *testing.T) {
 	if ev := readEvents(t, v); ev[0].Outcome != "error" || !strings.Contains(ev[0].Detail, "begin") {
 		t.Errorf("event = %+v", ev[0])
 	}
+}
+
+func (f *fakeObs) VirtualCamActive() (bool, error) { return f.vcam, f.op("vcam-status") }
+func (f *fakeObs) StopVirtualCam() error {
+	f.vcam = false
+	return f.op("vcam-stop")
 }

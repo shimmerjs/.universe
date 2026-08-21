@@ -263,14 +263,17 @@ func TestPresenterView(t *testing.T) {
 	}
 
 	d, _ = m.Poll(context.Background(), map[string]any{"view": "recorder"})
+	// the transport is one key with a cycling act: unarmed it offers arm,
+	// armed it offers record. Either is a live button on the same tile.
 	var haveRecordAct bool
 	for _, r := range d.Rows {
-		if r.Key == KeyActRecord && len(r.Act) == 1 && r.Act[0] == actRecord {
+		if r.Key == KeyActRecord && len(r.Act) == 1 &&
+			(r.Act[0] == actRecord || r.Act[0] == actArm) {
 			haveRecordAct = true
 		}
 	}
 	if !haveRecordAct {
-		t.Errorf("recorder transport missing the record act: %+v", d.Rows)
+		t.Errorf("recorder transport missing its act: %+v", d.Rows)
 	}
 }
 

@@ -165,8 +165,8 @@ func TestRecordVerbAppliesConfig(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ws")
 	cfg := &renocore.RecordConfig{Audio: renocore.AudioNone}
 	ctl := func(args []string) (json.RawMessage, error) {
-		if args[0] == "record-arm" {
-			raw, _ := json.Marshal(ArmResult{Run: "r1", Directory: dir, Config: cfg})
+		if args[0] == "record-open" {
+			raw, _ := json.Marshal(RecordOpen{Run: "r1", Directory: dir, Config: cfg})
 			return raw, nil
 		}
 		return nil, nil
@@ -194,9 +194,12 @@ func TestRecordVerbConfigFailureNotes(t *testing.T) {
 	cfg := &renocore.RecordConfig{Audio: "no-such-device"}
 	var notes [][]string
 	ctl := func(args []string) (json.RawMessage, error) {
-		if args[0] == "record-arm" {
-			raw, _ := json.Marshal(ArmResult{Run: "r1", Directory: dir, Config: cfg})
+		if args[0] == "record-open" {
+			raw, _ := json.Marshal(RecordOpen{Run: "r1", Directory: dir, Config: cfg})
 			return raw, nil
+		}
+		if args[0] == "record-phase" {
+			return nil, nil // readout decoration, not a journal note
 		}
 		notes = append(notes, args)
 		return nil, nil

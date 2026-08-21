@@ -179,16 +179,28 @@ func cmdReno(args []string) error {
 		// dial-only (stopping a recording must never boot OBS); ensure
 		// and probe own the launch path
 		if len(rest) == 0 {
-			return fmt.Errorf("reno obs: need an op: ensure | probe | apply | stop | pause | resume | scene <name>")
+			return fmt.Errorf("reno obs: need an op: ensure | arm | release | probe | apply | window <show|hide|toggle> | cam <fx> | stop | pause | resume | scene <name>")
 		}
 		op := rest[0]
 		arg := ""
 		flagsAt := 1
-		if op == "scene" {
+		var camArgs []string
+		switch op {
+		case "scene", "window":
 			if len(rest) < 2 {
-				return fmt.Errorf("reno obs scene: need a scene name")
+				return fmt.Errorf("reno obs %s: need an argument", op)
 			}
 			arg, flagsAt = rest[1], 2
+		case "cam":
+			// variadic positional FX words before the correlation flags
+			// (`cam move big 600ms bounce --run r1`)
+			for _, a := range rest[1:] {
+				if strings.HasPrefix(a, "-") {
+					break
+				}
+				camArgs = append(camArgs, a)
+			}
+			flagsAt = 1 + len(camArgs)
 		}
 		fs := flag.NewFlagSet("reno obs", flag.ExitOnError)
 		host := fs.String("obs-host", bus.DefaultObsHost, "obs-websocket host:port")
@@ -209,6 +221,31 @@ func cmdReno(args []string) error {
 			defer obs.Close()
 			fmt.Printf("obs %s up at %s (SetRecordDirectory=%v)\n", obs.Version(), *host, obs.CanSetRecordDirectory())
 			return nil
+		case "arm":
+			v, err := bus.NewRenoVerbs()
+			if err != nil {
+				return err
+			}
+			// the launching dial: booting OBS IS the job of this verb
+			defer renoWatchdogFor(bus.EnsureDeadline + 30*time.Second)()
+			return v.ArmRig(ensureDial(*host), renoCtlData, corr)
+		case "release":
+			v, err := bus.NewRenoVerbs()
+			if err != nil {
+				return err
+			}
+			// dial-only: releasing a cold OBS is a no-op, never a launch
+			defer renoWatchdog()()
+			return v.Release(func() (bus.ObsTransport, error) {
+				return bus.DialOBS(*host, bus.ObsPassword())
+			}, renoCtlData, corr)
+		case "window":
+			v, err := bus.NewRenoVerbs()
+			if err != nil {
+				return err
+			}
+			defer renoWatchdog()()
+			return v.ObsWindow(arg, renoCtlData, corr)
 		case "probe":
 			v, err := bus.NewRenoVerbs()
 			if err != nil {
@@ -221,8 +258,18 @@ func cmdReno(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer renoWatchdog()()
 		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
+		if op == "cam" {
+			fx, err := renocore.ParseCamFX(camArgs)
+			if err != nil {
+				return err
+			}
+			// an eased move PLAYS inside the batch, so the bound is the FX
+			// budget on top of the ordinary verb deadline
+			defer renoWatchdogFor(renocore.FXMaxDur + renoVerbDeadline)()
+			return v.CamFX(fx, dial, renoCtlData, corr)
+		}
+		defer renoWatchdog()()
 		if op == "apply" {
 			return v.ApplyConfig(dial, renoCtlData, corr)
 		}

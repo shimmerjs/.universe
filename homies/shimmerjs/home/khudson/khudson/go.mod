@@ -9,6 +9,7 @@ require (
 	github.com/andreykaipov/goobs v1.9.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/gorilla/websocket v1.5.3
 	golang.org/x/sys v0.47.0
 	golang.org/x/tools v0.48.0
 )
@@ -24,7 +25,6 @@ require (
 	github.com/cockroachdb/apd/v3 v3.2.3 // indirect
 	github.com/emicklei/proto v1.14.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect

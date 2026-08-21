@@ -3,6 +3,7 @@ package reno
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
@@ -23,10 +24,14 @@ const (
 	KeyActPrev     = "act:prev"
 	KeyActRecord   = "act:record"
 	KeyActProbe    = "act:probe"
+	KeyActArm      = "act:arm"
+	KeyActWindow   = "act:obswindow"
 	KeyActEndRun   = "act:endrun"
 	KeyCfgScreens  = "cfg:screens"
 	KeyCfgAudio    = "cfg:audio"
 	KeyCfgWebcam   = "cfg:webcam"
+	KeyFXMove      = "fx:move"
+	KeyFXHide      = "fx:hide"
 	KeyCfgScript   = "cfg:script"
 	KeyNotes       = "notes"
 	KeyHead        = "head"
@@ -38,9 +43,12 @@ const (
 	glyphRecord = "\U000F044A" // nf-md-record
 	glyphStop   = "\U000F04DB" // nf-md-stop
 	glyphProbe  = "\U000F0450" // nf-md-refresh
+	glyphArm    = "\U000F140B" // nf-md-timer_sand_empty
+	glyphWindow = "\U000F05E7" // nf-md-window_restore
 	glyphMic    = "\U000F036C" // nf-md-microphone
 	glyphMicOff = "\U000F036D" // nf-md-microphone_off
 	glyphCam    = "\U000F0567" // nf-md-video
+	glyphCamOff = "\U000F0568" // nf-md-video_off
 	glyphScreen = "\U000F0379" // nf-md-monitor
 	glyphScript = "\U000F0219" // nf-md-file_document
 )
@@ -282,6 +290,15 @@ func (m *Mod) recorderHeadRows() []module.Row {
 	case m.applyNote != "":
 		add("scene", m.applyNote, module.StyleDim)
 	}
+	// FX one-shots read back beside the scene state, not inside it: they
+	// leave no desired state behind, so the only honest record of one is
+	// what the last one did
+	switch {
+	case m.fxFail:
+		add("fx", m.fxNote, module.StyleWarn)
+	case m.fxNote != "":
+		add("fx", m.fxNote, module.StyleDim)
+	}
 	if m.notesPath != "" {
 		add("notes", filepath.Base(m.notesPath), module.StyleDim)
 	}
@@ -294,6 +311,7 @@ const (
 	secScreens   = "screens"
 	secMic       = "mic"
 	secCam       = "cam"
+	secFX        = "fx"
 )
 
 // recorderTiles is the pad's button set. Every CHOICE is its own button --
@@ -301,7 +319,7 @@ const (
 // a single tap on a lit target instead of a popover you aim at twice.
 // Caller holds mu.
 func (m *Mod) recorderTiles() []module.Row {
-	tiles := []module.Row{m.recordTile()}
+	tiles := []module.Row{m.transportTile()}
 
 	// a scripted recording run reads its config FROM the script: the ad
 	// hoc knobs would lie about what is about to record, so the script's
@@ -320,7 +338,7 @@ func (m *Mod) recorderTiles() []module.Row {
 		return m.appendEndRun(tiles)
 	}
 
-	tiles = append(tiles, m.probeTile())
+	tiles = append(tiles, m.probeTile(), m.obsWindowTile())
 	tiles = m.appendEndRun(tiles)
 
 	inv := m.inventory
@@ -333,7 +351,6 @@ func (m *Mod) recorderTiles() []module.Row {
 			Style: module.StyleHighlight, Act: []string{actProbe}})
 	}
 
-	gone := displaysMoved(inv, m.local)
 	for _, it := range inv.Screens {
 		t := module.Row{Kind: module.RowPad, Section: secScreens,
 			Key: KeyCfgScreens + ":" + it.Value, Glyph: glyphScreen, Text: it.Name,
@@ -347,12 +364,25 @@ func (m *Mod) recorderTiles() []module.Row {
 				break
 			}
 		}
-		if gone {
-			// keep the button live -- the selection is still journalled and
-			// still yours to clear -- but never let it read healthy
-			t.Style, t.Value = module.StyleWarn, "re-probe"
-		}
 		tiles = append(tiles, t)
+	}
+	// A CONFIGURED display that is no longer attached keeps a tile of its
+	// own. The enumeration self-heals to what is present, so without this
+	// the selection would quietly vanish from glass while still sitting in
+	// the config, and the recording would come up short with nothing on the
+	// pad having said so. Tapping it drops the selection. This is the alarm
+	// the old enumeration-age warning was reaching for and missing: not
+	// "the list is old" but "what you asked to record is not there".
+	for _, s := range m.desired.Screens {
+		if slices.ContainsFunc(inv.Screens, func(it renocore.PropertyItem) bool {
+			return it.Value == s.Display
+		}) {
+			continue
+		}
+		tiles = append(tiles, module.Row{Kind: module.RowPad, Section: secScreens,
+			Key: KeyCfgScreens + ":" + s.Display, Glyph: glyphScreen,
+			Text: shortSel(s.Display), Value: "not attached", Style: module.StyleWarn,
+			Act: []string{actCfgScreen, s.Display}})
 	}
 
 	// Both audio knobs silence reno's own mic; they differ in what they do
@@ -380,7 +410,30 @@ func (m *Mod) recorderTiles() []module.Row {
 		tiles = append(tiles, m.choiceTile(secCam, KeyCfgWebcam+":"+p, p,
 			glyphCam, actCfgWebcam, p, m.desired.Webcam == p))
 	}
-	return tiles
+
+	// The FX band is the same placements arrived at by an eased path
+	// instead of a jump cut, so its tiles light off the same selection --
+	// a move that landed IS the current placement. Pixelate stays off the
+	// pad deliberately: its state lives in an OBS filter nothing here can
+	// read back, and a toggle that cannot show its own state is the lying
+	// button this pad refuses to draw.
+	for _, p := range renocore.FXPlacements() {
+		tiles = append(tiles, m.choiceTile(secFX, KeyFXMove+":"+p, "slide "+p,
+			glyphCam, actFXMove, p, m.desired.Webcam == p))
+	}
+	return append(tiles, module.Row{Kind: module.RowPad, Section: secFX,
+		Key: KeyFXHide, Glyph: glyphCamOff, Text: "hide",
+		Act: []string{actFXHide}})
+}
+
+// shortSel labels a display selector that has no name left to show: the
+// display is unplugged, so the probe's label went with it and only the raw
+// UUID or index remains. A UUID's head is enough to tell two apart.
+func shortSel(sel string) string {
+	if len(sel) > 8 {
+		return sel[:8]
+	}
+	return sel
 }
 
 // deviceLabel trims the noise OBS reports in device names: a key is ~18
@@ -406,47 +459,116 @@ func (m *Mod) choiceTile(section, key, label, glyph, act, value string, on bool)
 	return t
 }
 
-// recordTile is the transport button: one tap arms an ad hoc run and
-// starts OBS, or stops the recording that is live. Caller holds mu.
-func (m *Mod) recordTile() module.Row {
+// transportTile is the one button the whole transport cycles through:
+// ARM -> REC -> STOP. Each face only appears when it can honour its own
+// name, which is the point -- REC never shows unless recording starts NOW,
+// because ARM already paid for the OBS launch and the scene. A button that
+// says record and then thinks for two minutes is the thing this replaces.
+//
+// STOP ends the take and leaves the rig ARMED, so the next take is instant;
+// unarming is END RUN's job (it releases the scene and the devices with it).
+// Caller holds mu.
+func (m *Mod) transportTile() module.Row {
 	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActRecord,
-		Glyph: glyphRecord, Text: "REC", Value: "ready",
-		Style: module.StyleHighlight, Act: []string{actRecord}}
+		Style: module.StyleHighlight}
 	rec := m.recording()
-	switch {
-	case rec.Active():
-		t.Glyph, t.Text = glyphStop, "STOP"
+
+	// rolling: the classic stop square, and the take's clock on its face
+	if rec.Active() {
+		t.Glyph, t.Text, t.Act = glyphStop, "STOP", []string{actRecord}
 		t.Style, t.Value = module.StyleWarn, fmtClock(m.now().Sub(rec.StartedAt))
-	case rec != nil && rec.Failed != "":
-		t.Value = "retry"
-	case rec != nil && rec.StoppedAt.IsZero():
-		t.Value = "arming"
+		return t
+	}
+	// mid-flight: the take is open, or a verb is working toward the first
+	// frame. Still the stop face -- whatever happens next, stopping is the
+	// move -- but never a claim that frames are going
+	if rec != nil && rec.StoppedAt.IsZero() && rec.Failed == "" {
+		t.Glyph, t.Text, t.Act = glyphStop, "STOP", []string{actRecord}
+		t.Value = "starting"
+		if m.recPhase != "" {
+			t.Value = m.recPhase + "..."
+		}
+		return t
+	}
+	// armed: the record circle, and it means it
+	if m.armed() {
+		t.Glyph, t.Text, t.Act = glyphRecord, "REC", []string{actRecord}
+		t.Value = "ready"
+		if rec != nil && rec.Failed != "" {
+			t.Value = "retry"
+		}
+		return t
+	}
+	// unarmed: bring the rig up first
+	t.Glyph, t.Text, t.Act = glyphArm, "ARM", []string{actArm}
+	switch {
+	case m.armLive:
+		t.Value, t.Style = "arming...", module.StyleDim
+	case m.armFail:
+		t.Value, t.Style = m.armNote, module.StyleWarn
+	default:
+		t.Value = "obs cold"
 	}
 	return t
 }
 
-// probeTile re-enumerates the OBS devices behind the choice bands. It also
-// boots OBS, so it stays a deliberate tap and never an automatic poll.
+// armed reports whether the rig is up: OBS running and the scene matching
+// the configured posture. It is the ARM verb's confirmation, cleared by the
+// release END RUN performs -- never inferred from age, because an OBS that
+// quit under us leaves no trace here and a guess would put REC on a button
+// that cannot record. Caller holds mu.
+func (m *Mod) armed() bool { return m.armNote != "" && !m.armFail }
+
+// obsWindowTile shows and hides OBS's own window. It earns a state value
+// where the pixelate control could not: kAXHidden reads back, so the tile
+// reports where the window actually is rather than where the last tap
+// meant to put it. Caller holds mu.
+func (m *Mod) obsWindowTile() module.Row {
+	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActWindow,
+		Glyph: glyphWindow, Text: "obs window", Act: []string{actWindow}}
+	switch {
+	case m.winLive:
+		t.Value, t.Style = "...", module.StyleDim
+	case m.winFail:
+		// not running, or the AX grant is gone: either way the honest
+		// answer is that we do not know, not a guess
+		t.Value, t.Style = "unknown", module.StyleWarn
+	case m.winState == "hidden":
+		t.Value, t.Style = "hidden", module.StyleDim
+	case m.winState == "shown":
+		t.Value, t.Style = "shown", module.StyleAccent
+	default:
+		t.Value = "?"
+	}
+	return t
+}
+
+// probeTile re-enumerates the devices the choice bands are drawn from. It
+// also boots OBS, so it stays a deliberate tap and never an automatic poll.
+//
+// It reports the DEVICE LIST, not OBS -- whether OBS is up and configured
+// is standby's question, and the tile used to answer both badly. There is
+// deliberately no age warning: a list an hour old is not wrong, and the
+// hour timer that used to warn here fired constantly, meant nothing you
+// could act on, and taught you to ignore the one tile that also carries
+// the real alarm. The age shows as plain information; identity is what
+// escalates, per displaysMoved. Caller holds mu.
 func (m *Mod) probeTile() module.Row {
 	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActProbe,
-		Glyph: glyphProbe, Text: "OBS", Value: "cold",
+		Glyph: glyphProbe, Text: "devices", Value: "not probed",
 		Style: module.StyleHighlight, Act: []string{actProbe}}
 	inv := m.inventory
 	if inv == nil {
 		return t
 	}
-	t.Value = inv.ObsVersion
 	if displaysMoved(inv, m.local) {
-		// louder than stale: the enumeration is not merely old, its screen
-		// selectors point at displays that are not there any more
+		// the enumeration is not merely old: its screen selectors point at
+		// displays that are not there any more, so a recording built from
+		// it would capture the wrong thing or nothing
 		t.Text, t.Value, t.Style = "RE-PROBE", "displays moved", module.StyleWarn
 		return t
 	}
-	if m.now().Sub(inv.At) > invStale {
-		t.Value = inv.ObsVersion + " stale"
-		return t
-	}
-	t.Style = ""
+	t.Value = fmtAge(m.now().Sub(inv.At)) + " old"
 	return t
 }
 

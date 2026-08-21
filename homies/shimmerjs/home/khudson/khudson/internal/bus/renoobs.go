@@ -15,9 +15,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/andreykaipov/goobs"
 	"github.com/andreykaipov/goobs/api/requests/config"
+	"github.com/andreykaipov/goobs/api/requests/filters"
 	"github.com/andreykaipov/goobs/api/requests/inputs"
 	"github.com/andreykaipov/goobs/api/requests/sceneitems"
 	"github.com/andreykaipov/goobs/api/requests/scenes"
@@ -49,7 +51,9 @@ type ObsTransport interface {
 	// minimal mutations BuildScenePlan's executor needs.
 	InputKinds() ([]string, error)
 	Monitors() ([]renocore.Monitor, error)
-	Canvas() (w, h float64, err error)
+	// Canvas is the base resolution plus the frame rate FX sleeps are
+	// denominated in.
+	Canvas() (w, h, fps float64, err error)
 	Scenes() ([]string, error)
 	CreateScene(name string) error
 	// Inputs maps input name -> kind for every OBS input.
@@ -58,6 +62,12 @@ type ObsTransport interface {
 	CreateInput(scene, name, kind string, settings map[string]any, enabled bool) error
 	SetInputSettings(name string, settings map[string]any) error
 	SetInputMute(name string, muted bool) error
+	// VirtualCamActive reports whether OBS's virtual camera output is
+	// running. It is an output nothing here starts, but macOS starts it on
+	// demand when any app opens the OBS Virtual Camera device -- so it can
+	// hold the camera indefinitely while the pad reports everything idle.
+	VirtualCamActive() (bool, error)
+	StopVirtualCam() error
 	RemoveInput(name string) error
 	// PropertyItems enumerates a list-property's items (displays,
 	// devices), values stringified.
@@ -70,6 +80,20 @@ type ObsTransport interface {
 	// source is not yet streaming, e.g. pre-TCC).
 	ItemSourceSize(scene string, id int) (w, h int, err error)
 	SetSceneItemTransform(scene string, id int, t renocore.Transform) error
+
+	// Webcam FX surface. ItemTransform reads the item's current pose (an
+	// eased move interpolates out of it); FilterKinds is the capability
+	// probe standing in front of every filter effect -- nil when the
+	// server has no filter-kind list at all; SourceFilters names what is
+	// already attached, so the plan creates or updates rather than
+	// erroring on a duplicate.
+	ItemTransform(scene string, id int) (renocore.Transform, error)
+	FilterKinds() ([]string, error)
+	SourceFilters(source string) ([]string, error)
+	// RunFrameBatch executes reqs as one SERIAL_FRAME batch: frame-locked
+	// in OBS, so Sleep pseudo-requests pace an animation. budget bounds
+	// the exchange, playback time included.
+	RunFrameBatch(id string, reqs []renocore.FXRequest, budget time.Duration) error
 }
 
 // DefaultObsHost is the obs-websocket default on this machine.
@@ -94,6 +118,10 @@ type goobsTransport struct {
 	c       *goobs.Client
 	version string
 	reqs    []string
+	// host/password are kept for the batch path, which cannot ride the
+	// goobs connection (see obsbatch.go).
+	host     string
+	password string
 }
 
 // DialOBS connects and probes: version + the advertised request set.
@@ -111,7 +139,10 @@ func DialOBS(host, password string) (ObsTransport, error) {
 		c.Disconnect()
 		return nil, fmt.Errorf("obs version probe: %w", err)
 	}
-	return &goobsTransport{c: c, version: v.ObsVersion, reqs: v.AvailableRequests}, nil
+	return &goobsTransport{
+		c: c, version: v.ObsVersion, reqs: v.AvailableRequests,
+		host: host, password: password,
+	}, nil
 }
 
 func (t *goobsTransport) Version() string { return t.version }
@@ -180,12 +211,16 @@ func (t *goobsTransport) Monitors() ([]renocore.Monitor, error) {
 	return out, nil
 }
 
-func (t *goobsTransport) Canvas() (float64, float64, error) {
+func (t *goobsTransport) Canvas() (float64, float64, float64, error) {
 	resp, err := t.c.Config.GetVideoSettings()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return resp.BaseWidth, resp.BaseHeight, nil
+	fps := 0.0
+	if resp.FpsDenominator > 0 {
+		fps = resp.FpsNumerator / resp.FpsDenominator
+	}
+	return resp.BaseWidth, resp.BaseHeight, fps, nil
 }
 
 func (t *goobsTransport) Scenes() ([]string, error) {
@@ -298,6 +333,55 @@ func (t *goobsTransport) ItemSourceSize(scene string, id int) (int, int, error) 
 	return int(tf.SourceWidth), int(tf.SourceHeight), nil
 }
 
+func (t *goobsTransport) ItemTransform(scene string, id int) (renocore.Transform, error) {
+	resp, err := t.c.SceneItems.GetSceneItemTransform(sceneitems.NewGetSceneItemTransformParams().
+		WithSceneName(scene).WithSceneItemId(id))
+	if err != nil {
+		return renocore.Transform{}, err
+	}
+	tf := resp.SceneItemTransform
+	if tf == nil {
+		return renocore.Transform{}, nil
+	}
+	return renocore.Transform{
+		X: tf.PositionX, Y: tf.PositionY,
+		BoundsW: tf.BoundsWidth, BoundsH: tf.BoundsHeight,
+		CropL: int(tf.CropLeft), CropT: int(tf.CropTop),
+		CropR: int(tf.CropRight), CropB: int(tf.CropBottom),
+	}, nil
+}
+
+// FilterKinds is the filter capability probe: nil (no error) when the
+// server does not advertise the request at all, so callers degrade on
+// one condition instead of two.
+func (t *goobsTransport) FilterKinds() ([]string, error) {
+	if !slices.Contains(t.reqs, "GetSourceFilterKindList") {
+		return nil, nil
+	}
+	resp, err := t.c.Filters.GetSourceFilterKindList()
+	if err != nil {
+		return nil, err
+	}
+	return resp.SourceFilterKinds, nil
+}
+
+func (t *goobsTransport) SourceFilters(source string) ([]string, error) {
+	resp, err := t.c.Filters.GetSourceFilterList(
+		filters.NewGetSourceFilterListParams().WithSourceName(source))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(resp.Filters))
+	for _, f := range resp.Filters {
+		out = append(out, f.FilterName)
+	}
+	return out, nil
+}
+
+func (t *goobsTransport) RunFrameBatch(id string, reqs []renocore.FXRequest, budget time.Duration) error {
+	return runFrameBatch(t.host, t.password, id, reqs, budget)
+}
+
 // SetSceneItemTransform anchors top-left (alignment 5) inside a
 // scale-inner bounds box: aspect survives, slots stay put.
 func (t *goobsTransport) SetSceneItemTransform(scene string, id int, tr renocore.Transform) error {
@@ -311,5 +395,18 @@ func (t *goobsTransport) SetSceneItemTransform(scene string, id int, tr renocore
 			CropLeft: float64(tr.CropL), CropTop: float64(tr.CropT),
 			CropRight: float64(tr.CropR), CropBottom: float64(tr.CropB),
 		}))
+	return err
+}
+
+func (t *goobsTransport) VirtualCamActive() (bool, error) {
+	r, err := t.c.Outputs.GetVirtualCamStatus()
+	if err != nil {
+		return false, err
+	}
+	return r.OutputActive, nil
+}
+
+func (t *goobsTransport) StopVirtualCam() error {
+	_, err := t.c.Outputs.StopVirtualCam()
 	return err
 }
