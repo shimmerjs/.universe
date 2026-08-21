@@ -1,6 +1,12 @@
 # reno devplan -- from here
 
-state: written 2026-08-21, after `bdcb1d0`. companion to reno-design.md (the doctrine); this file is the ordered work list and dies when it empties. everything below is UNVERIFIED ON GLASS -- see gate 0.
+state: written 2026-08-21, after `bdcb1d0`. companion to reno-design.md (the doctrine); this file is the ordered work list and dies when it empties.
+
+VERIFIED as of that commit: `gofmt`/`go vet` clean, 36 khudson packages plus touchd green, and `nix build .#darwinConfigurations.aw-chainguard.system` exit 0 -- run against the whole tree, not per-commit. NEVER `nix flake check` (kraken's darwinConfiguration fails eval, pre-existing).
+
+UNVERIFIED: all of it on glass, and all of it against real OBS. see gate 0. do not repeat a "works" claim from this file or from git history without running it.
+
+where the new code lives: transport button + tiles `internal/module/reno/view.go` (`transportTile`, `armed`, `probeTile`, `obsWindowTile`); latches and acts `internal/module/reno/adhoc.go`; arm/release/window verbs `internal/bus/renoarm.go`; FX core `internal/reno/fx.go`, plan executor `internal/bus/renofx.go`, frame-locked batch `internal/bus/obsbatch.go`; ini seed + drift `internal/bus/obsini.go`.
 
 ## gate 0 -- eyes on glass (blocks everything)
 
@@ -13,15 +19,19 @@ nothing in the last four commits has run against real OBS or been seen on the Ed
 - `scale_filter` pixelate settings (`resolution`, `sampling`) are from the core filter's known schema, unconfirmed on this machine. if wrong it fails loudly inside the batch; move/jump/show/hide are unaffected.
 - `glyphArm` (U+F140B), `glyphWindow` (U+F05E7) and `glyphCamOff` (U+F0568) are inferred codepoints. tofu is a one-character fix each.
 
+## settled -- do not relitigate
+
+the transport is the USER'S design, given verbatim 2026-08-21: one button, ARM -> REC -> STOP; "end = disconnect / unarm"; "stop = pause stream but reno is still armed". REC deliberately does NOT appear while unarmed, so recording from cold is two taps on glass -- that is the point, not an oversight. the CLI `reno record` still does both phases so scripts are unaffected.
+
 ## queued, in order
 
 1. **clip button.** after a take the head row flashes the clip name and nothing can be done with it. the header is unpressable by contract ("anything you can press is a tile"), so this is a tile that appears only when a stopped recording has an output, tapping to open the clip. needs a reno verb -- the effect executor only admits `khudson reno <verb>` argvs -- so `reno open-clip <path>`, path-checked against the workspace root. later this becomes the entry to the P4 scrub surface instead of a plain open.
 
 2. **virtual camera readout.** `Release` stops it, but nothing SHOWS it. it reads back over the socket (`GetVirtualCamStatus`), so by this pad's own rule it earns a tile. the case that matters: an output you never started, holding your camera, with the pad reporting idle.
 
-3. **band budgeting + the round REC button.** the fold in `a718c83` is a workaround; the underlying problem is that five bands split `gridH` evenly and nothing can be taller than the choice tiles. a real record button -- a red blob with REC under it, the ask -- needs four interior rows against the one it has. transport should get weight, choice bands the remainder. this also unblocks anything else that wants vertical room.
+3. **band budgeting + the round REC button.** the fold in `a718c83` is a workaround, not the fix. the arithmetic, from `internal/dock/pad.go`: `bandH = gridH / len(bands)`, `tileH = min(bandH-1, padTileMaxH)`, and `padTile` draws Value on its own line only at `h >= 4` and renders BLANK below `h < 3`. five bands over a real recorder gives `tileH` 2-3, so no tile can be taller than the choice tiles and at `gridH=16` `maxBands` drops to 4 and the fx band is discarded outright. a red blob with REC under it needs four interior rows against the one it has. transport should carry weight, choice bands take the remainder.
 
-4. **END RUN's representation.** parked by the user until they have a better idea. today it shares `glyphStop` with the transport's STOP face, so two identically-shaped buttons sit adjacent doing different things. at minimum they should not look the same.
+4. **END RUN's representation.** parked BY THE USER until they have a better idea -- do not restyle it unasked. today it shares `glyphStop` with the transport's STOP face, so two identically-shaped buttons sit adjacent doing different things. a proposal they have not answered: STOP becomes `STOP TAKE`, and END RUN gets its own glyph.
 
 5. **`invStale` is now dead.** the constant survives with no consumer after the age warning came out. delete it or give it a job.
 
