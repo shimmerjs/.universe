@@ -172,3 +172,55 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return raw
 }
+
+// The drift check is read-only and names what moved: the caller runs it
+// against a live OBS, where repairing the file would be reverted on quit.
+func TestCheckIniSettingsReportsDriftWithoutWriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user.ini")
+	before := strings.Join([]string{
+		"[BasicWindow]",
+		"SysTrayEnabled=false", // the user turned it off in OBS's settings
+		"SysTrayWhenStarted=true",
+		"SysTrayMinimizeToTray=true",
+		"WarnBeforeStartingStream=false",
+		"WarnBeforeStoppingStream=false",
+		"WarnBeforeStoppingRecord=false",
+		"", // ConfirmOnExit missing entirely
+	}, "\n")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drift := checkIniSettings(path, obsWindowSettings)
+	want := []string{"BasicWindow/SysTrayEnabled=false", "General/ConfirmOnExit=absent"}
+	if len(drift) != len(want) {
+		t.Fatalf("drift = %v, want %v", drift, want)
+	}
+	for i, w := range want {
+		if drift[i] != w {
+			t.Errorf("drift[%d] = %q, want %q", i, drift[i], w)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != before {
+		t.Errorf("the check wrote to the file:\n%s", after)
+	}
+}
+
+// A file matching every asserted key reports nothing, and a missing file is
+// the seed's business, not the check's.
+func TestCheckIniSettingsQuietWhenClean(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "user.ini")
+	if _, err := applyIniSettings(path, obsWindowSettings); err != nil {
+		t.Fatal(err)
+	}
+	if drift := checkIniSettings(path, obsWindowSettings); len(drift) != 0 {
+		t.Errorf("a just-asserted file drifted: %v", drift)
+	}
+	if drift := checkIniSettings(filepath.Join(dir, "nope.ini"), obsWindowSettings); drift != nil {
+		t.Errorf("a missing file is the seed's case: %v", drift)
+	}
+}

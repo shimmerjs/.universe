@@ -85,21 +85,20 @@ func applyIniSettings(path string, settings []iniSetting) (bool, error) {
 	return true, nil
 }
 
-// setIniKey sets one key, reporting whether the file changed. The key is
-// replaced in place when present (preserving position), appended to the
-// end of its section when the section exists, and a new section is
-// appended when it does not.
-func setIniKey(lines []string, s iniSetting) ([]string, bool) {
-	want := s.Key + "=" + s.Value
+// findIniKey locates a key inside its section: at is the key's line index
+// (-1 when the key is absent) and sectionEnd the last non-blank line of the
+// section (-1 when the section itself is absent, which is where a new one
+// gets appended).
+func findIniKey(lines []string, section, key string) (at, sectionEnd int) {
+	at, sectionEnd = -1, -1
 	inSection := false
-	sectionEnd := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 			if inSection {
-				break // left our section without finding the key
+				return at, sectionEnd // left our section without finding the key
 			}
-			inSection = trimmed == "["+s.Section+"]"
+			inSection = trimmed == "["+section+"]"
 			if inSection {
 				sectionEnd = i
 			}
@@ -111,13 +110,26 @@ func setIniKey(lines []string, s iniSetting) ([]string, bool) {
 		if trimmed != "" {
 			sectionEnd = i // last non-blank line of the section so far
 		}
-		if k, _, ok := strings.Cut(trimmed, "="); ok && strings.TrimSpace(k) == s.Key {
-			if line == want {
-				return lines, false
-			}
-			lines[i] = want
-			return lines, true
+		if k, _, ok := strings.Cut(trimmed, "="); ok && strings.TrimSpace(k) == key {
+			return i, sectionEnd
 		}
+	}
+	return at, sectionEnd
+}
+
+// setIniKey sets one key, reporting whether the file changed. The key is
+// replaced in place when present (preserving position), appended to the
+// end of its section when the section exists, and a new section is
+// appended when it does not.
+func setIniKey(lines []string, s iniSetting) ([]string, bool) {
+	want := s.Key + "=" + s.Value
+	at, sectionEnd := findIniKey(lines, s.Section, s.Key)
+	if at >= 0 {
+		if lines[at] == want {
+			return lines, false
+		}
+		lines[at] = want
+		return lines, true
 	}
 	if sectionEnd < 0 {
 		// no such section: append it, with a blank separator when the file
@@ -131,6 +143,34 @@ func setIniKey(lines []string, s iniSetting) ([]string, bool) {
 	out = append(out, lines[:sectionEnd+1]...)
 	out = append(out, want)
 	return append(out, lines[sectionEnd+1:]...), true
+}
+
+// checkIniSettings reports the asserted keys path does not currently match,
+// as "Section/Key=have" (have is "absent" when the key is missing). It never
+// writes: the caller runs it against a LIVE OBS, which holds the config in
+// memory and writes its own copy on exit, so a repair here would be reverted
+// rather than ignored. Reporting the drift and leaving the file alone is the
+// honest move -- the fix is quitting OBS, which re-runs the seed.
+func checkIniSettings(path string, settings []iniSetting) []string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil // no file yet: the seed owns that case, not this one
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	var drift []string
+	for _, s := range settings {
+		at, _ := findIniKey(lines, s.Section, s.Key)
+		have := "absent"
+		if at >= 0 {
+			_, v, _ := strings.Cut(strings.TrimSpace(lines[at]), "=")
+			if strings.TrimSpace(v) == s.Value {
+				continue
+			}
+			have = strings.TrimSpace(v)
+		}
+		drift = append(drift, s.Section+"/"+s.Key+"="+have)
+	}
+	return drift
 }
 
 // profileDir reads the active profile's directory name from user.ini

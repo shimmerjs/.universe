@@ -114,6 +114,13 @@ func (b *ObsBoot) port() int {
 func (b *ObsBoot) Ensure(deadline time.Duration) (ObsTransport, error) {
 	t, dialErr := b.dial(b.Host, b.password())
 	if dialErr == nil {
+		// already up, so the seed below never runs: say so when the config
+		// has drifted out from under us rather than letting a stale posture
+		// ride until some later cold launch silently rewrites it
+		if drift := b.IniDrift(); len(drift) > 0 {
+			fmt.Fprintf(os.Stderr, "khudson obs: config drifted from the asserted posture (%s); OBS is live so it was NOT rewritten -- quit OBS and re-run to re-assert\n",
+				strings.Join(drift, ", "))
+		}
 		return t, nil
 	}
 	// dialErr rides every branch below: "auth failed" and "connection
@@ -186,6 +193,21 @@ func (b *ObsBoot) Seed() error {
 		}
 	}
 	return b.seedIni(userIni)
+}
+
+// IniDrift reports the asserted ini keys the on-disk config no longer
+// matches, "Section/Key=have" per entry. Read-only by construction: the
+// caller reaches for it when OBS is ALREADY UP, where the seed cannot run,
+// so a config edited in OBS's own settings UI would otherwise go unnoticed
+// until the next cold launch happened to rewrite it.
+func (b *ObsBoot) IniDrift() []string {
+	userIni := filepath.Join(b.ConfigDir, "user.ini")
+	drift := checkIniSettings(userIni, obsWindowSettings)
+	if dir := profileDir(userIni); dir != "" {
+		drift = append(drift,
+			checkIniSettings(filepath.Join(b.ConfigDir, "basic", "profiles", dir, "basic.ini"), obsProfileSettings)...)
+	}
+	return drift
 }
 
 // seedIni asserts the settings obs-websocket cannot reach at runtime.

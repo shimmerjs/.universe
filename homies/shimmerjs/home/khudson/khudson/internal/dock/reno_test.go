@@ -205,6 +205,41 @@ func TestRenoRecorderPadGridAndHits(t *testing.T) {
 	}
 }
 
+// A hold on an act-only button fires the act. The press light goes up at
+// contact whether or not anything can resolve the hold, so before this a
+// held button lit, promised, and dropped the touch -- and the recognizer is
+// silent on a menu-less held release, so nothing later corrected it.
+func TestRenoPadHoldFiresTheActWhenThereIsNoMenu(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = padRows(3)
+	m.invalidateHome("reno-presenter")
+	m.View()
+
+	msgs := busSink(t, m)
+	var held bool
+	for _, h := range m.hits {
+		if !strings.Contains(h.pressKey, ":pad:t") {
+			continue
+		}
+		if !m.resolveLongPress(h.area.x+h.area.w/2, h.area.y+h.area.h/2) {
+			t.Fatal("hold on an act-only button resolved to nothing")
+		}
+		got := <-msgs
+		if got.Type != proto.TypeRowAct || got.Argv[0] != "act" {
+			t.Fatalf("held button sent %+v", got)
+		}
+		if m.overlay != nil {
+			t.Fatal("a menu-less button must not open a menu on hold")
+		}
+		held = true
+		break
+	}
+	if !held {
+		t.Fatal("no pad button found to hold")
+	}
+}
+
 // padBandRows is a recorder payload spanning every band the real pad
 // publishes -- the drift this guards against grows one row per band, so a
 // two-section payload cannot see it.
@@ -339,5 +374,42 @@ func TestStripEntryAltFlips(t *testing.T) {
 	fireTab()
 	if m.layout != "reno-presenter" {
 		t.Fatalf("inactive tab tap landed on %q, want target", m.layout)
+	}
+}
+
+// A five-band recorder pad leaves each tile three rows -- one interior
+// line -- and every state this surface reports lives in Value. Before the
+// fold, Value simply did not draw at that height: standby, the device
+// list's age and a clip's name were all invisible on the real glass while
+// every unit test that built its own two-band payload passed.
+func TestPadTileFoldsValueWhenShort(t *testing.T) {
+	plain := lipgloss.NewStyle()
+	short := ansi.Strip(strings.Join(
+		padTile(module.Row{Text: "STANDBY", Value: "ready"}, 22, 3, plain, plain), "\n"))
+	if !strings.Contains(short, "STANDBY") || !strings.Contains(short, "ready") {
+		t.Errorf("a three-row tile dropped its value:\n%s", short)
+	}
+	// folded onto ONE interior line, not spilled into the border
+	if n := strings.Count(short, "ready"); n != 1 {
+		t.Errorf("value drawn %d times:\n%s", n, short)
+	}
+
+	// with room, the two-line form is unchanged
+	tall := ansi.Strip(strings.Join(
+		padTile(module.Row{Text: "STANDBY", Value: "ready"}, 22, 4, plain, plain), "\n"))
+	lines := strings.Split(strings.TrimRight(tall, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("tall tile = %d lines:\n%s", len(lines), tall)
+	}
+	if !strings.Contains(lines[1], "STANDBY") || !strings.Contains(lines[2], "ready") {
+		t.Errorf("tall tile lost its two-line layout:\n%s", tall)
+	}
+
+	// a value that cannot fit beside its label is dropped rather than
+	// crushing the label out of the tile
+	tight := ansi.Strip(strings.Join(
+		padTile(module.Row{Text: "STANDBY", Value: "an entire sentence of detail"}, 14, 3, plain, plain), "\n"))
+	if !strings.Contains(tight, "STANDBY") {
+		t.Errorf("label lost to an oversized value:\n%s", tight)
 	}
 }

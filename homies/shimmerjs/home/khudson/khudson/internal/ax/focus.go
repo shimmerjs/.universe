@@ -173,3 +173,42 @@ func SetAppHidden(bundleID string, hidden bool) error {
 	}
 	return nil
 }
+
+// AppHidden reports whether every UI process of the bundle is hidden. ANY
+// visible process means shown: the question a caller is really asking is
+// "can I see it", and a half-hidden bundle answers yes. A bundle with no
+// running process is ErrNotFound rather than "hidden" -- not running and
+// running-but-hidden are different states and a toggle must not conflate
+// them.
+func AppHidden(bundleID string) (bool, error) {
+	if !Trusted() {
+		return false, ErrUntrusted
+	}
+	boundMessaging()
+	pids, err := resolveBundlePids(bundleID)
+	if err != nil {
+		return false, err
+	}
+	if len(pids) == 0 {
+		return false, notFound(fmt.Sprintf("running bundle %q", bundleID))
+	}
+	var lastErr error
+	read := 0
+	for _, pid := range pids {
+		app := C.AXUIElementCreateApplication(C.pid_t(pid))
+		hidden, err := boolAttr(app, attrHidden, "AXHidden")
+		release(C.CFTypeRef(app))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		read++
+		if !hidden {
+			return false, nil
+		}
+	}
+	if read == 0 {
+		return false, lastErr
+	}
+	return true, nil
+}

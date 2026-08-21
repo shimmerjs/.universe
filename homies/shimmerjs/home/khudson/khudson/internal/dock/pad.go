@@ -171,8 +171,16 @@ func (m *model) registerPadHit(id string, t module.Row, area rect, key string) {
 			open(px, py)
 		}
 	}
+	// a menu-less tile falls back to its act on a hold. The press light goes
+	// up at contact either way, so a hold that resolved to nothing read as a
+	// button that armed and then dropped the touch -- and the recognizer is
+	// silent on a menu-less held release, so nothing later corrected it.
+	hold := open
+	if hold == nil && len(t.Act) > 0 {
+		hold = do
+	}
 	m.hits = append(m.hits, hitRegion{
-		area: area, do: do, longPress: open,
+		area: area, do: do, longPress: hold,
 		pressKey: key, weldTile: true,
 	})
 }
@@ -210,8 +218,22 @@ func padTile(t module.Row, w, h int, border, label lipgloss.Style) []string {
 		text = t.Glyph + " " + text
 	}
 	body := []string{label.Bold(true).Render(fitCell(text, inner))}
-	if t.Value != "" && h >= 4 {
-		body = append(body, chromeDim.Render(fitCell(t.Value, inner)))
+	if t.Value != "" {
+		switch {
+		case h >= 4:
+			body = append(body, chromeDim.Render(fitCell(t.Value, inner)))
+		case lipgloss.Width(text)+1+lipgloss.Width(t.Value) <= inner:
+			// A crowded pad -- five bands over this glass -- leaves exactly
+			// one interior line per tile, and a value that silently never
+			// renders is a readout lying by omission: every state this pad
+			// reports (standing by, the device list's age, a clip's name)
+			// lived in Value and simply did not draw. Fold it onto the label
+			// when both fit, pushed right so the band still scans as a
+			// column of labels.
+			gap := inner - lipgloss.Width(text) - lipgloss.Width(t.Value)
+			body[0] = label.Bold(true).Render(text) +
+				strings.Repeat(" ", gap) + chromeDim.Render(t.Value)
+		}
 	}
 	// Width/Height are the OUTER extent here (borderedTile's convention),
 	// so buttons butt against their neighbours and a band reads as one
