@@ -61,11 +61,15 @@ type Mod struct {
 	journalErr string
 	gotoOff    int
 
-	// pending is the NEXT ad hoc run's recording config: mutated by the
-	// record-config ctl and the recorder view's menu acts, copied into
-	// the run journal at arm. Scripted runs take their script's config
-	// instead -- a leftover pending knob must never hijack a show.
-	pending renocore.RecordConfig
+	// desired is the ad hoc recording posture: mutated by the
+	// record-config ctl and the recorder view's menu acts, driven into
+	// OBS on every change, and snapshotted into the run journal at arm.
+	// It is DESIRED state, not a queued submission -- OBS holds the
+	// actual state and applyEffectsLocked reconciles the two, so the
+	// arm-time apply is a convergence check rather than first contact.
+	// Scripted runs take their script's config instead: a leftover ad
+	// hoc knob must never hijack a show.
+	desired renocore.RecordConfig
 	// inventory is the last obs probe's device enumeration (button
 	// source); the module never dials OBS itself.
 	inventory *renocore.ObsInventory
@@ -77,6 +81,19 @@ type Mod struct {
 	// with the path it was read from for the status row.
 	notes     string
 	notesPath string
+
+	// live-apply latch: a config change drives the reno scene immediately
+	// so the pad is a mixer, not a form you submit. applyLive marks an
+	// apply in flight, applyDirty a change that landed while it ran, and
+	// applyGen keys each emission uniquely (the probe precedent -- a retry
+	// after a failure must never be debounce-eaten). applyNote is the
+	// last outcome for the pad readout.
+	applyLive  bool
+	applyAt    time.Time
+	applyDirty bool
+	applyGen   uint64
+	applyNote  string
+	applyFail  bool
 
 	stateDir string // <state>/reno; "" on bare test buses
 	runsDir  string // "" on bare test buses: journal writes error loudly
@@ -101,6 +118,7 @@ func New() *Mod {
 	}
 	m.recover()
 	m.recoverInventory()
+	m.recoverConfig()
 	renocore.SweepRuns(m.runsDir, m.now())
 	return m
 }
@@ -378,7 +396,17 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 		}
 		return nil, nil, m.noteRecordingLocked(args[1], args[2:])
 	case "record-config":
-		return nil, nil, m.setRecordConfigLocked(args[1:])
+		// the CLI seam applies live exactly like a pad tap: one core, so
+		// `khudson reno config` and the tiles cannot drift
+		if err := m.setRecordConfigLocked(args[1:]); err != nil {
+			return nil, nil, err
+		}
+		return nil, m.applyEffectsLocked(), nil
+	case "apply-begin":
+		return ApplyRequest{Config: m.beginApplyLocked()}, nil, nil
+	case "apply-note":
+		effects, err := m.noteApplyLocked(args[1:])
+		return nil, effects, err
 	case "obs-inventory":
 		if len(args) != 2 {
 			return nil, nil, errors.New("reno obs-inventory: need one JSON payload")
@@ -508,8 +536,8 @@ type RunStatus struct {
 
 func (m *Mod) statusLocked() Status {
 	st := Status{Stale: m.stale, Notes: m.notesPath}
-	if !m.pending.Empty() {
-		st.Config = m.pending.Summary()
+	if !m.desired.Empty() {
+		st.Config = m.desired.Summary()
 	}
 	if inv := m.inventory; inv != nil {
 		st.Inventory = fmt.Sprintf("obs %s: %d displays, %d mics, %d cams (%s old)",

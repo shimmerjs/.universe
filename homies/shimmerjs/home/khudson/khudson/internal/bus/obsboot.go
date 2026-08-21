@@ -180,11 +180,48 @@ func (b *ObsBoot) Seed() error {
 	userIni := filepath.Join(b.ConfigDir, "user.ini")
 	if _, err := os.Stat(userIni); os.IsNotExist(err) {
 		// virgin install: mark first-run done so the auto-config wizard
-		// never blocks an unattended launch. An existing user.ini is the
-		// user's; never touched.
+		// never blocks an unattended launch.
 		if err := writeFileAtomic(userIni, []byte("[General]\nFirstRun=true\n"), 0o600); err != nil {
 			return err
 		}
+	}
+	return b.seedIni(userIni)
+}
+
+// seedIni asserts the settings obs-websocket cannot reach at runtime.
+//
+// It refuses to run against a LIVE OBS. A running instance holds the
+// config in memory and writes its own copy out on exit, so an edit
+// behind its back is reverted rather than ignored -- worse than not
+// writing at all, because the pad would report a posture that silently
+// evaporates on quit.
+func (b *ObsBoot) seedIni(userIni string) error {
+	if b.running() {
+		return nil
+	}
+	changed, err := applyIniSettings(userIni, obsWindowSettings)
+	if err != nil {
+		return err
+	}
+	if changed {
+		fmt.Fprintln(os.Stderr, "khudson obs seed: user.ini window posture asserted (tray, no confirm dialogs)")
+	}
+	dir := profileDir(userIni)
+	if dir == "" {
+		// OBS has not written a profile yet; it will on first launch, and
+		// the next seed picks it up
+		return nil
+	}
+	profileIni := filepath.Join(b.ConfigDir, "basic", "profiles", dir, "basic.ini")
+	if _, err := os.Stat(profileIni); err != nil {
+		return nil // same: nothing to assert against yet
+	}
+	changed, err = applyIniSettings(profileIni, obsProfileSettings)
+	if err != nil {
+		return err
+	}
+	if changed {
+		fmt.Fprintf(os.Stderr, "khudson obs seed: profile %q recording posture asserted\n", dir)
 	}
 	return nil
 }

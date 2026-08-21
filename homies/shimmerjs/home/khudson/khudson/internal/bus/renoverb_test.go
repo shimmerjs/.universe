@@ -443,3 +443,109 @@ func TestChromeTab(t *testing.T) {
 		t.Errorf("miss event = %+v", ev[len(ev)-1])
 	}
 }
+
+// applyCtl serves one apply-begin payload then records the notes.
+func applyCtl(t *testing.T, cfg *renocore.RecordConfig, beginErr error) (CtlCall, *[][]string) {
+	t.Helper()
+	notes := &[][]string{}
+	return func(args []string) (json.RawMessage, error) {
+		if args[0] == "apply-begin" {
+			if beginErr != nil {
+				return nil, beginErr
+			}
+			raw, _ := json.Marshal(ApplyRequest{Config: cfg})
+			return raw, nil
+		}
+		*notes = append(*notes, args)
+		return nil, nil
+	}, notes
+}
+
+func TestApplyConfigDrivesTheScene(t *testing.T) {
+	fakeCGDisplays(t)
+	v, _ := renoTestVerbs(t)
+	cfg := &renocore.RecordConfig{
+		Screens: []renocore.ScreenSel{{Display: "built-in"}},
+		Audio:   renocore.AudioNone,
+	}
+	ctl, notes := applyCtl(t, cfg, nil)
+	obs := sceneFake()
+	if err := v.ApplyConfig(func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{Step: -1, Act: -1}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if obs.ops[len(obs.ops)-2] != "scene:reno" {
+		t.Errorf("apply must switch to the reno scene: %v", obs.ops)
+	}
+	if len(*notes) != 1 || (*notes)[0][0] != "apply-note" || (*notes)[0][1] != "ok" || (*notes)[0][2] != cfg.Summary() {
+		t.Errorf("notes = %v", *notes)
+	}
+	if ev := readEvents(t, v); ev[0].Outcome != "ok" || ev[0].Detail != cfg.Summary() {
+		t.Errorf("event = %+v", ev[0])
+	}
+}
+
+// An empty config must not even dial: an untouched pad never seizes OBS.
+func TestApplyConfigEmptyNeverDials(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	ctl, notes := applyCtl(t, nil, nil)
+	dial := func() (ObsTransport, error) { t.Fatal("empty config must not dial"); return nil, nil }
+	if err := v.ApplyConfig(dial, ctl, RenoCorr{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(*notes) != 1 || (*notes)[0][1] != "ok" || !strings.Contains((*notes)[0][2], "unconfigured") {
+		t.Errorf("notes = %v", *notes)
+	}
+}
+
+// OBS down between takes is the ordinary state, not a fault: the note
+// says ok and the verb exits zero, so the pad never cries wolf.
+func TestApplyConfigColdObsIsNotAFailure(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	ctl, notes := applyCtl(t, &renocore.RecordConfig{Audio: renocore.AudioNone}, nil)
+	dial := func() (ObsTransport, error) { return nil, fmt.Errorf("connection refused") }
+	if err := v.ApplyConfig(dial, ctl, RenoCorr{}); err != nil {
+		t.Fatalf("cold obs must not fail the verb: %v", err)
+	}
+	if len(*notes) != 1 || (*notes)[0][1] != "ok" || !strings.Contains((*notes)[0][2], "cold") {
+		t.Errorf("notes = %v", *notes)
+	}
+	if ev := readEvents(t, v); ev[0].Outcome != "ok" {
+		t.Errorf("event = %+v", ev[0])
+	}
+}
+
+func TestApplyConfigFailureNotesBack(t *testing.T) {
+	fakeCGDisplays(t)
+	v, _ := renoTestVerbs(t)
+	// a display the local enumeration cannot resolve: the plan refuses
+	ctl, notes := applyCtl(t, &renocore.RecordConfig{
+		Screens: []renocore.ScreenSel{{Display: "no-such-display"}},
+	}, nil)
+	obs := sceneFake()
+	if err := v.ApplyConfig(func() (ObsTransport, error) { return obs, nil }, ctl, RenoCorr{}); err == nil {
+		t.Fatal("an unresolvable display must fail the verb")
+	}
+	if len(*notes) != 1 || (*notes)[0][1] != "error" {
+		t.Errorf("notes = %v", *notes)
+	}
+	if ev := readEvents(t, v); ev[0].Outcome != "error" {
+		t.Errorf("event = %+v", ev[0])
+	}
+}
+
+// A begin that never lands leaves OBS untouched and is journaled: there
+// is no config to drive, so guessing one would be worse than failing.
+func TestApplyConfigBeginFailure(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	ctl, notes := applyCtl(t, nil, fmt.Errorf("ctl closed"))
+	dial := func() (ObsTransport, error) { t.Fatal("must not dial without a config"); return nil, nil }
+	if err := v.ApplyConfig(dial, ctl, RenoCorr{}); err == nil {
+		t.Fatal("a failed begin must fail the verb")
+	}
+	if len(*notes) != 0 {
+		t.Errorf("nothing to note back: %v", *notes)
+	}
+	if ev := readEvents(t, v); ev[0].Outcome != "error" || !strings.Contains(ev[0].Detail, "begin") {
+		t.Errorf("event = %+v", ev[0])
+	}
+}

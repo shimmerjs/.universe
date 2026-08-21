@@ -179,7 +179,7 @@ func cmdReno(args []string) error {
 		// dial-only (stopping a recording must never boot OBS); ensure
 		// and probe own the launch path
 		if len(rest) == 0 {
-			return fmt.Errorf("reno obs: need an op: ensure | probe | stop | pause | resume | scene <name>")
+			return fmt.Errorf("reno obs: need an op: ensure | probe | apply | stop | pause | resume | scene <name>")
 		}
 		op := rest[0]
 		arg := ""
@@ -223,6 +223,9 @@ func cmdReno(args []string) error {
 		}
 		defer renoWatchdog()()
 		dial := func() (bus.ObsTransport, error) { return bus.DialOBS(*host, bus.ObsPassword()) }
+		if op == "apply" {
+			return v.ApplyConfig(dial, renoCtlData, corr)
+		}
 		return v.ObsOp(op, arg, dial, renoCtlData, corr)
 	}
 	return fmt.Errorf("reno: unknown verb %q", verb)

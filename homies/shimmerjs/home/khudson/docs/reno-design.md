@@ -109,8 +109,8 @@ first-run wizard.
 `EnsureOBS`: dial; if down, seed config.json (server on, port 4455,
 auth on with a generated password written to <state>/reno/obs-password
 0600 -- ObsPassword() already reads it), seed user.ini FirstRun=true
-ONLY when user.ini is absent (never clobber a real config), refuse
-loudly if an OBS process is already running with the socket down
+ONLY when user.ini is absent, assert khudson's named ini keys (below),
+refuse loudly if an OBS process is already running with the socket down
 (websocket config binds at launch; quit and re-run), else launch via
 `open -g -a` and poll-dial to a deadline. Only record / obs ensure /
 obs probe may launch OBS (120s watchdog); stop/pause/resume/scene stay
@@ -124,15 +124,36 @@ is user-gated: approve by hand (right-click Open / System Settings) or
 strip the xattr; khudson itself does not strip xattrs, and Ensure's
 timeout error names the hazard.
 
+**ini seeding, for the settings the socket cannot reach (2026-08-21).**
+obs-websocket has no global-config request at all, so the user.ini
+window posture is unreachable over the wire; and while
+SetProfileParameter does write basic.ini immediately, the RUNNING
+instance keeps the output it already built -- flipping RecEncoder live
+left StartRecord reporting success with no output started, no file, and
+an OBS dialog raised (canvas/fps are the exception: SetVideoSettings
+resets the video pipeline live). Encoder, container, and quality
+therefore have to be on disk BEFORE launch. `seedIni` asserts a named
+key list into user.ini ([BasicWindow] SysTray{Enabled,WhenStarted,
+MinimizeToTray}, the three WarnBeforeStart/Stop keys, [General]
+ConfirmOnExit=false) and into the active profile's basic.ini
+([SimpleOutput] RecQuality=HQ -- the stock "Stream" quality inherits the
+6000 kbps stream bitrate, starvation for a 4K capture). It edits keys in
+place and leaves everything it does not name alone, so a real user
+config survives; and it runs ONLY against a stopped OBS, because a live
+instance holds the config in memory and writes its own copy on exit --
+an edit behind its back is reverted, not ignored, which is worse than
+not writing at all. RecEncoder stays deliberately absent until a
+cold-boot launch-and-record proves the VideoToolbox switch.
+
 **RecordConfig, one core for every surface.** A recording config
 {screens (display + optional region), audio (device | none), webcam
-preset} with exactly three producers and one consumer: script headers
+preset} with exactly three producers: script headers
 (`screen <sel> [x,y,WxH]` repeatable, `audio <device|none>`,
 `webcam <off|br|tr|bl|tl|big>`, all record-gated like scene), the
 ctl seam (`record-config`, driven by `khudson reno config` flags), and
-recorder-view menu taps (in-process acts mutating the module's pending
-config). Arm copies the config into RecordingState write-ahead; the
-record verb is the single consumer. EMPTY config = OBS untouched
+recorder-view menu taps (in-process acts mutating the module's desired
+config). Arm snapshots the config into RecordingState write-ahead; the
+record verb is one consumer. EMPTY config = OBS untouched
 (today's behavior, scene header still honored); ANY knob set = the
 verb ensures the khudson-owned scene "reno" matches the config and
 switches to it. The scene plan (desired inputs, transforms, crops,
@@ -144,6 +165,33 @@ time, loud on zero or ambiguous (the handle discipline). audio none
 mutes every audio input reno does not own -- legal because this OBS
 instance is khudson-managed by decision; a user OBS config is exactly
 the empty-config path.
+
+**The pad is a mixer, not a form (2026-08-21).** The ad hoc config is
+DESIRED state, not a queued submission: every knob that moves -- tile
+tap or `khudson reno config` alike, one core -- drives the reno scene
+right then via `khudson reno obs apply`, and the head row reads back
+what the apply did ("applying...", the summary, or the error). Arm-time
+apply survives as a convergence check rather than first contact.
+Mechanics: at most ONE apply is in flight (each is a full OBS probe, so
+a tap-per-apply fan-out would wedge the socket); a change landing during
+one sets a dirty latch and the completing apply re-emits, capping a
+hammered pad at two applies; a 30s wedge bound releases the latch if a
+note never lands (killed child, bus restart mid-apply). The verb reads
+the config over ctl at exec time, not from argv, so queued taps are
+already folded in -- that is what makes the latch converge. `apply`
+dials only, never launches: a stray tile must not cold-launch OBS
+(record/ensure/probe keep that right), and OBS-down notes ok ("cold,
+held for the next record") because between takes that is the ordinary
+state, not a fault. The posture persists to <state>/reno/config.json
+and recovers on bus start WITHOUT re-applying -- a boot must not reach
+out and mutate a scene nobody asked it to touch.
+
+Two glass consequences: the mic band's old "obs as-is" is now "no mic"
+against "mute all" (both silence reno's mic; they differ in whether the
+REST of OBS goes quiet -- a scope difference, so the labels name scope
+instead of a mechanism nobody can see), and the cam band drops its
+as-is tile entirely, since unset and "off" both end with a dead
+reno-cam and only "off" leaves it staged for an instant later preset.
 
 **Probe + inventory.** `khudson reno obs probe` ensures OBS, ensures
 the reno-mic/reno-cam skeleton inputs (created disabled, kind picked
@@ -247,6 +295,16 @@ One engine-owned stopwatch, N read-outs: bubbles timer stops dead at zero and ca
 5. P4 post: clip verbs LANDED (`khudson reno trim|stitch|mute|dub`, copy-fast + --exact re-encode; ffmpeg/mpv ride home.packages). OWED: mpv-IPC scrub surface + the moviemaker surfaces (reno-tab touch view + main-display app over one core).
 6. couch client: NOT STARTED -- standalone presenter TUI over the module core (notes-file seam first).
 7. ad hoc expansion (2026-07-23 register): LANDED + LIVE-VERIFIED same day. ObsBoot (seed websocket config + generated password + launch, Ensure short-circuits on a live socket), RecordConfig one-core (script headers screen/audio/webcam == `khudson reno config` == recorder-view menus), scene plan pure in internal/reno + thin executor, local CG display enumeration (internal/cgdisplay, the obs-websocket SEGV workaround), probe/inventory ctl, ad hoc notes (`khudson reno notes`), webcam presets, single-finger swipe tab cycling in the dock. OWED: glass-side eyes-on (swipe + recorder menus render after the next switch + bus/HUD restart); OBS first launch was user-approved by hand (quarantine dialog never fires on this MDM posture -- see the boot section).
+
+8. live-apply mixer (2026-08-21): LANDED. Config changes drive OBS
+   immediately behind a one-in-flight latch (`khudson reno obs apply`,
+   `apply-begin`/`apply-note` ctl), the posture persists to
+   <state>/reno/config.json across bus restarts, the head row reads the
+   apply outcome, and the mic/cam bands lost their "obs as-is" tiles.
+   Alongside it, ini seeding for what obs-websocket cannot reach
+   (user.ini window posture, basic.ini RecQuality=HQ), stopped-OBS only.
+   OWED: glass-side eyes-on after the next switch + HUD restart, and a
+   cold-boot record before RecEncoder joins the seeded profile keys.
 
 ## open questions
 

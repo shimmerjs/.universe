@@ -329,6 +329,65 @@ func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr 
 	return v.Act(corr, "record", arm.Run, "ok", "obs "+obs.Version()+" -> "+arm.Directory, nil)
 }
 
+// ApplyRequest mirrors the module's apply-begin payload.
+type ApplyRequest struct {
+	Config *renocore.RecordConfig `json:"config,omitempty"`
+}
+
+// ApplyConfig is the `khudson reno obs apply` verb: read the pad's
+// current config over ctl, drive the reno scene to match, note the
+// outcome back. The dial is DELIBERATELY the non-launching one -- a
+// config tap is a tweak against OBS as it stands, and a stray tile must
+// never cold-launch the app (record/ensure/probe own that).
+//
+// The verb reads the config at exec time rather than taking it as argv:
+// taps that landed while this apply was queued are then already folded
+// in, which is what makes the module's one-in-flight latch converge.
+func (v *RenoVerbs) ApplyConfig(dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr) error {
+	fail := func(detail string, err error) error {
+		if _, nerr := ctl([]string{"apply-note", "error", detail}); nerr != nil {
+			err = errors.Join(err, nerr)
+		}
+		return v.Act(corr, "obs", "apply", "error", detail, err)
+	}
+	raw, err := ctl([]string{"apply-begin"})
+	if err != nil {
+		return v.Act(corr, "obs", "apply", "error", "begin: "+err.Error(), err)
+	}
+	var req ApplyRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return fail("begin decode: "+err.Error(), err)
+	}
+	if req.Config == nil {
+		// the config emptied out between emission and exec: nothing to
+		// drive, and an empty plan is refused by contract
+		if _, err := ctl([]string{"apply-note", "ok", "unconfigured (obs untouched)"}); err != nil {
+			return v.Act(corr, "obs", "apply", "unconfirmed", "empty config but the note failed: "+err.Error(), err)
+		}
+		return v.Act(corr, "obs", "apply", "ok", "empty config; obs untouched", nil)
+	}
+	obs, err := dial()
+	if err != nil {
+		// OBS down is the ordinary state between takes, not a fault: the
+		// pad says cold and the knob still holds for the next record, so
+		// this notes ok -- an alarm here would cry wolf every session
+		if _, nerr := ctl([]string{"apply-note", "ok", "obs cold; held for record"}); nerr != nil {
+			return v.Act(corr, "obs", "apply", "error", "obs cold and the note failed: "+nerr.Error(), errors.Join(err, nerr))
+		}
+		return v.Act(corr, "obs", "apply", "ok", "obs cold; config held for the next record", nil)
+	}
+	defer obs.Close()
+	if err := ApplyRecordConfig(obs, *req.Config); err != nil {
+		return fail(err.Error(), err)
+	}
+	detail := req.Config.Summary()
+	if err := noteWithRetry(ctl, []string{"apply-note", "ok", detail}); err != nil {
+		return v.Act(corr, "obs", "apply", "unconfirmed",
+			"scene applied ("+detail+") but the note failed: "+err.Error(), err)
+	}
+	return v.Act(corr, "obs", "apply", "ok", detail, nil)
+}
+
 // noteWithRetry sends one record-note, retrying once after a short
 // pause: the notes are the sole writers of the journal's started/stopped
 // truth, so a transient ctl blip must not orphan a recording (arc-2

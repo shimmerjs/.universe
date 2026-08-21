@@ -103,9 +103,17 @@ func TestSeedPreservesExistingConfig(t *testing.T) {
 	if cfg["server_enabled"] != true {
 		t.Error("server not enabled")
 	}
-	ini, _ := os.ReadFile(userIni)
-	if string(ini) != "[General]\nTheme=dark\n" {
-		t.Errorf("user.ini touched: %q", ini)
+	// user.ini is asserted, not left alone: the window posture lives in the
+	// global config and no obs-websocket request can reach it. Keys khudson
+	// does NOT name still survive untouched.
+	ini := string(mustRead(t, userIni))
+	if !strings.Contains(ini, "Theme=dark") {
+		t.Errorf("unnamed key clobbered: %q", ini)
+	}
+	for _, want := range []string{"SysTrayEnabled=true", "SysTrayMinimizeToTray=true"} {
+		if !strings.Contains(ini, want) {
+			t.Errorf("missing %q in %q", want, ini)
+		}
 	}
 }
 

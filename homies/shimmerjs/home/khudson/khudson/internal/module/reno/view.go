@@ -272,6 +272,16 @@ func (m *Mod) recorderHeadRows() []module.Row {
 	if rec != nil && !rec.StoppedAt.IsZero() && rec.Output != "" {
 		add("clip", filepath.Base(rec.Output), module.StyleAccent)
 	}
+	// what the live apply last did to the scene: the pad is a mixer, so
+	// the readout has to say whether the knob you just turned reached OBS
+	switch {
+	case m.applyLive:
+		add("scene", "applying...", module.StyleDim)
+	case m.applyFail:
+		add("scene", m.applyNote, module.StyleWarn)
+	case m.applyNote != "":
+		add("scene", m.applyNote, module.StyleDim)
+	}
 	if m.notesPath != "" {
 		add("notes", filepath.Base(m.notesPath), module.StyleDim)
 	}
@@ -328,7 +338,7 @@ func (m *Mod) recorderTiles() []module.Row {
 		t := module.Row{Kind: module.RowPad, Section: secScreens,
 			Key: KeyCfgScreens + ":" + it.Value, Glyph: glyphScreen, Text: it.Name,
 			Act: []string{actCfgScreen, it.Value}}
-		for _, s := range m.pending.Screens {
+		for _, s := range m.desired.Screens {
 			if s.Display == it.Value {
 				t.Style = module.StyleAccent
 				if s.Region != nil {
@@ -345,24 +355,30 @@ func (m *Mod) recorderTiles() []module.Row {
 		tiles = append(tiles, t)
 	}
 
-	// "obs as-is" clears the knob (no scene reconciliation) while "MUTE"
-	// forces every non-reno input silent -- different promises, so they
-	// stay different buttons (arc-2 review #4, the webcam off/as-is split)
+	// Both audio knobs silence reno's own mic; they differ in what they do
+	// to the REST of OBS. "no mic" leaves desktop audio and any hand-added
+	// input alone, "mute all" forces every audio input silent. That is a
+	// real difference worth two buttons -- but it is a difference about
+	// scope, so the labels say scope instead of the old "obs as-is", which
+	// named a mechanism nobody can see.
 	tiles = append(tiles,
-		m.choiceTile(secMic, KeyCfgAudio+":default", "obs as-is", glyphMic,
-			actCfgAudio, cfgDefault, m.pending.Audio == ""),
-		m.choiceTile(secMic, KeyCfgAudio+":none", "MUTE", glyphMicOff,
-			actCfgAudio, renocore.AudioNone, m.pending.Audio == renocore.AudioNone))
+		m.choiceTile(secMic, KeyCfgAudio+":default", "no mic", glyphMicOff,
+			actCfgAudio, cfgDefault, m.desired.Audio == ""),
+		m.choiceTile(secMic, KeyCfgAudio+":none", "mute all", glyphMicOff,
+			actCfgAudio, renocore.AudioNone, m.desired.Audio == renocore.AudioNone))
 	for _, it := range inv.Mics {
 		tiles = append(tiles, m.choiceTile(secMic, KeyCfgAudio+":"+it.Value, deviceLabel(it.Name),
-			glyphMic, actCfgAudio, it.Value, m.pending.Audio == it.Value))
+			glyphMic, actCfgAudio, it.Value, m.desired.Audio == it.Value))
 	}
 
-	tiles = append(tiles, m.choiceTile(secCam, KeyCfgWebcam+":default", "obs as-is",
-		glyphCam, actCfgWebcam, cfgDefault, m.pending.Webcam == ""))
+	// The cam band has NO as-is tile. Unset and "off" both end with a
+	// disabled reno-cam -- the only difference is whether the device and
+	// transform were pre-set, which nothing on glass can show. One dead
+	// camera needs one button, and "off" is the one that leaves the cam
+	// staged so a later preset tap is instant.
 	for _, p := range renocore.WebcamPresets {
 		tiles = append(tiles, m.choiceTile(secCam, KeyCfgWebcam+":"+p, p,
-			glyphCam, actCfgWebcam, p, m.pending.Webcam == p))
+			glyphCam, actCfgWebcam, p, m.desired.Webcam == p))
 	}
 	return tiles
 }
@@ -453,60 +469,6 @@ func (m *Mod) recording() *renocore.RecordingState {
 		return nil
 	}
 	return m.run.Recording
-}
-
-func (m *Mod) pendingAudioLabel() string {
-	if m.pending.Audio == "" {
-		return "obs as-is"
-	}
-	if inv := m.inventory; inv != nil {
-		return audioLabel(inv, m.pending.Audio)
-	}
-	return m.pending.Audio
-}
-
-func (m *Mod) pendingWebcamLabel() string {
-	if m.pending.Webcam == "" {
-		return "obs as-is"
-	}
-	return m.pending.Webcam
-}
-
-func (m *Mod) audioMenu(inv *renocore.ObsInventory) []module.Act {
-	items := []module.Act{
-		{Label: "obs as-is", Argv: []string{actCfgAudio, cfgDefault}, Section: "audio"},
-		{Label: "none (mute all)", Argv: []string{actCfgAudio, renocore.AudioNone}, Section: "audio"},
-	}
-	for _, it := range inv.Mics {
-		items = append(items, module.Act{Label: it.Name,
-			Argv: []string{actCfgAudio, it.Value}, Section: "devices"})
-	}
-	return items
-}
-
-// webcamMenu: "obs as-is" clears the knob (no scene reconciliation);
-// "off" is a REAL preset that forces the reno-cam item disabled -- the
-// two are different promises and must never share a menu row (arc-2
-// review #4: an "off" that meant as-is could record a hot camera).
-func (m *Mod) webcamMenu() []module.Act {
-	items := []module.Act{{Label: "obs as-is", Argv: []string{actCfgWebcam, cfgDefault}, Section: "webcam"}}
-	for _, p := range renocore.WebcamPresets {
-		items = append(items, module.Act{Label: p,
-			Argv: []string{actCfgWebcam, p}, Section: "webcam"})
-	}
-	return items
-}
-
-func audioLabel(inv *renocore.ObsInventory, q string) string {
-	if q == renocore.AudioNone {
-		return "none (mute all)"
-	}
-	for _, it := range inv.Mics {
-		if it.Value == q {
-			return it.Name
-		}
-	}
-	return q
 }
 
 // heatFrac clamps a budget fraction into PctHeat's live range; PctHeat
