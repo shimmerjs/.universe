@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -576,6 +577,146 @@ func TestApplyConfigBeginFailure(t *testing.T) {
 	}
 	if ev := readEvents(t, v); ev[0].Outcome != "error" || !strings.Contains(ev[0].Detail, "begin") {
 		t.Errorf("event = %+v", ev[0])
+	}
+}
+
+// open-clip is the pad's one file-opening verb, so the containment check is
+// the whole verb. A prefix test on the UNRESOLVED path is the failure worth
+// naming: a symlink sitting inside the workspace passes it while pointing
+// anywhere on the disk, and the tap that follows it comes from a published
+// bus argv, not a hand-typed one.
+func TestOpenClipRefusesAnythingOutsideTheWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ws := filepath.Join(home, "Library", "Application Support", "khudson", "reno", "workspace")
+	if err := os.MkdirAll(filepath.Join(ws, "demo", "r1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	take := filepath.Join(ws, "demo", "r1", "take.mkv")
+	if err := os.WriteFile(take, []byte("frames"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "secrets.txt")
+	if err := os.WriteFile(outside, []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(ws, "demo", "r1", "escape.mkv")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+
+	open := func(t *testing.T, clip string) (opened []string, err error) {
+		t.Helper()
+		v, _ := renoTestVerbs(t)
+		v.openStart = func(_ context.Context, argv []string) error {
+			opened = argv
+			return nil
+		}
+		return opened, v.OpenClip(context.Background(), clip, RenoCorr{Step: -1, Act: -1})
+	}
+
+	// a real take opens, and the RESOLVED path is what gets handed over
+	v, _ := renoTestVerbs(t)
+	var got []string
+	v.openStart = func(_ context.Context, argv []string) error { got = argv; return nil }
+	if err := v.OpenClip(context.Background(), take, RenoCorr{Step: -1, Act: -1}); err != nil {
+		t.Fatalf("open-clip on a real take: %v", err)
+	}
+	if len(got) != 2 || got[0] != "open" || filepath.Base(got[1]) != "take.mkv" {
+		t.Errorf("opened %v, want open <take.mkv>", got)
+	}
+
+	for _, tc := range []struct{ what, clip string }{
+		{"a path plainly outside the workspace", outside},
+		{"a parent-dir escape", filepath.Join(ws, "..", "..", "secrets.txt")},
+		{"a symlink inside the workspace pointing out of it", escape},
+		{"a path that does not exist", filepath.Join(ws, "demo", "r1", "ghost.mkv")},
+	} {
+		opened, err := open(t, tc.clip)
+		if err == nil {
+			t.Errorf("%s must be refused: %s", tc.what, tc.clip)
+		}
+		if opened != nil {
+			t.Errorf("%s reached `open`: %v", tc.what, opened)
+		}
+	}
+}
+
+// The virtual camera is the one thing that can hold the camera with nothing
+// on the pad accounting for it, so the verb behind its tile has to report
+// what it found in every case -- including the two where there is nothing to
+// stop, which are exactly the cases a silent verb would leave looking idle.
+func TestVirtualCamReadsBackAndStops(t *testing.T) {
+	call := func(t *testing.T, op string, obs *fakeObs, dialErr error) [][]string {
+		t.Helper()
+		v, _ := renoTestVerbs(t)
+		ctl, notes := scriptedCtl(t, "")
+		dial := func() (ObsTransport, error) {
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			return obs, nil
+		}
+		if err := v.VirtualCam(op, dial, ctl, RenoCorr{Step: -1, Act: -1}); err != nil {
+			t.Fatalf("vcam %s: %v", op, err)
+		}
+		return *notes
+	}
+
+	// running, and stop takes it down
+	obs := &fakeObs{vcam: true}
+	if got := call(t, "stop", obs, nil); len(got) != 1 || got[0][1] != "off" {
+		t.Errorf("stop on a live vcam noted %v, want off", got)
+	}
+	if !slices.Contains(obs.ops, "vcam-stop") {
+		t.Errorf("stop never reached the output: %v", obs.ops)
+	}
+
+	// running, and status reports without touching it -- a readout that
+	// stopped things would make the CLI seam unusable for a check
+	obs = &fakeObs{vcam: true}
+	if got := call(t, "status", obs, nil); len(got) != 1 || got[0][1] != "on" {
+		t.Errorf("status on a live vcam noted %v, want on", got)
+	}
+	if slices.Contains(obs.ops, "vcam-stop") {
+		t.Errorf("status must not stop the output: %v", obs.ops)
+	}
+
+	// idle: still a note. Nothing to stop is a result, not a reason to
+	// leave the tile showing whatever it showed before
+	if got := call(t, "stop", &fakeObs{}, nil); len(got) != 1 || got[0][1] != "off" {
+		t.Errorf("idle vcam noted %v, want off", got)
+	}
+
+	// cold OBS is a definite off, not an unknown: the virtual camera output
+	// is OBS's, so no OBS means nothing is running it
+	if got := call(t, "stop", nil, fmt.Errorf("connection refused")); len(got) != 1 ||
+		got[0][1] != "off" || got[0][2] != "obs cold" {
+		t.Errorf("cold obs noted %v, want off/obs cold", got)
+	}
+
+	// a status read that failed is UNKNOWN on glass, never a clean idle
+	v, _ := renoTestVerbs(t)
+	ctl, notes := scriptedCtl(t, "")
+	broken := &fakeObs{fail: map[string]error{"vcam-status": fmt.Errorf("socket gone")}}
+	if err := v.VirtualCam("stop", func() (ObsTransport, error) { return broken, nil }, ctl, RenoCorr{}); err == nil {
+		t.Fatal("a failed status read must fail the verb")
+	}
+	if got := *notes; len(got) != 1 || got[0][1] != "error" {
+		t.Errorf("failed read noted %v, want an error note", got)
+	}
+
+	// and the op is checked before anything is dialled
+	v2, _ := renoTestVerbs(t)
+	ctl2, notes2 := scriptedCtl(t, "")
+	if err := v2.VirtualCam("start", func() (ObsTransport, error) {
+		t.Fatal("an unknown op must not dial")
+		return nil, nil
+	}, ctl2, RenoCorr{}); err == nil {
+		t.Fatal("vcam start must be refused -- nothing here ever starts one")
+	}
+	if len(*notes2) != 0 {
+		t.Errorf("a refused op must not note a state: %v", *notes2)
 	}
 }
 

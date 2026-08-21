@@ -26,8 +26,8 @@ func testInventory() string {
 	return string(raw)
 }
 
-// freshInv installs an inventory whose age stays under invStale for the
-// stepping test clock.
+// freshInv installs a just-probed inventory, stamped against the stepping
+// test clock.
 func freshInv(t *testing.T, m *Mod) {
 	t.Helper()
 	if _, _, err := m.HandleCtl([]string{"obs-inventory", testInventory()}); err != nil {
@@ -294,7 +294,7 @@ func TestRecorderPadChoiceButtons(t *testing.T) {
 	// an old list keeps every button and reports its AGE, not an alarm: a
 	// device list an hour old is not wrong, and a warning that fired on a
 	// timer taught the eye to skip the one tile that carries a real one
-	m.inventory.At = m.now().Add(-2 * invStale)
+	m.inventory.At = m.now().Add(-2 * time.Hour)
 	d = m.recorderData()
 	if probe = padTile(d.Rows, KeyActProbe); probe == nil || probe.Style == module.StyleWarn {
 		t.Errorf("age alone must not raise an alarm: %+v", probe)
@@ -418,7 +418,7 @@ func TestEveryPadTileIsPressable(t *testing.T) {
 	freshInv(t, m)
 	check(t, "probed", m.recorderData().Rows)
 
-	m.inventory.At = m.now().Add(-2 * invStale)
+	m.inventory.At = m.now().Add(-2 * time.Hour)
 	check(t, "stale", m.recorderData().Rows)
 
 	m2, _ := testMod(t)
@@ -850,6 +850,11 @@ func TestTransportCyclesArmRecStop(t *testing.T) {
 	if tile == nil || tile.Text != "ARM" || tile.Act[0] != actArm {
 		t.Fatalf("cold pad must offer ARM: %+v", tile)
 	}
+	// and it asks the pad for its weight on every face -- without the ask the
+	// dock splits the grid evenly and the transport is just another choice tile
+	if tile.MinHeight != transportTileH {
+		t.Errorf("transport MinHeight = %d, want %d", tile.MinHeight, transportTileH)
+	}
 
 	handled, effects := m.handleCfgActLocked([]string{actArm})
 	if !handled || len(effects) != 1 {
@@ -967,6 +972,55 @@ func TestObsWindowTile(t *testing.T) {
 		t.Errorf("errored window tile = %+v", got)
 	}
 	if err := m.noteWindowLocked([]string{"sideways"}); err == nil {
+		t.Error("an unknown state must be rejected")
+	}
+}
+
+// The virtual camera earns a tile because GetVirtualCamStatus reads back.
+// Release already stops it, but stopping is not showing it -- and the state
+// this tile exists for is an output nobody here started, holding the camera
+// while the rest of the pad reports a clean idle rig. That state has to be
+// the loudest thing on the band, and it has to be one tap from gone.
+func TestVCamTile(t *testing.T) {
+	m, _ := testMod(t)
+	if got := padTile(m.recorderData().Rows, KeyActVCam); got == nil || got.Value != "?" {
+		t.Fatalf("unqueried vcam tile = %+v", got)
+	}
+	handled, effects := m.handleCfgActLocked([]string{actVCam})
+	if !handled || len(effects) != 1 {
+		t.Fatalf("vcam tap = %v, %+v", handled, effects)
+	}
+	// stop, never start: there is no case where this rig wants one running,
+	// which is what makes the tile safe to hit in any state
+	want := []string{m.exe, "reno", "obs", "vcam", "stop"}
+	if !slices.Equal(effects[0].Argv, want) {
+		t.Errorf("vcam argv = %v, want %v", effects[0].Argv, want)
+	}
+	if _, again := m.handleCfgActLocked([]string{actVCam}); len(again) != 0 {
+		t.Errorf("second tap fired a duplicate sweep: %+v", again)
+	}
+
+	if err := m.noteVCamLocked([]string{"on", "holding the camera"}); err != nil {
+		t.Fatal(err)
+	}
+	got := padTile(m.recorderData().Rows, KeyActVCam)
+	if got.Text != "VCAM" || got.Style != module.StyleWarn || got.Value != "LIVE" {
+		t.Errorf("a live virtual cam must read as an alarm: %+v", got)
+	}
+	if err := m.noteVCamLocked([]string{"off", "stopped"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := padTile(m.recorderData().Rows, KeyActVCam); got.Value != "off" || got.Style != module.StyleDim {
+		t.Errorf("stopped vcam tile = %+v", got)
+	}
+	// a failed read is unknown, never the clean idle it would be mistaken for
+	if err := m.noteVCamLocked([]string{"error", "socket gone"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := padTile(m.recorderData().Rows, KeyActVCam); got.Value != "unknown" || got.Style != module.StyleWarn {
+		t.Errorf("errored vcam tile = %+v", got)
+	}
+	if err := m.noteVCamLocked([]string{"maybe"}); err == nil {
 		t.Error("an unknown state must be rejected")
 	}
 }

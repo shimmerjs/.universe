@@ -26,6 +26,8 @@ const (
 	KeyActProbe    = "act:probe"
 	KeyActArm      = "act:arm"
 	KeyActWindow   = "act:obswindow"
+	KeyActVCam     = "act:vcam"
+	KeyActClip     = "act:clip"
 	KeyActEndRun   = "act:endrun"
 	KeyCfgScreens  = "cfg:screens"
 	KeyCfgAudio    = "cfg:audio"
@@ -51,6 +53,9 @@ const (
 	glyphCamOff = "\U000F0568" // nf-md-video_off
 	glyphScreen = "\U000F0379" // nf-md-monitor
 	glyphScript = "\U000F0219" // nf-md-file_document
+	// shared, not a film codepoint: an unverified glyph is a tofu, and this
+	// tile carries a filename that says what it is anyway
+	glyphClip = glyphCam
 )
 
 // presenterData renders the presenter view. Caller holds mu.
@@ -277,9 +282,9 @@ func (m *Mod) recorderHeadRows() []module.Row {
 	default:
 		add("run", "none -- record arms an ad hoc one", module.StyleDim)
 	}
-	if rec != nil && !rec.StoppedAt.IsZero() && rec.Output != "" {
-		add("clip", filepath.Base(rec.Output), module.StyleAccent)
-	}
+	// no clip here: a finished take is pressable, so by the header/tile
+	// split it belongs on a tile (appendClip), not in this line
+	//
 	// what the live apply last did to the scene: the pad is a mixer, so
 	// the readout has to say whether the knob you just turned reached OBS
 	switch {
@@ -305,6 +310,14 @@ func (m *Mod) recorderHeadRows() []module.Row {
 	return append(rows, module.Row{Kind: module.RowSpans, Key: KeyHead, Spans: spans})
 }
 
+// transportTileH is the height the transport band asks the pad for: a frame
+// around three interior rows, which buys the glyph a line of its own above
+// the name and the state. Three and not more -- a glyph is one row tall
+// however much room it gets, so a fourth interior row is a blank one. The
+// transport is the pad's only weighted control: one target you hit without
+// aiming, against choice bands you read before you press.
+const transportTileH = 5
+
 // Pad section names; the dock draws each as a labeled band of buttons.
 const (
 	secTransport = "transport"
@@ -319,7 +332,9 @@ const (
 // a single tap on a lit target instead of a popover you aim at twice.
 // Caller holds mu.
 func (m *Mod) recorderTiles() []module.Row {
-	tiles := []module.Row{m.transportTile()}
+	// the take sits beside the transport that made it, and ahead of the
+	// scripted branch below: a scripted run produces a clip too
+	tiles := m.appendClip([]module.Row{m.transportTile()})
 
 	// a scripted recording run reads its config FROM the script: the ad
 	// hoc knobs would lie about what is about to record, so the script's
@@ -338,7 +353,7 @@ func (m *Mod) recorderTiles() []module.Row {
 		return m.appendEndRun(tiles)
 	}
 
-	tiles = append(tiles, m.probeTile(), m.obsWindowTile())
+	tiles = append(tiles, m.probeTile(), m.obsWindowTile(), m.vcamTile())
 	tiles = m.appendEndRun(tiles)
 
 	inv := m.inventory
@@ -470,7 +485,7 @@ func (m *Mod) choiceTile(section, key, label, glyph, act, value string, on bool)
 // Caller holds mu.
 func (m *Mod) transportTile() module.Row {
 	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActRecord,
-		Style: module.StyleHighlight}
+		Style: module.StyleHighlight, MinHeight: transportTileH}
 	rec := m.recording()
 
 	// rolling: the classic stop square, and the take's clock on its face
@@ -543,6 +558,36 @@ func (m *Mod) obsWindowTile() module.Row {
 	return t
 }
 
+// vcamTile reports OBS's virtual camera and takes it down on a tap. Release
+// already stops it, but stopping is not SHOWING it -- and the case this tile
+// exists for is the one Release cannot help with: an output nobody here
+// started, holding the camera right now, with the rest of the pad reporting a
+// clean idle rig. Tapping is safe in every state; the verb never starts one.
+// Caller holds mu.
+func (m *Mod) vcamTile() module.Row {
+	t := module.Row{Kind: module.RowPad, Section: secTransport, Key: KeyActVCam,
+		Glyph: glyphCamOff, Text: "vcam", Act: []string{actVCam}}
+	switch {
+	case m.vcamLive:
+		t.Value, t.Style = "...", module.StyleDim
+	case m.vcamFail:
+		// unknown beats a guess: "idle" here would be the exact lie the
+		// tile was added to catch
+		t.Value, t.Style = "unknown", module.StyleWarn
+	case m.vcamState == "on":
+		// the loudest state on the pad: something has the camera and it is
+		// not anything reno put there. The value stays one word because a
+		// tile is ~12 interior cells and a cropped value is its own lie
+		t.Glyph, t.Text = glyphCam, "VCAM"
+		t.Value, t.Style = "LIVE", module.StyleWarn
+	case m.vcamState == "off":
+		t.Value, t.Style = "off", module.StyleDim
+	default:
+		t.Value = "?"
+	}
+	return t
+}
+
 // probeTile re-enumerates the devices the choice bands are drawn from. It
 // also boots OBS, so it stays a deliberate tap and never an automatic poll.
 //
@@ -570,6 +615,24 @@ func (m *Mod) probeTile() module.Row {
 	}
 	t.Value = fmtAge(m.now().Sub(inv.At)) + " old"
 	return t
+}
+
+// appendClip adds the open-the-take button, present only while a stopped
+// recording has an output and gone with it -- an inert tile reads as a broken
+// one, the same rule appendEndRun follows. Today it hands the file to the OS;
+// it is also the way into the P4 scrub surface when that lands.
+//
+// The path rides in the argv, and open-clip is what refuses anything
+// resolving outside the workspace root. Caller holds mu.
+func (m *Mod) appendClip(tiles []module.Row) []module.Row {
+	rec := m.recording()
+	if rec == nil || rec.StoppedAt.IsZero() || rec.Output == "" {
+		return tiles
+	}
+	return append(tiles, module.Row{Kind: module.RowPad, Section: secTransport,
+		Key: KeyActClip, Glyph: glyphClip, Text: "clip",
+		Value: filepath.Base(rec.Output), Style: module.StyleAccent,
+		Act: []string{actOpenClip, rec.Output}})
 }
 
 // appendEndRun adds the close-the-run button, but only while one is live:

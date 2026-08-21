@@ -122,6 +122,17 @@ type Mod struct {
 	winGen   uint64
 	winFail  bool
 
+	// vcamState is OBS's virtual camera output: "" unknown, "on", "off".
+	// Nothing here ever starts it -- macOS does, the moment any app opens
+	// the OBS Virtual Camera device -- so it is the one thing that can hold
+	// the camera with no other tile accounting for it. GetVirtualCamStatus
+	// reads back, so like winState it is allowed on glass.
+	vcamState string
+	vcamLive  bool
+	vcamAt    time.Time
+	vcamGen   uint64
+	vcamFail  bool
+
 	// recPhase names what the record verb is doing between the tap and the
 	// first frame. Pure readout, never journal state: the run's recording
 	// truth stays with the record notes.
@@ -457,6 +468,8 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 		return nil, nil, m.noteArmLocked(args[1:])
 	case "window-note":
 		return nil, nil, m.noteWindowLocked(args[1:])
+	case "vcam-note":
+		return nil, nil, m.noteVCamLocked(args[1:])
 	case "record-phase":
 		// pure readout: what the record verb is doing between the tap and
 		// the first frame. Never journal state -- the record notes own that

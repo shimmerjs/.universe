@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,9 +165,25 @@ func TestRecorderViewStates(t *testing.T) {
 	if tile.Style != module.StyleWarn {
 		t.Errorf("a live recording must read hot: %+v", tile)
 	}
+	// stopped with an output: the take becomes a BUTTON, not a line of
+	// header text you can only look at
 	ctl(t, m, "record-note", m.run.ID, "stopped", "/clips/a.mkv")
-	if rows = mustRows(t, m, "recorder"); !rowsContain(rows, "a.mkv") {
-		t.Errorf("stopped state shows the clip: %+v", rows)
+	rows = mustRows(t, m, "recorder")
+	clip := padTile(rows, KeyActClip)
+	if clip == nil || clip.Value != "a.mkv" {
+		t.Fatalf("stopped state needs a clip tile: %+v", rows)
+	}
+	if len(clip.Act) != 2 || clip.Act[0] != actOpenClip || clip.Act[1] != "/clips/a.mkv" {
+		t.Errorf("clip tile act = %v, want an open-clip carrying the path", clip.Act)
+	}
+	handled, effects := m.handleCfgActLocked(clip.Act)
+	if !handled || len(effects) != 1 {
+		t.Fatalf("clip tap = %v, %+v", handled, effects)
+	}
+	// the verb, never a bare `open`: the effect executor admits reno verbs
+	// only, and the verb is what path-checks against the workspace root
+	if want := []string{m.exe, "reno", "open-clip", "/clips/a.mkv"}; !slices.Equal(effects[0].Argv, want) {
+		t.Errorf("clip argv = %v, want %v", effects[0].Argv, want)
 	}
 
 	m2, _ := testMod(t)

@@ -226,6 +226,6 @@ func (m *Mod) workspace() string {
 	if m.runsDir == "" || m.run == nil {
 		return "(no state root)"
 	}
-	root := filepath.Dir(m.runsDir) // <state>/reno
-	return filepath.Join(root, "workspace", m.run.Demo, m.run.ID)
+	root := renocore.WorkspaceRoot(filepath.Dir(m.runsDir)) // <state>/reno
+	return filepath.Join(root, m.run.Demo, m.run.ID)
 }

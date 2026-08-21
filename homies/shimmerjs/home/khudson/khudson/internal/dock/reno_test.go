@@ -300,6 +300,88 @@ func TestRenoRecorderPadHitsFrameTheirButtons(t *testing.T) {
 	}
 }
 
+// padAlarmedRows is the full recorder payload with the header carrying its
+// two loud failures -- the state where the grid is at its shortest.
+func padAlarmedRows() module.Data {
+	d := module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowText, Text: "journal: boom", Style: module.StyleWarn},
+		{Kind: module.RowText, Text: "recording FAILED: nope", Style: module.StyleWarn},
+		{Kind: module.RowSpans, Key: reno.KeyHead, Spans: []module.Span{{Text: "run r-123"}}},
+	}}
+	for _, section := range []string{"transport", "screens", "mic", "cam", "fx"} {
+		for i := range 3 {
+			key := section + ":" + strconv.Itoa(i)
+			r := module.Row{Kind: module.RowPad, Section: section, Key: key,
+				Glyph: "*", Text: strings.ToUpper(section) + strconv.Itoa(i),
+				Value: "val", Act: []string{"act", key}}
+			if section == "transport" && i == 0 {
+				r.MinHeight = 5
+			}
+			d.Rows = append(d.Rows, r)
+		}
+	}
+	return d
+}
+
+// Every published band reaches the glass even when the header is at its
+// tallest. Two alarm lines take two grid rows, and under the old even split
+// that was enough to drop maxBands from five to four and discard the whole FX
+// band -- silently, with nothing on the pad saying three controls had stopped
+// existing. Bands are framed before any band is fattened, so the grid runs out
+// of slack long before it runs out of bands.
+func TestRenoRecorderPadKeepsEveryBandUnderAHeaderAlarm(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = padAlarmedRows()
+	m.invalidateHome("reno-presenter")
+
+	body := ansi.Strip(m.View().Content)
+	for _, section := range []string{"TRANSPORT", "SCREENS", "MIC", "CAM", "FX"} {
+		if !strings.Contains(body, section) {
+			t.Errorf("band %q dropped off the pad:\n%s", section, body)
+		}
+	}
+	for _, key := range []string{"FX0", "FX1", "FX2"} {
+		if !strings.Contains(body, key) {
+			t.Errorf("button %q missing:\n%s", key, body)
+		}
+	}
+}
+
+// The transport carries weight: it asks for height with MinHeight and gets it
+// before the choice bands divide the remainder, which is what buys its glyph a
+// line of its own -- a record circle you hit without aiming. A choice tile
+// keeps the glyph joined to its label.
+func TestRenoRecorderPadTransportOutweighsTheChoiceBands(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = padAlarmedRows()
+	m.invalidateHome("reno-presenter")
+	m.View()
+
+	h := map[string]int{}
+	for _, hit := range m.hits {
+		if key, ok := strings.CutPrefix(hit.pressKey, "reno-presenter:pad:"); ok {
+			h[key] = hit.area.h
+		}
+	}
+	if h["transport:0"] < h["cam:0"]+2 {
+		t.Errorf("transport tile h=%d against a choice tile h=%d -- the weighted band did not win its rows",
+			h["transport:0"], h["cam:0"])
+	}
+	grid := strings.Split(ansi.Strip(m.View().Content), "\n")
+	glyphOnly := false
+	for _, line := range grid {
+		if strings.Contains(line, "*") && !strings.Contains(line, "TRANSPORT0") {
+			glyphOnly = true
+			break
+		}
+	}
+	if !glyphOnly {
+		t.Errorf("the transport glyph never got a line of its own:\n%s", strings.Join(grid, "\n"))
+	}
+}
+
 // A tile whose only control is a menu opens it on a PLAIN tap: a pad has
 // no discoverable long-press, so a menu-only button that ignores taps is
 // a dead button.

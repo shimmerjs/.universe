@@ -31,17 +31,14 @@ const (
 	actProbe     = "reno:probe"
 	actArm       = "reno:arm"
 	actWindow    = "reno:obs-window"
+	actVCam      = "reno:obs-vcam"
+	actOpenClip  = "reno:open-clip"
 	actFXMove    = "reno:fx-move" // + placement preset
 	actFXHide    = "reno:fx-hide"
 )
 
 // cfgDefault is the menu value for "leave OBS alone" (clears the knob).
 const cfgDefault = "default"
-
-// invStale is how old a probed inventory may get before the recorder
-// view offers a re-probe instead of trusting the menus (devices and
-// displays move: docks get unplugged).
-const invStale = time.Hour
 
 // applyWedge bounds an in-flight live apply. The latch clears on the
 // verb's note, but a ctl that never lands (bus restart mid-apply, a
@@ -55,9 +52,11 @@ const applyWedge = 30 * time.Second
 // fire a second launch at an app that is still starting.
 const armWedge = 3 * time.Minute
 
-// windowWedge bounds an in-flight window toggle: an AX write plus a
-// readback, so anything past a few seconds is a lost child, not slowness.
-const windowWedge = 10 * time.Second
+// probeWedge bounds an in-flight one-shot that only reads and writes state
+// somewhere already running -- the window toggle (an AX write plus a
+// readback), the virtual-camera sweep (one socket round trip). Anything past
+// a few seconds is a lost child, not slowness.
+const probeWedge = 10 * time.Second
 
 // maxNotesBytes bounds an ad hoc notes file read: notes are prose for a
 // talk, not a data file; a fat misload must not balloon the bus.
@@ -189,9 +188,10 @@ func (m *Mod) writeState(name string, v any) {
 	}
 }
 
-// recoverInventory reloads the cached probe. A cache older than invStale
-// still loads: the pad renders it and offers a re-probe (the At stamp
-// carries the age), which beats booting cold with dead menus.
+// recoverInventory reloads the cached probe. There is no age at which it
+// stops loading: the pad renders it and offers a re-probe (the At stamp
+// carries the age), which beats booting cold with dead menus. What escalates
+// is identity, not age -- see displaysMoved.
 func (m *Mod) recoverInventory() {
 	var inv renocore.ObsInventory
 	if !m.readState(inventoryFile, &inv) {
@@ -344,6 +344,24 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 		}
 		return true, m.windowEffectsLocked()
 	}
+	if argv[0] == actVCam {
+		if len(argv) != 1 {
+			return false, nil
+		}
+		return true, m.vcamEffectsLocked()
+	}
+	if argv[0] == actOpenClip {
+		if len(argv) != 2 {
+			return false, nil
+		}
+		// no latch and no wedge: opening a file is idempotent and cheap, and
+		// the key is the PATH, so two taps on the same take debounce while a
+		// second take's tile is its own button
+		return true, []module.Effect{{
+			Key:  "reno/clip/" + argv[1],
+			Argv: []string{m.exe, "reno", "open-clip", argv[1]},
+		}}
+	}
 	if argv[0] == actFXHide {
 		if len(argv) != 1 {
 			return false, nil
@@ -457,7 +475,7 @@ func (m *Mod) noteArmLocked(args []string) error {
 
 // windowEffectsLocked toggles OBS's own window. Caller holds mu.
 func (m *Mod) windowEffectsLocked() []module.Effect {
-	if m.winLive && m.now().Sub(m.winAt) < windowWedge {
+	if m.winLive && m.now().Sub(m.winAt) < probeWedge {
 		return nil
 	}
 	m.winLive, m.winAt = true, m.now()
@@ -487,6 +505,45 @@ func (m *Mod) noteWindowLocked(args []string) error {
 		return fmt.Errorf("reno window-note: unknown state %q", args[0])
 	}
 	m.winLive = false
+	return nil
+}
+
+// vcamEffectsLocked fires the virtual-camera sweep: read the output back and
+// take it down if it is up. Only ever "stop" -- there is no case where this
+// rig wants OBS's virtual camera running, so the tile is one safe tap whether
+// the readout says on, off, or nothing yet. Caller holds mu.
+func (m *Mod) vcamEffectsLocked() []module.Effect {
+	if m.vcamLive && m.now().Sub(m.vcamAt) < probeWedge {
+		return nil
+	}
+	m.vcamLive, m.vcamAt = true, m.now()
+	m.vcamGen++
+	return []module.Effect{{
+		Key:  fmt.Sprintf("reno/vcam/%d", m.vcamGen),
+		Argv: []string{m.exe, "reno", "obs", "vcam", "stop"},
+	}}
+}
+
+// noteVCamLocked records what the virtual camera turned out to be doing.
+// Arming and releasing note here too, so the readout is fresh at the two
+// moments it matters without the tile having to be tapped. Caller holds mu.
+func (m *Mod) noteVCamLocked(args []string) error {
+	if len(args) == 0 {
+		return errors.New("reno vcam-note: need on|off|error [detail]")
+	}
+	switch args[0] {
+	case "on", "off":
+		m.vcamState, m.vcamFail = args[0], false
+	case "error":
+		// unknown, not stale-but-plausible: the one failure this readout
+		// exists to catch is a camera held by an output nothing reported
+		m.vcamState, m.vcamFail = "", true
+	default:
+		return fmt.Errorf("reno vcam-note: unknown state %q", args[0])
+	}
+	// the detail (args[1:]) stays in the verb's events journal and off the
+	// pad: a tile is ~12 interior cells and "socket gone" would crop
+	m.vcamLive = false
 	return nil
 }
 

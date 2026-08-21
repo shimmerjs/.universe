@@ -21,6 +21,18 @@ const runVersion = 1
 // boot-time sweep prunes them. Live (unfinalized) runs are never swept.
 const sweepHorizon = 30 * 24 * time.Hour
 
+// WorkspaceRoot is the one directory every clip lands under, given the reno
+// state dir (<state>/reno). Both the module (which names clip paths) and the
+// open-clip verb (which refuses paths outside it) derive it here, because a
+// containment check against a root the two sides computed separately is a
+// check waiting to disagree with itself.
+func WorkspaceRoot(stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, "workspace")
+}
+
 // CursorArmed is the pre-show cursor: the run exists, timers are idle,
 // and no step effects have fired. The first advance enters step 0 and
 // starts the stopwatch.

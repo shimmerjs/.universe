@@ -150,7 +150,7 @@ func cmdReno(args []string) error {
 		}
 		return renoCtlCall([]string{"record-config", string(raw)})
 
-	case "focus-session", "launch-session", "open-url", "focus-app",
+	case "focus-session", "launch-session", "open-url", "open-clip", "focus-app",
 		"chrome-tab", "hide-app", "show-app":
 		return renoAction(verb, rest)
 
@@ -179,14 +179,14 @@ func cmdReno(args []string) error {
 		// dial-only (stopping a recording must never boot OBS); ensure
 		// and probe own the launch path
 		if len(rest) == 0 {
-			return fmt.Errorf("reno obs: need an op: ensure | arm | release | probe | apply | window <show|hide|toggle> | cam <fx> | stop | pause | resume | scene <name>")
+			return fmt.Errorf("reno obs: need an op: ensure | arm | release | probe | apply | window <show|hide|toggle> | vcam <status|stop> | cam <fx> | stop | pause | resume | scene <name>")
 		}
 		op := rest[0]
 		arg := ""
 		flagsAt := 1
 		var camArgs []string
 		switch op {
-		case "scene", "window":
+		case "scene", "window", "vcam":
 			if len(rest) < 2 {
 				return fmt.Errorf("reno obs %s: need an argument", op)
 			}
@@ -246,6 +246,16 @@ func cmdReno(args []string) error {
 			}
 			defer renoWatchdog()()
 			return v.ObsWindow(arg, renoCtlData, corr)
+		case "vcam":
+			v, err := bus.NewRenoVerbs()
+			if err != nil {
+				return err
+			}
+			// dial-only: a cold OBS cannot be running its own virtual camera
+			defer renoWatchdog()()
+			return v.VirtualCam(arg, func() (bus.ObsTransport, error) {
+				return bus.DialOBS(*host, bus.ObsPassword())
+			}, renoCtlData, corr)
 		case "probe":
 			v, err := bus.NewRenoVerbs()
 			if err != nil {
@@ -455,6 +465,8 @@ func renoAction(verb string, rest []string) error {
 		return v.LaunchSession(ctx, target, *cwd, *keepFocus, fs.Args(), corr)
 	case "open-url":
 		return v.OpenURL(ctx, target, corr)
+	case "open-clip":
+		return v.OpenClip(ctx, target, corr)
 	case "chrome-tab":
 		return v.ChromeTab(ctx, target, corr)
 	}

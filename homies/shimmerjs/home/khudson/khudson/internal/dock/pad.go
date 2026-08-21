@@ -22,18 +22,34 @@ const (
 	// padTilePad is the horizontal breathing room around a label, on top
 	// of the two border cells.
 	padTilePad = 2
-	// padBandMinH is a section band: one label row plus a button that can
-	// hold a frame and its text.
-	padBandMinH = 4
-	// padTileMaxH keeps a sparse pad from inflating three buttons into
-	// wall-sized slabs.
-	padTileMaxH = 5
+	// padTileFloorH is the least a button can be: a frame around one
+	// interior line, which is enough for a label with its value folded on.
+	// It is also the DEFAULT -- a band grows past it only by asking
+	// (MinHeight), never because the grid had rows to spare.
+	padTileFloorH = 3
+	// padGutterPad is the space around a section label in the gutter.
+	padGutterPad = 2
 )
 
 // padBand is one labeled row of buttons.
 type padBand struct {
 	label string
 	tiles []module.Row
+}
+
+// ask is the tile height the band wants: the tallest MinHeight any of its
+// tiles declares, or the floor. Spare grid rows never grow a band past it,
+// for two reasons. A band stretched into room it has nothing to put in gets a
+// dead row inside every one of its tiles, which reads as a column of buttons
+// whose readouts all failed; and a height that depended on the grid would
+// reflow the whole pad under a thumb the moment a header alarm appeared.
+// Leftover rows collect at the bottom, where they read as space.
+func (b padBand) ask() int {
+	h := padTileFloorH
+	for _, t := range b.tiles {
+		h = max(h, t.MinHeight)
+	}
+	return h
 }
 
 // splitPadBands groups consecutive pad rows by section, preserving module
@@ -50,9 +66,39 @@ func splitPadBands(tiles []module.Row) []padBand {
 	return bands
 }
 
+// budgetBands hands gridH out as one tile height per band. rows[i] is how
+// many tile rows band i wraps to, so a band that wraps pays its height that
+// many times over.
+//
+// Every band gets a frame before any band gets a second row. An even split
+// cannot do that: five even shares of a grid two alarm lines shorter did not
+// go, and the last band came off the pad silently. Asks are paid after, in
+// publication order, so the transport carries weight and the choice bands
+// take the remainder.
+func budgetBands(bands []padBand, rows []int, gridH int) []int {
+	h := make([]int, len(bands))
+	rem := gridH
+	for i := range bands {
+		h[i] = padTileFloorH
+		rem -= rows[i] * padTileFloorH
+	}
+	for i, b := range bands {
+		// each extra row costs one per row the band wraps to
+		for h[i] < b.ask() && rem >= rows[i] {
+			h[i]++
+			rem -= rows[i]
+		}
+	}
+	return h
+}
+
 // renderPad draws header lines, then one band per section. Tiles with an
 // Act fire it; tiles with only a Menu open it welded to the tile, so every
 // button answers a plain tap.
+//
+// Section labels ride a left gutter rather than a row of their own: the pad
+// is far wider than its buttons need, and rows are the scarce axis -- five
+// label rows come out of the same twenty-one the buttons are competing for.
 func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rect) string {
 	lines := make([]string, 0, rr.h)
 	for _, h := range header {
@@ -60,66 +106,90 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 	}
 	gridH := rr.h - len(lines)
 	bands := splitPadBands(tiles)
-	if len(bands) == 0 || gridH < padBandMinH || rr.w < padTileMinW {
+	if len(bands) == 0 || gridH < padTileFloorH || rr.w < padTileMinW {
 		m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
 		return fixedBlock(lines, rr.w, rr.h)
 	}
-	// bands that cannot hold a frame are not buttons: drop the tail into
-	// the last band's overflow rather than drawing rubble
-	if maxBands := gridH / padBandMinH; len(bands) > maxBands {
-		bands = bands[:maxBands]
+	// the gutter sizes to the widest label it has to carry, and yields
+	// entirely when the glass is too narrow to spare it -- a button that
+	// fits beats a section name
+	gutterW := 0
+	for _, b := range bands {
+		if b.label != "" {
+			gutterW = max(gutterW, lipgloss.Width(b.label)+padGutterPad)
+		}
 	}
-
-	bandH := make([]int, len(bands))
-	for i := range bandH {
-		bandH[i] = gridH / len(bands)
-	}
-	for i := range gridH % len(bands) {
-		bandH[i]++
+	if rr.w-gutterW < padTileMinW {
+		gutterW = 0
 	}
 
 	// one key size for the whole pad: a deck reads as a grid, and bands
 	// that size themselves independently read as unrelated widgets
+	gridW := rr.w - gutterW
 	w := padTileMinW
 	for _, t := range tiles {
 		w = max(w, lipgloss.Width(t.Text)+2+padTilePad)
 	}
-	w = min(w, padTileMaxW, rr.w)
-	perRow := max(rr.w/w, 1)
+	w = min(w, padTileMaxW, gridW)
+	perRow := max(gridW/w, 1)
 
+	// a band wider than the glass wraps, and every extra row it wraps to is
+	// another band's worth of grid. Price that in before anything is budgeted
+	// -- a six-display screens band is two rows deep, not one.
+	rows := make([]int, len(bands))
+	for i, b := range bands {
+		rows[i] = (len(b.tiles) + perRow - 1) / perRow
+	}
+	// bands that cannot hold a frame are not buttons: drop the tail rather
+	// than draw rubble. With every band framed before any band is fattened
+	// this only bites on glass far shorter than the Edge's.
+	framed := 0
+	for _, r := range rows {
+		framed += r * padTileFloorH
+	}
+	for len(bands) > 0 && framed > gridH {
+		framed -= rows[len(rows)-1] * padTileFloorH
+		bands, rows = bands[:len(bands)-1], rows[:len(rows)-1]
+	}
+	if len(bands) == 0 {
+		m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
+		return fixedBlock(lines, rr.w, rr.h)
+	}
+
+	bandH := budgetBands(bands, rows, gridH)
 	y := rr.y + len(lines)
 	for bi, b := range bands {
-		// the section label rides its own dim row; the buttons take the rest.
-		// y tracks the row the next appended line lands on, so it steps over
-		// the label here -- a tile rect that started at the label row drifted
-		// one row per band off the buttons it was supposed to be
-		lines = append(lines, fitCellPad(chromeDim.Render(" "+strings.ToUpper(b.label)), rr.w))
-		y++
-		tileH := min(bandH[bi]-1, padTileMaxH)
-		rowsUsed := 1 + tileH
-
-		x, drawn := rr.x, 0
+		tileH, rowsUsed := bandH[bi], 0
+		bandTotal := rows[bi] * tileH
+		x, drawn := rr.x+gutterW, 0
 		var cells [][]string
 		flush := func() {
 			for j := range tileH {
-				var sb strings.Builder
+				// the label sits on the band's first row, so it reads
+				// against the top edge of the buttons it names
+				gut := strings.Repeat(" ", gutterW)
+				if gutterW > 0 && rowsUsed == 0 && j == 0 {
+					gut = fitCellPad(chromeDim.Render(" "+strings.ToUpper(b.label)), gutterW)
+				}
+				sb := strings.Builder{}
+				sb.WriteString(gut)
 				for _, c := range cells {
 					sb.WriteString(c[j])
 				}
 				lines = append(lines, sb.String())
 			}
-			cells, x = nil, rr.x
+			cells, x = nil, rr.x+gutterW
+			rowsUsed += tileH
 		}
 		for _, t := range b.tiles {
 			if drawn == perRow {
 				// a band wider than the glass wraps, but only into the
 				// vertical room its own section was given
-				if rowsUsed+tileH > bandH[bi] {
+				if rowsUsed+2*tileH > bandTotal {
 					break
 				}
 				flush()
 				y += tileH
-				rowsUsed += tileH
 				drawn = 0
 			}
 			area := rect{x, y, w, tileH}
@@ -140,7 +210,7 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 		flush()
 		y += tileH
 		// pad the band out so the next section starts where it was budgeted
-		for ; rowsUsed < bandH[bi]; rowsUsed++ {
+		for ; rowsUsed < bandTotal; rowsUsed++ {
 			lines = append(lines, "")
 			y++
 		}
@@ -205,22 +275,32 @@ func (m *model) padTones(t module.Row) (border, label lipgloss.Style) {
 }
 
 // padTile draws one button: the label centered in a frame sized to exactly
-// w x h, with the glyph joined on when there is width for it. The pressed
+// w x h. How the glyph lands depends on the height the tile was given -- its
+// own line on a tall tile, joined to the label on a short one. The pressed
 // treatment is the rail button's -- fill background plus the edge-hugging
 // ring -- so a pad press feels like every other button on this glass.
 func padTile(t module.Row, w, h int, border, label lipgloss.Style) []string {
-	if w < padTileMinW || h < 3 {
+	if w < padTileMinW || h < padTileFloorH {
 		return strings.Split(blankBlock(w, h), "\n")
 	}
-	inner := w - 2
+	inner, interior := w-2, h-2
 	text := t.Text
-	if t.Glyph != "" && lipgloss.Width(text)+2 <= inner {
+	var body []string
+	switch {
+	case t.Glyph == "":
+	case interior >= 3:
+		// Room for the icon to BE the button rather than prefix it: glyph on
+		// its own line, name under it, state under that. A band earns this by
+		// asking for the height (MinHeight), which on the recorder is the
+		// transport's -- a record circle you aim a thumb at.
+		body = append(body, label.Bold(true).Render(fitCell(t.Glyph, inner)))
+	case lipgloss.Width(text)+2 <= inner:
 		text = t.Glyph + " " + text
 	}
-	body := []string{label.Bold(true).Render(fitCell(text, inner))}
+	body = append(body, label.Bold(true).Render(fitCell(text, inner)))
 	if t.Value != "" {
 		switch {
-		case h >= 4:
+		case interior > len(body):
 			body = append(body, chromeDim.Render(fitCell(t.Value, inner)))
 		case lipgloss.Width(text)+1+lipgloss.Width(t.Value) <= inner:
 			// A crowded pad -- five bands over this glass -- leaves exactly
