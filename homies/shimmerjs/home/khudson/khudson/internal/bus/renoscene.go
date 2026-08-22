@@ -163,14 +163,20 @@ func displayLabel(monitors []renocore.Monitor, d cgdisplay.Display, i int) strin
 
 // ApplyRecordConfig drives the reno scene to match cfg and switches to
 // it: probe fresh, plan pure, execute. Errors carry the failing stage.
-func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) error {
+//
+// It also reports the enabled inputs that are not producing frames. A
+// capture whose device went away, whose display selector stopped resolving,
+// or whose stream died leaves a source sitting in the scene answering 0x0 --
+// the scene composites to black and nothing else about the apply looks
+// wrong. Callers escalate that rather than report ok over it.
+func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []string, err error) {
 	env, err := ProbeEnv(obs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	plan, err := renocore.BuildScenePlan(cfg, env)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, in := range plan.Inputs {
 		existingKind, exists := env.Inputs[in.Name]
@@ -180,73 +186,138 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) error {
 			// it -- hand-attached filters on it are lost, and that is the
 			// documented cost of the reno-owned scene (arc-2 review #21)
 			if err := obs.RemoveInput(in.Name); err != nil {
-				return fmt.Errorf("recreate %s (kind %s -> %s): %w", in.Name, existingKind, in.Kind, err)
+				return nil, fmt.Errorf("recreate %s (kind %s -> %s): %w", in.Name, existingKind, in.Kind, err)
 			}
 			exists = false
 		}
 		if !exists {
 			if err := obs.CreateInput(plan.Scene, in.Name, in.Kind, in.Settings, in.Enabled); err != nil {
-				return fmt.Errorf("create %s: %w", in.Name, err)
+				return nil, fmt.Errorf("create %s: %w", in.Name, err)
 			}
 		} else if in.Settings != nil {
 			if err := obs.SetInputSettings(in.Name, in.Settings); err != nil {
-				return fmt.Errorf("settings %s: %w", in.Name, err)
+				return nil, fmt.Errorf("settings %s: %w", in.Name, err)
 			}
 		}
 		id, err := obs.SceneItemID(plan.Scene, in.Name, true)
 		if err != nil {
-			return fmt.Errorf("item %s: %w", in.Name, err)
+			return nil, fmt.Errorf("item %s: %w", in.Name, err)
 		}
 		if err := obs.SetSceneItemEnabled(plan.Scene, id, in.Enabled); err != nil {
-			return fmt.Errorf("enable %s: %w", in.Name, err)
+			return nil, fmt.Errorf("enable %s: %w", in.Name, err)
 		}
-		if err := applyTransform(obs, plan.Scene, id, in, env); err != nil {
-			return err
+		live, err := applyTransform(obs, plan.Scene, id, in, env)
+		if err != nil {
+			return nil, err
+		}
+		if in.Enabled && !live {
+			dead = append(dead, in.Name)
 		}
 	}
 	for _, name := range plan.RemoveInputs {
 		if err := obs.RemoveInput(name); err != nil {
-			return fmt.Errorf("remove stale %s: %w", name, err)
+			return nil, fmt.Errorf("remove stale %s: %w", name, err)
 		}
 	}
 	for name, muted := range plan.Mutes {
 		if err := obs.SetInputMute(name, muted); err != nil {
-			return fmt.Errorf("mute %s: %w", name, err)
+			return nil, fmt.Errorf("mute %s: %w", name, err)
 		}
 	}
 	if err := obs.SetScene(plan.Scene); err != nil {
-		return fmt.Errorf("switch to %s: %w", plan.Scene, err)
+		return nil, fmt.Errorf("switch to %s: %w", plan.Scene, err)
 	}
-	return nil
+	return dead, nil
+}
+
+// sourceSettle bounds the wait for a freshly-configured capture to report
+// its dimensions. A capture answers 0x0 for a beat after it is created --
+// SCK has to hand over a first frame -- and every geometric decision below
+// depends on the answer, so this waits for it instead of guessing.
+var (
+	sourceSettleTries = 12
+	sourceSettlePoll  = 250 * time.Millisecond
+)
+
+// liveSourceSize polls until the item's source reports real dimensions,
+// answering 0,0 if it never does. A source still at 0x0 after this is not
+// slow, it is dead: the device went away, the display selector stopped
+// resolving, or the stream died and left the source sitting in the scene.
+func liveSourceSize(obs ObsTransport, scene string, id int) (int, int, error) {
+	for i := range sourceSettleTries {
+		w, h, err := obs.ItemSourceSize(scene, id)
+		if err != nil {
+			return 0, 0, err
+		}
+		if w > 0 && h > 0 {
+			return w, h, nil
+		}
+		if i < sourceSettleTries-1 {
+			time.Sleep(sourceSettlePoll)
+		}
+	}
+	return 0, 0, nil
 }
 
 // applyTransform positions one planned item: webcam presets and screen
-// slots; audio items (no slot, no preset) have no geometry.
-func applyTransform(obs ObsTransport, scene string, id int, in renocore.PlanInput, env renocore.ObsEnv) error {
-	switch {
-	case in.Preset != "":
-		if err := obs.SetSceneItemTransform(scene, id, renocore.CamTransform(env.CanvasW, env.CanvasH, in.Preset)); err != nil {
-			return fmt.Errorf("transform %s: %w", in.Name, err)
+// slots; audio items (no slot, no preset) have no geometry. It reports
+// whether the item's source is producing frames, because an apply that
+// placed everything perfectly over dead captures still records black.
+func applyTransform(obs ObsTransport, scene string, id int, in renocore.PlanInput, env renocore.ObsEnv) (live bool, err error) {
+	if in.Preset == "" && in.Slots == 0 {
+		return true, nil // audio: no geometry, nothing to be dead about
+	}
+	// one settle serves the crop math and the scale both
+	w, h, err := liveSourceSize(obs, scene, id)
+	if err != nil {
+		return false, fmt.Errorf("source size %s: %w", in.Name, err)
+	}
+	var tf renocore.Transform
+	if in.Preset != "" {
+		tf = renocore.CamTransform(env.CanvasW, env.CanvasH, in.Preset)
+	} else {
+		cw, ch := w, h
+		if cw == 0 && in.Monitor != nil {
+			// dead, but the resolved monitor's geometry still beats garbage
+			// for the crop math -- reporting the source is the caller's job
+			cw, ch = in.Monitor.Width, in.Monitor.Height
 		}
-	case in.Slots > 0:
-		w, h, err := obs.ItemSourceSize(scene, id)
-		if err != nil {
-			return fmt.Errorf("source size %s: %w", in.Name, err)
-		}
-		if w == 0 && in.Monitor != nil {
-			// source not streaming yet (first capture pre-TCC): the
-			// resolved monitor's geometry stands in for the crop math
-			w, h = in.Monitor.Width, in.Monitor.Height
-		}
-		tf, cropped := renocore.ItemTransform(env.CanvasW, env.CanvasH, in.Slot, in.Slots, w, h, in.Region)
+		var cropped bool
+		tf, cropped = renocore.ItemTransform(env.CanvasW, env.CanvasH, in.Slot, in.Slots, cw, ch, in.Region)
 		if in.Region != nil && !cropped {
 			fmt.Fprintf(os.Stderr, "khudson reno: %s reports no source size yet; region %s skipped this run\n", in.Name, in.Region)
 		}
-		if err := obs.SetSceneItemTransform(scene, id, tf); err != nil {
-			return fmt.Errorf("transform %s: %w", in.Name, err)
-		}
 	}
-	return nil
+	tf.ScaleX, tf.ScaleY = renocore.ScaleInner(tf.BoundsW, tf.BoundsH, w, h)
+	if err := obs.SetSceneItemTransform(scene, id, tf); err != nil {
+		return false, fmt.Errorf("transform %s: %w", in.Name, err)
+	}
+	if w == 0 {
+		return false, nil
+	}
+	// Read the scale back rather than trusting the write. A zero scale is the
+	// difference between a scene that records and one that records black, and
+	// nothing else about the apply looks any different -- so this is the one
+	// place worth a round trip. The explicit scale above has been enough in
+	// every case tested against live OBS 32.2; the second write is the belt,
+	// and it is cheap because it only ever runs when the first did not take.
+	got, err := obs.ItemTransform(scene, id)
+	if err != nil {
+		return false, fmt.Errorf("transform readback %s: %w", in.Name, err)
+	}
+	if got.ScaleX > 0 && got.ScaleY > 0 {
+		return true, nil
+	}
+	if err := obs.SetSceneItemTransform(scene, id, tf); err != nil {
+		return false, fmt.Errorf("rescale %s: %w", in.Name, err)
+	}
+	got, err = obs.ItemTransform(scene, id)
+	if err != nil {
+		return false, fmt.Errorf("transform readback %s: %w", in.Name, err)
+	}
+	// still zero after two writes: the item will render at zero size, which
+	// is indistinguishable on glass from a dead capture, so call it one
+	return got.ScaleX > 0 && got.ScaleY > 0, nil
 }
 
 // Probe is the `khudson reno obs probe` verb: ensure OBS, enumerate the

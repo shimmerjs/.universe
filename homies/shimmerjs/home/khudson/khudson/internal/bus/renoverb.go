@@ -320,8 +320,16 @@ func (v *RenoVerbs) Record(dial func() (ObsTransport, error), ctl CtlCall, corr 
 		// the one-core config path: ensure the reno scene matches and
 		// switch to it (scripted headers, `reno config`, and view taps
 		// all land here identically)
-		if err := ApplyRecordConfig(obs, *intent.Config); err != nil {
+		dead, err := ApplyRecordConfig(obs, *intent.Config)
+		if err != nil {
 			return failNote("config ("+intent.Config.Summary()+")", err)
+		}
+		if len(dead) > 0 {
+			// refuse rather than roll: a take over a dead capture is a file
+			// full of black that reads as a successful recording everywhere
+			// -- the journal, the pad, the clip tile -- until it is played
+			return failNote("config ("+intent.Config.Summary()+")",
+				fmt.Errorf("no frames from %s", strings.Join(dead, ", ")))
 		}
 	case intent.Scene != "":
 		if err := obs.SetScene(intent.Scene); err != nil {
@@ -388,10 +396,20 @@ func (v *RenoVerbs) ApplyConfig(dial func() (ObsTransport, error), ctl CtlCall, 
 		return v.Act(corr, "obs", "apply", "ok", "obs cold; config held for the next record", nil)
 	}
 	defer obs.Close()
-	if err := ApplyRecordConfig(obs, *req.Config); err != nil {
+	dead, err := ApplyRecordConfig(obs, *req.Config)
+	if err != nil {
 		return fail(err.Error(), err)
 	}
 	detail := req.Config.Summary()
+	if len(dead) > 0 {
+		// apply is a knob turn, not a gate -- it still landed, and refusing
+		// would strand the config. Say it loudly on the pad instead.
+		detail += " -- NO FRAMES from " + strings.Join(dead, ", ")
+		if nerr := noteWithRetry(ctl, []string{"apply-note", "error", detail}); nerr != nil {
+			return v.Act(corr, "obs", "apply", "unconfirmed", detail+"; note failed: "+nerr.Error(), nerr)
+		}
+		return v.Act(corr, "obs", "apply", "error", detail, errors.New(detail))
+	}
 	if err := noteWithRetry(ctl, []string{"apply-note", "ok", detail}); err != nil {
 		return v.Act(corr, "obs", "apply", "unconfirmed",
 			"scene applied ("+detail+") but the note failed: "+err.Error(), err)

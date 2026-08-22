@@ -31,7 +31,9 @@ func sceneFake() *fakeObs {
 			"reno-mic/device_id": {{Name: "MacBook Pro Microphone", Value: "uid-mbp"}},
 			"reno-cam/device":    {{Name: "FaceTime HD Camera", Value: "uid-cam"}},
 		},
-		sizes: map[string][2]int{"reno-screen-0": {3024, 1964}},
+		// every video source reports a size: the cam needs one too, or the
+		// scale it is given is derived from nothing
+		sizes: map[string][2]int{"reno-screen-0": {3024, 1964}, "reno-cam": {1920, 1080}},
 	}
 }
 
@@ -110,8 +112,12 @@ func TestApplyRecordConfig(t *testing.T) {
 		Audio:   renocore.AudioNone,
 		Webcam:  "br",
 	}
-	if err := ApplyRecordConfig(obs, cfg); err != nil {
+	dead, err := ApplyRecordConfig(obs, cfg)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(dead) != 0 {
+		t.Errorf("streaming sources reported dead: %v", dead)
 	}
 	if obs.ops[len(obs.ops)-1] != "scene:reno" {
 		t.Errorf("last op must switch the scene: %v", obs.ops[len(obs.ops)-3:])
@@ -139,22 +145,67 @@ func TestApplyRecordConfig(t *testing.T) {
 	}
 }
 
-// A zero source size falls back to the resolved monitor's geometry for
-// the crop math instead of skipping the region.
-func TestApplyRegionMonitorFallback(t *testing.T) {
+// A source that never reports a size falls back to the resolved monitor's
+// geometry for the crop math -- and is reported DEAD. It is not merely
+// unstreamed: a capture still at 0x0 after the settle records black, and an
+// apply that returned clean over it is how 52 seconds of black got recorded
+// with every readout on the pad saying ok.
+func TestApplyRegionMonitorFallbackReportsDeadSource(t *testing.T) {
 	fakeCGDisplays(t)
+	noSettleDelay(t)
 	obs := sceneFake()
-	obs.sizes = nil // capture not streaming yet (pre-TCC)
+	obs.sizes = nil // capture never comes up
 	cfg := renocore.RecordConfig{
 		Screens: []renocore.ScreenSel{{Display: "built-in", Region: &renocore.Region{X: 100, Y: 100, W: 800, H: 600}}},
 	}
-	if err := ApplyRecordConfig(obs, cfg); err != nil {
+	dead, err := ApplyRecordConfig(obs, cfg)
+	if err != nil {
 		t.Fatal(err)
 	}
 	tf := obs.tfs[obs.itemIDs["reno/reno-screen-0"]]
 	if tf.CropL != 100 || tf.CropR != 3024-900 {
 		t.Errorf("fallback crops = %+v", tf)
 	}
+	if !slices.Contains(dead, "reno-screen-0") {
+		t.Errorf("a source stuck at 0x0 must be reported dead, got %v", dead)
+	}
+	// and no scale is invented for it: a scale derived from nothing is the
+	// zero that leaves the item rendering at zero size forever
+	if tf.ScaleX != 0 || tf.ScaleY != 0 {
+		t.Errorf("dead source got a scale: %+v", tf)
+	}
+}
+
+// A live source gets an EXPLICIT scale. OBS derives a scale-inner scale only
+// when the bounds are set, so an item first bounded against a 0x0 source
+// keeps scale 0 after frames arrive and renders at zero size -- the scene
+// composites to black with every source in it healthy (glass, 2026-08-21).
+func TestApplyScalesLiveSourcesExplicitly(t *testing.T) {
+	fakeCGDisplays(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	cfg := renocore.RecordConfig{
+		Screens: []renocore.ScreenSel{{Display: "built-in"}},
+		Webcam:  "br",
+	}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"reno-screen-0", "reno-cam"} {
+		tf := obs.tfs[obs.itemIDs["reno/"+name]]
+		if tf.ScaleX <= 0 || tf.ScaleY <= 0 {
+			t.Errorf("%s: scale must be sent explicitly, got %+v", name, tf)
+		}
+	}
+}
+
+// noSettleDelay strips the inter-poll sleep so a dead-source test costs
+// nothing; the retry count still exercises the loop.
+func noSettleDelay(t *testing.T) {
+	t.Helper()
+	tries, poll := sourceSettleTries, sourceSettlePoll
+	sourceSettleTries, sourceSettlePoll = 3, 0
+	t.Cleanup(func() { sourceSettleTries, sourceSettlePoll = tries, poll })
 }
 
 // The record verb applies a journaled config before starting: arm ->

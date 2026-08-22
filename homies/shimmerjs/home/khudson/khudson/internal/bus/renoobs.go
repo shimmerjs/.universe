@@ -348,6 +348,7 @@ func (t *goobsTransport) ItemTransform(scene string, id int) (renocore.Transform
 		BoundsW: tf.BoundsWidth, BoundsH: tf.BoundsHeight,
 		CropL: int(tf.CropLeft), CropT: int(tf.CropTop),
 		CropR: int(tf.CropRight), CropB: int(tf.CropBottom),
+		ScaleX: tf.ScaleX, ScaleY: tf.ScaleY,
 	}, nil
 }
 
@@ -385,16 +386,21 @@ func (t *goobsTransport) RunFrameBatch(id string, reqs []renocore.FXRequest, bud
 // SetSceneItemTransform anchors top-left (alignment 5) inside a
 // scale-inner bounds box: aspect survives, slots stay put.
 func (t *goobsTransport) SetSceneItemTransform(scene string, id int, tr renocore.Transform) error {
+	want := &typedefs.SceneItemTransform{
+		PositionX: tr.X, PositionY: tr.Y,
+		Alignment:  5,
+		BoundsType: "OBS_BOUNDS_SCALE_INNER", BoundsAlignment: 0,
+		BoundsWidth: tr.BoundsW, BoundsHeight: tr.BoundsH,
+		CropLeft: float64(tr.CropL), CropTop: float64(tr.CropT),
+		CropRight: float64(tr.CropR), CropBottom: float64(tr.CropB),
+	}
+	// see Transform.ScaleX: OBS will not recompute a scale it derived from a
+	// source that was not streaming yet, so send the answer when we have one
+	if tr.ScaleX > 0 && tr.ScaleY > 0 {
+		want.ScaleX, want.ScaleY = tr.ScaleX, tr.ScaleY
+	}
 	_, err := t.c.SceneItems.SetSceneItemTransform(sceneitems.NewSetSceneItemTransformParams().
-		WithSceneName(scene).WithSceneItemId(id).
-		WithSceneItemTransform(&typedefs.SceneItemTransform{
-			PositionX: tr.X, PositionY: tr.Y,
-			Alignment:  5,
-			BoundsType: "OBS_BOUNDS_SCALE_INNER", BoundsAlignment: 0,
-			BoundsWidth: tr.BoundsW, BoundsHeight: tr.BoundsH,
-			CropLeft: float64(tr.CropL), CropTop: float64(tr.CropT),
-			CropRight: float64(tr.CropR), CropBottom: float64(tr.CropB),
-		}))
+		WithSceneName(scene).WithSceneItemId(id).WithSceneItemTransform(want))
 	return err
 }
 

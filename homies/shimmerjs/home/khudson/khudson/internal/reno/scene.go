@@ -426,6 +426,25 @@ func isAudioKind(kind string) bool {
 type Transform struct {
 	X, Y, BoundsW, BoundsH     float64
 	CropL, CropT, CropR, CropB int
+	// ScaleX/ScaleY are sent explicitly, even though a scale-inner bounds
+	// box is supposed to derive them. OBS derives the scale ONCE, when the
+	// bounds are set; an item given bounds while its source still reads 0x0
+	// gets scale 0 and keeps it after frames arrive, rendering at zero size
+	// forever. The scene then composites to black with every source in it
+	// healthy, which is exactly what it looks like: nothing. Zero here means
+	// "no live source size to derive from", and the field is omitted.
+	ScaleX, ScaleY float64
+}
+
+// ScaleInner is the scale a SCALE_INNER bounds box implies for a source of
+// srcW x srcH: fit inside the box, preserve aspect. Zero for a source that
+// is not reporting a size yet -- there is nothing honest to compute.
+func ScaleInner(boundsW, boundsH float64, srcW, srcH int) (float64, float64) {
+	if srcW <= 0 || srcH <= 0 || boundsW <= 0 || boundsH <= 0 {
+		return 0, 0
+	}
+	s := min(boundsW/float64(srcW), boundsH/float64(srcH))
+	return s, s
 }
 
 // ItemTransform computes slot i-of-n's transform on the canvas: slots

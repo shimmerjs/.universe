@@ -348,6 +348,47 @@ func TestRenoRecorderPadKeepsEveryBandUnderAHeaderAlarm(t *testing.T) {
 	}
 }
 
+// Key size comes from the glass, not from what the tiles say. Probing devices
+// only adds tiles to the CHOICE bands, but a long device name used to widen
+// the shared key and resize every button on the pad -- including the
+// transport row, under the thumb that had just pressed one of them.
+func TestRenoRecorderPadKeySizeIgnoresTileContent(t *testing.T) {
+	widths := func(t *testing.T, extra ...module.Row) map[string]int {
+		t.Helper()
+		d := module.Data{Title: "reno rec", Rows: []module.Row{
+			{Kind: module.RowSpans, Key: reno.KeyHead, Spans: []module.Span{{Text: "run r-123"}}},
+			{Kind: module.RowPad, Section: "transport", Key: "t0", Text: "ARM",
+				MinHeight: 5, Act: []string{"act", "t0"}},
+		}}
+		d.Rows = append(d.Rows, extra...)
+		m := renoModel(196, 24)
+		m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+		m.widgetData["reno-presenter"] = d
+		m.invalidateHome("reno-presenter")
+		m.View()
+		got := map[string]int{}
+		for _, h := range m.hits {
+			if key, ok := strings.CutPrefix(h.pressKey, "reno-presenter:pad:"); ok {
+				got[key] = h.area.w
+			}
+		}
+		return got
+	}
+
+	cold := widths(t)
+	probed := widths(t, module.Row{Kind: module.RowPad, Section: "screens", Key: "s0",
+		Text: "display 1 3840x2160", Act: []string{"act", "s0"}})
+	if cold["t0"] != probed["t0"] {
+		t.Errorf("transport key was %d cells and became %d when a long label appeared in another band",
+			cold["t0"], probed["t0"])
+	}
+	// and one key size across the pad, so a deck still reads as a grid
+	if probed["s0"] != probed["t0"] {
+		t.Errorf("bands sized themselves independently: transport=%d screens=%d",
+			probed["t0"], probed["s0"])
+	}
+}
+
 // The transport carries weight: it asks for height with MinHeight and gets it
 // before the choice bands divide the remainder, which is what buys its glyph a
 // line of its own -- a record circle you hit without aiming. A choice tile

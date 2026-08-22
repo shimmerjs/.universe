@@ -65,7 +65,16 @@ func (v *RenoVerbs) ArmRig(dial func() (ObsTransport, error), ctl CtlCall, corr 
 
 	detail := "obs " + obs.Version()
 	if req.Config != nil {
-		if err := ApplyRecordConfig(obs, *req.Config); err != nil {
+		dead, err := ApplyRecordConfig(obs, *req.Config)
+		if err != nil {
+			return fail(err.Error(), err)
+		}
+		if len(dead) > 0 {
+			// a rig whose captures produce nothing is not armed, whatever
+			// the scene looks like from here. REC must not appear over it:
+			// the whole point of arming is that the next tap records
+			// something, and this one would record black.
+			err := fmt.Errorf("no frames from %s", strings.Join(dead, ", "))
 			return fail(err.Error(), err)
 		}
 		detail += ", " + req.Config.Summary()

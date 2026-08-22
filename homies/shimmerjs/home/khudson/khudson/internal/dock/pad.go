@@ -16,12 +16,10 @@ import (
 
 const (
 	// padTileMinW / padTileMaxW bound a button: wide enough for a thumb,
-	// narrow enough that a six-choice band still fits one row.
+	// narrow enough that a six-choice band still fits one row. padTileMaxW
+	// IS the key size on any glass wide enough for it -- see renderPad.
 	padTileMinW = 9
 	padTileMaxW = 22
-	// padTilePad is the horizontal breathing room around a label, on top
-	// of the two border cells.
-	padTilePad = 2
 	// padTileFloorH is the least a button can be: a frame around one
 	// interior line, which is enough for a label with its value folded on.
 	// It is also the DEFAULT -- a band grows past it only by asking
@@ -123,14 +121,15 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 		gutterW = 0
 	}
 
-	// one key size for the whole pad: a deck reads as a grid, and bands
-	// that size themselves independently read as unrelated widgets
+	// One key size for the whole pad, and it comes from the GLASS, never
+	// from what the tiles happen to say. A width derived from the longest
+	// label resized every button on the pad the moment any band's content
+	// changed -- probing devices, which only adds tiles to the choice bands,
+	// pushed the transport keys from 19 cells to 22 under the thumb that had
+	// just pressed one. A mixer's keys do not change size when you plug
+	// something in.
 	gridW := rr.w - gutterW
-	w := padTileMinW
-	for _, t := range tiles {
-		w = max(w, lipgloss.Width(t.Text)+2+padTilePad)
-	}
-	w = min(w, padTileMaxW, gridW)
+	w := min(padTileMaxW, gridW)
 	perRow := max(gridW/w, 1)
 
 	// a band wider than the glass wraps, and every extra row it wraps to is
@@ -165,10 +164,11 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 		var cells [][]string
 		flush := func() {
 			for j := range tileH {
-				// the label sits on the band's first row, so it reads
-				// against the top edge of the buttons it names
+				// the label rides the tile's MIDDLE row, not its first: row
+				// zero is the top border, so a label there reads as sitting
+				// above the band rather than naming it
 				gut := strings.Repeat(" ", gutterW)
-				if gutterW > 0 && rowsUsed == 0 && j == 0 {
+				if gutterW > 0 && rowsUsed == 0 && j == tileH/2 {
 					gut = fitCellPad(chromeDim.Render(" "+strings.ToUpper(b.label)), gutterW)
 				}
 				sb := strings.Builder{}
