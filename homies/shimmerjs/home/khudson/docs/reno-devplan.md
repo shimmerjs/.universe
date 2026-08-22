@@ -27,6 +27,16 @@ the transport is the USER'S design, given verbatim 2026-08-21: one button, ARM -
 
 section labels ride a left gutter, chosen by the user 2026-08-21 over stacked label rows. the pad is far wider than its buttons need and its rows are the scarce axis; five label rows out of twenty-one was what starved the transport and dropped the last band.
 
+## registered on glass 2026-08-21 (user, during the first live session)
+
+these came from the user while the recorder was running for the first time. all unbuilt.
+
+1. **level FX as +/- pairs, like a remote.** the user's framing: a button split in half, minus and plus, driving a LEVEL rather than a toggle. this settles the pixelate question the other way -- pixelate goes ON the pad after all, because khudson owns the level it commanded and can show it, which was the only objection. same shape for a **purple drank** colour effect (stock `color_filter_v2`, hue/saturation -- no plugin) and anything else with a magnitude.
+2. **jitter FX.** does not exist; the vocabulary is move/jump/show/hide/pixelate with smooth/bounce easing. a shake around the current placement, level-driven per item 1.
+3. **reno screenshots.** a still capture verb, not just video. obs-websocket `GetSourceScreenshot` does it over the socket -- it is what diagnosed the black-frame bug tonight (source screenshots were fine, the SCENE screenshot was 603 bytes, which is what localised it to the item transforms). worth having as a first-class verb for exactly that reason.
+4. **OBS lives in the wrong directory.** `modules/darwin/homebrew.nix:29` sets `caskArgs.appdir = "~/Applications"` globally, so OBS installed there. Apple rejects system-extension activation for any host app outside `/Applications` (`OSSystemExtensionErrorUnsupportedParentBundleLocation`, Code=3) and `~/Applications` has never counted -- it tightened further in Sequoia. so OBS's virtual camera extension can NEVER install here, which is why the vcam tile always reads off and why OBS's tray shows a virtual cam that is on but holds nothing. fix is a per-cask `args = { appdir = "/Applications"; }` for obs rather than moving every cask. costs a TCC re-grant, which the user has said is acceptable.
+5. **kitty splits rendering ~1px wide.** reported on glass, uninvestigated, may or may not be khudson's.
+
 ## queued, in order
 
 1. **what to do with the grid's slack.** band heights now depend only on the tiles in them (`padBand.ask`), never on how much grid is going spare -- so the pad does not reflow under a thumb when a header alarm appears. the cost is about four blank rows at the bottom on a 196x24 glass. options, in preference order: leave it (space reads as space), one blank row BETWEEN bands as separation, or give it to the transport. USER'S CALL after they see it. do not spend it on taller choice tiles: a band stretched into room it has nothing to put in gets a dead row inside every tile, which reads as a column of buttons whose readouts all failed. that was tried and reverted before it shipped.
