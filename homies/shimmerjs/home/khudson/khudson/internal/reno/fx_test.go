@@ -1,6 +1,7 @@
 package reno
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,8 +21,11 @@ func TestParseCamFXRoundTrip(t *testing.T) {
 		{"jump", "br"},
 		{"show"},
 		{"hide"},
-		{"pixelate", "on", "64"},
-		{"pixelate", "off", "48"},
+		{"pixelate", "on"},
+		{"pixelate", "0"},
+		{"pixelate", "5"},
+		{"purple", "off"},
+		{"purple", "2"},
 	} {
 		fx, err := ParseCamFX(args)
 		if err != nil {
@@ -67,9 +71,12 @@ func TestParseCamFXDefaultsAndErrors(t *testing.T) {
 		{[]string{"move", "big", "30s"}, "duration"},
 		{[]string{"jump", "nowhere"}, "cam target"},
 		{[]string{"hide", "now"}, "takes no arguments"},
-		{[]string{"pixelate", "maybe"}, "on or off"},
-		{[]string{"pixelate", "on", "2"}, "block width"},
-		{[]string{"pixelate", "on", "lots"}, "not a number"},
+		{[]string{"pixelate", "maybe"}, "not a number"},
+		{[]string{"pixelate", "on", "2"}, "wants a level"},
+		{[]string{"pixelate", "9"}, "wants 0..5"},
+		{[]string{"pixelate", "-1"}, "wants 0..5"},
+		{[]string{"purple"}, "wants a level"},
+		{[]string{"purple", "lots"}, "not a number"},
 	} {
 		_, err := ParseCamFX(tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -198,28 +205,44 @@ func TestJumpAndVisibilityPlans(t *testing.T) {
 	}
 }
 
-// Pixelate rides the stock scaling filter, created once and updated
-// after: a second CreateSourceFilter would fail the batch on the
-// duplicate.
+// Pixelate is a TWO-stage chain on the stock scaling filter: down to the
+// level's grid, then point-sampled back up. The upscale is what makes it
+// visible at all -- a lone downscale renders sharp, because OBS allows the
+// scale filter direct rendering straight into the destination rect.
+// Created once and updated after: a second CreateSourceFilter would fail
+// the batch on the duplicate.
 func TestPixelatePlan(t *testing.T) {
 	env := fxTestEnv()
 	env.FilterKinds = []string{"color_filter", FXFilterKind}
-	fx, _ := ParseCamFX([]string{"pixelate", "on", "64"})
+	fx, _ := ParseCamFX([]string{"pixelate", "3"})
 
 	plan, err := BuildCamFXPlan(fx, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Requests) != 2 || plan.Requests[0].Type != "CreateSourceFilter" {
+	// two creates, two enables
+	if len(plan.Requests) != 4 {
 		t.Fatalf("first pixelate = %+v", plan.Requests)
 	}
-	settings := plan.Requests[0].Data["filterSettings"].(map[string]any)
-	// 64 wide against the 384x216 pip box: 36 tall, point-sampled
-	if settings["resolution"] != "64x36" || settings["sampling"] != "point" {
-		t.Errorf("settings = %v", settings)
+	for i, want := range []string{FXPixelateDownName, FXPixelateUpName} {
+		if plan.Requests[i].Type != "CreateSourceFilter" ||
+			plan.Requests[i].Data["filterName"] != want {
+			t.Fatalf("stage %d = %+v", i, plan.Requests[i])
+		}
+	}
+	down := plan.Requests[0].Data["filterSettings"].(map[string]any)
+	// level 3 is 64 wide; against the 384x216 pip box that is 36 tall
+	if down["resolution"] != "64x36" || down["sampling"] != "point" {
+		t.Errorf("down = %v", down)
+	}
+	// and back up to the item's own box, so the source reports the size it
+	// renders at and a later apply's ScaleInner comes out at 1
+	up := plan.Requests[1].Data["filterSettings"].(map[string]any)
+	if up["resolution"] != "384x216" || up["sampling"] != "point" {
+		t.Errorf("up = %v", up)
 	}
 
-	env.Filters = []string{FXFilterName}
+	env.Filters = []string{FXPixelateDownName, FXPixelateUpName}
 	plan, err = BuildCamFXPlan(fx, env)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +256,7 @@ func TestPixelatePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Requests) != 1 || plan.Requests[0].Data["filterEnabled"] != false {
+	if len(plan.Requests) != 2 || plan.Requests[0].Data["filterEnabled"] != false {
 		t.Errorf("pixelate off = %+v", plan.Requests)
 	}
 	// nothing attached: nothing to send, and the summary says why
@@ -244,6 +267,44 @@ func TestPixelatePlan(t *testing.T) {
 	}
 	if len(plan.Requests) != 0 || !strings.Contains(plan.Summary, "no filter") {
 		t.Errorf("pixelate off with no filter = %+v %q", plan.Requests, plan.Summary)
+	}
+}
+
+// A chain whose stages sit in the wrong order pins itself back. Upstream
+// of the downscale the up stage does nothing, and nothing about the frame
+// says which way round they are.
+func TestPixelateRepairsStageOrder(t *testing.T) {
+	env := fxTestEnv()
+	env.FilterKinds = []string{FXFilterKind}
+	env.Filters = []string{FXPurpleFilterName, FXPixelateUpName, FXPixelateDownName}
+	fx, _ := ParseCamFX([]string{"pixelate", "2"})
+
+	plan, err := BuildCamFXPlan(fx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idx []any
+	for _, r := range plan.Requests {
+		if r.Type == "SetSourceFilterIndex" {
+			idx = append(idx, r.Data["filterName"], r.Data["filterIndex"])
+		}
+	}
+	// the pair sorts to the chain's tail, down before up, purple untouched
+	want := []any{FXPixelateDownName, 1, FXPixelateUpName, 2}
+	if !slices.Equal(idx, want) {
+		t.Errorf("order repair = %v, want %v", idx, want)
+	}
+
+	// already in order: no index writes at all
+	env.Filters = []string{FXPixelateDownName, FXPixelateUpName}
+	plan, err = BuildCamFXPlan(fx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range plan.Requests {
+		if r.Type == "SetSourceFilterIndex" {
+			t.Errorf("an ordered chain was reordered: %+v", r)
+		}
 	}
 }
 
@@ -262,6 +323,86 @@ func TestPixelateDegradesLoudly(t *testing.T) {
 		t.Errorf("missing kind err = %v", err)
 	}
 }
+
+// Purple drank is one colour multiply on the same create-once-update-after
+// path as pixelate, so the two level effects cannot drift apart.
+func TestPurplePlan(t *testing.T) {
+	env := fxTestEnv()
+	env.FilterKinds = []string{FXFilterKind, FXPurpleFilterKind}
+	fx, _ := ParseCamFX([]string{"purple", "5"})
+
+	plan, err := BuildCamFXPlan(fx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Requests) != 2 || plan.Requests[0].Type != "CreateSourceFilter" {
+		t.Fatalf("first purple = %+v", plan.Requests)
+	}
+	if got := plan.Requests[0].Data["filterName"]; got != FXPurpleFilterName {
+		t.Errorf("purple must own its own filter, got %v", got)
+	}
+	settings := plan.Requests[0].Data["filterSettings"].(map[string]any)
+	// level 5 is the full violet: R=170 G=0 B=255 packed 0xAABBGGRR
+	if settings["color_multiply"] != 0xFF00AA {
+		t.Errorf("full drank = %#v", settings)
+	}
+
+	env.Filters = []string{FXPurpleFilterName}
+	plan, err = BuildCamFXPlan(fx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Requests[0].Type != "SetSourceFilterSettings" {
+		t.Errorf("second purple = %+v", plan.Requests[0])
+	}
+
+	off, _ := ParseCamFX([]string{"purple", "0"})
+	plan, err = BuildCamFXPlan(off, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Requests) != 1 || plan.Requests[0].Data["filterEnabled"] != false ||
+		plan.Requests[0].Data["filterName"] != FXPurpleFilterName {
+		t.Errorf("purple off = %+v", plan.Requests)
+	}
+	// and a purple off leaves the PIXELATE filter alone: two effects, two
+	// filters, and neither disables the other's
+	env.Filters = []string{FXPixelateDownName, FXPixelateUpName}
+	plan, err = BuildCamFXPlan(off, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Requests) != 0 {
+		t.Errorf("purple off touched the pixelate filter: %+v", plan.Requests)
+	}
+}
+
+// Both level scales run monotonically from level 1 to the top: a step that
+// went the wrong way, or nowhere, is a remote button that does nothing.
+func TestLevelScalesAreMonotonic(t *testing.T) {
+	for level := 2; level <= FXMaxLevel; level++ {
+		if FXPixelateBlocks(level) >= FXPixelateBlocks(level-1) {
+			t.Errorf("pixelate level %d: %d blocks is not coarser than %d",
+				level, FXPixelateBlocks(level), FXPixelateBlocks(level-1))
+		}
+		// each step drops more green: the tint walks white -> violet
+		if green(FXPurpleTint(level)) >= green(FXPurpleTint(level-1)) {
+			t.Errorf("purple level %d: tint %#x is not deeper than %#x",
+				level, FXPurpleTint(level), FXPurpleTint(level-1))
+		}
+	}
+	// the pixelate grid stays a usable image size at both ends
+	if FXPixelateBlocks(1) != 256 || FXPixelateBlocks(FXMaxLevel) != 16 {
+		t.Errorf("pixelate range = %d..%d", FXPixelateBlocks(1), FXPixelateBlocks(FXMaxLevel))
+	}
+	// the LOW byte is red (live OBS 32.2), so a violet keeps red above green
+	top := FXPurpleTint(FXMaxLevel)
+	if top&0xFF != 170 || green(top) != 0 || top>>16&0xFF != 255 {
+		t.Errorf("violet packed wrong: %#x", top)
+	}
+}
+
+func green(tint int) int { return tint >> 8 & 0xFF }
 
 func TestEaseCurves(t *testing.T) {
 	for _, name := range FXEases {

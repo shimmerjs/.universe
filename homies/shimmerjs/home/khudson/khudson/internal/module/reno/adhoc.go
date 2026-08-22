@@ -35,10 +35,17 @@ const (
 	actOpenClip  = "reno:open-clip"
 	actFXMove    = "reno:fx-move" // + placement preset
 	actFXHide    = "reno:fx-hide"
+	actFXLevel   = "reno:fx-level" // + level fx kind + up|down
 )
 
 // cfgDefault is the menu value for "leave OBS alone" (clears the knob).
 const cfgDefault = "default"
+
+// The two directions a level tile walks its effect in.
+const (
+	levelUp   = "up"
+	levelDown = "down"
+)
 
 // applyWedge bounds an in-flight live apply. The latch clears on the
 // verb's note, but a ctl that never lands (bus restart mid-apply, a
@@ -141,6 +148,13 @@ const inventoryFile = "inventory.json"
 // selection mid-setup reads as the pad forgetting what you told it.
 const configFile = "config.json"
 
+// levelsFile is where the level effects' magnitudes are cached. The
+// filters they drive live in OBS's own scene collection and survive a bus
+// restart; the level does not read back out of them, so khudson has to
+// remember it or the tile comes back saying off over a camera that is
+// still purple.
+const levelsFile = "fxlevels.json"
+
 // readState loads a JSON cache from the state dir into v, reporting
 // whether it landed. A missing file is the ordinary cold case and stays
 // quiet; anything else is logged and treated as absent -- a corrupt
@@ -225,6 +239,49 @@ func (m *Mod) recoverConfig() {
 
 // saveConfigLocked persists the posture. Caller holds mu.
 func (m *Mod) saveConfigLocked() { m.writeState(configFile, m.desired) }
+
+// recoverFXLevels reloads the level effects' magnitudes. Like the config
+// this does NOT re-assert them into OBS: the filters are still whatever
+// the scene collection holds, and a bus start must not reach out and
+// change a camera nobody asked it to touch. Unknown kinds are dropped, so
+// a level for an effect that no longer exists cannot resurrect a tile.
+func (m *Mod) recoverFXLevels() {
+	var levels map[string]int
+	if !m.readState(levelsFile, &levels) {
+		return
+	}
+	for kind, level := range levels {
+		if !renocore.IsLevelFX(kind) || level <= 0 || level > renocore.FXMaxLevel {
+			continue
+		}
+		if m.fxLevels == nil {
+			m.fxLevels = map[string]int{}
+		}
+		m.fxLevels[kind] = level
+	}
+}
+
+// bumpFXLevelLocked walks one level effect a step and returns the effect
+// to fire. At either end of the range it returns false: the tile is dim
+// there and has nothing to send. Caller holds mu.
+func (m *Mod) bumpFXLevelLocked(kind string, up bool) (renocore.CamFX, bool) {
+	if !renocore.IsLevelFX(kind) {
+		return renocore.CamFX{}, false
+	}
+	next := m.fxLevels[kind] - 1
+	if up {
+		next = m.fxLevels[kind] + 1
+	}
+	if next < 0 || next > renocore.FXMaxLevel {
+		return renocore.CamFX{}, false
+	}
+	if m.fxLevels == nil {
+		m.fxLevels = map[string]int{}
+	}
+	m.fxLevels[kind] = next
+	m.writeState(levelsFile, m.fxLevels)
+	return renocore.CamFX{Kind: kind, Level: next}, true
+}
 
 // localDisplays is the CG enumeration seam (tests fake it), mirroring the
 // bus's. Enumeration is local, unrestricted, and cheap -- no OBS, no TCC.
@@ -367,6 +424,16 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 			return false, nil
 		}
 		return true, m.fxEffectsLocked(renocore.CamFX{Kind: renocore.FXHide})
+	}
+	if argv[0] == actFXLevel {
+		if len(argv) != 3 {
+			return false, nil
+		}
+		fx, ok := m.bumpFXLevelLocked(argv[1], argv[2] == levelUp)
+		if !ok {
+			return true, nil // end of the range: the tile is dim, nothing fires
+		}
+		return true, m.fxEffectsLocked(fx)
 	}
 	if len(argv) != 2 {
 		return false, nil
@@ -595,12 +662,37 @@ func (m *Mod) noteFXLocked(args []string) error {
 	switch args[0] {
 	case "ok":
 		m.fxNote, m.fxFail = detail, false
+		m.adoptFXLevelLocked(detail)
 	case "error":
 		m.fxNote, m.fxFail = detail, true
 	default:
 		return fmt.Errorf("reno fx-note: unknown outcome %q", args[0])
 	}
 	return nil
+}
+
+// adoptFXLevelLocked takes the level out of a landed effect's summary. A
+// tap already set it before emitting, so this is for the CLI seam: a
+// hand-run `khudson reno obs cam purple 4` moved the camera, and a pad
+// still reading off over it would be the lying tile the level was supposed
+// to avoid. Caller holds mu.
+func (m *Mod) adoptFXLevelLocked(summary string) {
+	// the plan appends its own parentheticals ("(no filter to disable)")
+	if i := strings.Index(summary, " ("); i > 0 {
+		summary = summary[:i]
+	}
+	fx, err := renocore.ParseCamFX(strings.Fields(summary))
+	if err != nil || !renocore.IsLevelFX(fx.Kind) {
+		return
+	}
+	if m.fxLevels == nil {
+		m.fxLevels = map[string]int{}
+	}
+	if m.fxLevels[fx.Kind] == fx.Level {
+		return
+	}
+	m.fxLevels[fx.Kind] = fx.Level
+	m.writeState(levelsFile, m.fxLevels)
 }
 
 // beginApplyLocked hands the apply verb the config to drive OBS to. The

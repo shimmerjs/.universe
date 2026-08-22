@@ -774,6 +774,105 @@ func TestFXHideTap(t *testing.T) {
 	}
 }
 
+// A level effect is a remote, not a toggle: each plus walks the level one
+// step and fires that level, and the tiles carry it back to glass.
+func TestFXLevelPairWalksTheLevel(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+
+	rows := m.recorderTiles()
+	up := padTile(rows, KeyFXLevel+":pixelate:up")
+	down := padTile(rows, KeyFXLevel+":pixelate:down")
+	if up == nil || down == nil {
+		t.Fatal("pixelate needs both halves of its pair")
+	}
+	if up.Value != "off" || down.Style != module.StyleDim {
+		t.Errorf("at rest: up=%+v down=%+v", up, down)
+	}
+
+	handled, effects := m.HandleActEffects([]string{actFXLevel, "pixelate", levelUp})
+	if !handled || len(effects) != 1 {
+		t.Fatalf("handled=%v effects=%+v", handled, effects)
+	}
+	want := []string{"/inst/khudson", "reno", "obs", "cam", "pixelate", "1"}
+	if !slices.Equal(effects[0].Argv, want) {
+		t.Errorf("argv = %v", effects[0].Argv)
+	}
+	if got := padTile(m.recorderTiles(), KeyFXLevel+":pixelate:up").Value; got != "1/5" {
+		t.Errorf("readout = %q", got)
+	}
+
+	// walk to the top: the plus stops firing and dims rather than
+	// pretending there is somewhere left to go
+	for range renocore.FXMaxLevel {
+		m.HandleActEffects([]string{actFXLevel, "pixelate", levelUp})
+	}
+	if lvl := m.fxLevels["pixelate"]; lvl != renocore.FXMaxLevel {
+		t.Fatalf("level = %d", lvl)
+	}
+	handled, effects = m.HandleActEffects([]string{actFXLevel, "pixelate", levelUp})
+	if !handled || len(effects) != 0 {
+		t.Errorf("past the top: handled=%v effects=%+v", handled, effects)
+	}
+	if padTile(m.recorderTiles(), KeyFXLevel+":pixelate:up").Style != module.StyleDim {
+		t.Error("a plus at the top must dim")
+	}
+
+	// down again, and the two effects keep their own levels
+	m.HandleActEffects([]string{actFXLevel, "pixelate", levelDown})
+	if lvl := m.fxLevels["pixelate"]; lvl != renocore.FXMaxLevel-1 {
+		t.Errorf("after a minus: %d", lvl)
+	}
+	if lvl := m.fxLevels["purple"]; lvl != 0 {
+		t.Errorf("purple moved with pixelate: %d", lvl)
+	}
+	if _, e := m.HandleActEffects([]string{actFXLevel, "wiggle", levelUp}); len(e) != 0 {
+		t.Errorf("unknown level fx fired %v", e)
+	}
+}
+
+// A hand-run cam verb moves the pad with it. One core: the CLI seam and
+// the tiles cannot drift, or the level a shell set would leave the pad
+// reading off over a purple camera.
+func TestFXNoteAdoptsTheCLIsLevel(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	ctl(t, m, "fx-note", "ok", "purple", "4")
+	if lvl := m.fxLevels["purple"]; lvl != 4 {
+		t.Errorf("adopted purple = %d", lvl)
+	}
+	// a parenthetical from the plan must not throw the parse off
+	ctl(t, m, "fx-note", "ok", "purple", "0", "(no", "filter", "to", "disable)")
+	if lvl := m.fxLevels["purple"]; lvl != 0 {
+		t.Errorf("adopted purple off = %d", lvl)
+	}
+	// and a non-level effect carries no level to adopt
+	m.fxLevels["pixelate"] = 2
+	ctl(t, m, "fx-note", "ok", "move", "big", "500ms", "smooth")
+	if lvl := m.fxLevels["pixelate"]; lvl != 2 {
+		t.Errorf("a move moved a level: %d", lvl)
+	}
+}
+
+// A level survives the bus: the filter stays in OBS's scene collection, so
+// a pad that came back saying off would be lying about a purple camera.
+func TestFXLevelsRecoverAcrossABus(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actFXLevel, "purple", levelUp})
+	m.HandleActEffects([]string{actFXLevel, "purple", levelUp})
+
+	next := &Mod{stateDir: m.stateDir, runsDir: m.runsDir, exe: m.exe, now: m.now}
+	next.recoverInventory()
+	next.recoverFXLevels()
+	if lvl := next.fxLevels["purple"]; lvl != 2 {
+		t.Errorf("recovered purple = %d", lvl)
+	}
+	if got := padTile(next.recorderTiles(), KeyFXLevel+":purple:up").Value; got != "2/5" {
+		t.Errorf("recovered readout = %q", got)
+	}
+}
+
 // The FX readout is its own: an fx note must never clear the config
 // reconciler's in-flight latch, or a queued config change would strand.
 func TestFXNoteIsNotTheApplyLatch(t *testing.T) {

@@ -30,10 +30,20 @@ const (
 	FXShow     = "show"
 	FXHide     = "hide"
 	FXPixelate = "pixelate"
+	FXPurple   = "purple"
 )
 
 // CamFXKinds is the vocabulary in error-message order.
-var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate}
+var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate, FXPurple}
+
+// LevelFXKinds are the magnitude effects: one integer, 0 for off, walked
+// by a plus/minus pair on the pad instead of flipped by a toggle. The
+// filter each one lands in reads back to nobody, so the level has to be
+// state khudson holds -- which is exactly why a tile may show it.
+var LevelFXKinds = []string{FXPixelate, FXPurple}
+
+// IsLevelFX reports whether kind is a magnitude effect.
+func IsLevelFX(kind string) bool { return slices.Contains(LevelFXKinds, kind) }
 
 // FXEases names the interpolation curves a move may take.
 var FXEases = []string{"linear", "smooth", "bounce"}
@@ -41,31 +51,60 @@ var FXEases = []string{"linear", "smooth", "bounce"}
 // FX defaults and bounds. The duration cap keeps a batch well inside the
 // verb watchdog; the sample cap keeps the request count sane on a long
 // path -- past it the samples stride over more frames each instead of
-// multiplying. Blocks is the pixelate grid's width in pixels.
+// multiplying.
 const (
-	FXDefaultDur    = 500 * time.Millisecond
-	FXDefaultEase   = "smooth"
-	FXDefaultBlocks = 48
-	FXMaxDur        = 10 * time.Second
-	FXMaxSamples    = 90
-	FXMinBlocks     = 8
-	FXMaxBlocks     = 480
+	FXDefaultDur  = 500 * time.Millisecond
+	FXDefaultEase = "smooth"
+	FXMaxDur      = 10 * time.Second
+	FXMaxSamples  = 90
 	// FXFallbackFPS stands in when OBS reports no frame rate: every
 	// sleep is denominated in frames, so a wrong divisor only mis-paces
 	// a move, it never breaks one.
 	FXFallbackFPS = 60.0
+	// FXMaxLevel is the top of every level effect's range and
+	// FXDefaultLevel where a bare "on" lands -- mid-scale, so the first
+	// tap is visible without being the whole effect.
+	FXMaxLevel     = 5
+	FXDefaultLevel = 3
 )
 
-// FXFilterKind is the stock filter the pixelate FX drives: OBS's own
-// Scaling/Aspect Ratio filter, downscaling the camera to a handful of
-// blocks with point sampling. The design's composite-blur path is NOT
-// built -- it is a hand-installed plugin under a self-updating cask, and
-// a settings schema nobody here can verify is worse than an honest
-// refusal -- so pixelate fails loudly when even this kind is absent.
-const FXFilterKind = "scale_filter"
+// The stock filters the level effects drive, and the khudson-owned filter
+// names they live under on reno-cam. Both settings schemas are confirmed
+// against live OBS 32.2 (GetSourceFilterDefaultSettings): scale_filter
+// takes resolution/sampling/undistort, color_filter_v2 takes hue_shift,
+// saturation, brightness, contrast, gamma, opacity, color_multiply and
+// color_add.
+//
+// The design's composite-blur path is NOT built -- it is a hand-installed
+// plugin under a self-updating cask, and a settings schema nobody here can
+// verify is worse than an honest refusal -- so a level effect fails loudly
+// when its stock kind is absent.
+const (
+	FXFilterKind       = "scale_filter"
+	FXPixelateDownName = "reno-pixelate"
+	FXPixelateUpName   = "reno-pixelate-up"
 
-// FXFilterName is the khudson-owned filter on the reno-cam input.
-const FXFilterName = "reno-pixelate"
+	FXPurpleFilterKind = "color_filter_v2"
+	FXPurpleFilterName = "reno-purple"
+)
+
+// FXPixelateBlocks is the pixelate grid's width in pixels at a level: a
+// halving per step, from a mosaic you have to look for to one nothing
+// survives.
+func FXPixelateBlocks(level int) int { return 256 >> (level - 1) }
+
+// FXPurpleTint is the color_multiply value at a level: white lerped
+// toward violet, so level 1 is a wash and level 5 the whole drank.
+//
+// OBS packs a color setting as 0xAABBGGRR -- the LOW byte is RED, which is
+// backwards from how the number reads. Verified against live OBS 32.2:
+// color_multiply 0x0000FF on a webcam renders it red, not blue.
+func FXPurpleTint(level int) int {
+	const violetR, violetG, violetB = 170, 0, 255
+	f := float64(level) / float64(FXMaxLevel)
+	lerp := func(to int) int { return int(math.Round(255 + (float64(to)-255)*f)) }
+	return lerp(violetB)<<16 | lerp(violetG)<<8 | lerp(violetR)
+}
 
 // CamFX is one effect invocation: the parsed form of a `cam ...` script
 // command, a `khudson reno obs cam ...` argv, and a pad tile's act.
@@ -76,10 +115,12 @@ type CamFX struct {
 	// Dur and Ease shape a move's path.
 	Dur  time.Duration `json:"dur,omitempty"`
 	Ease string        `json:"ease,omitempty"`
-	// On and Blocks are the pixelate knobs.
-	On     bool `json:"on,omitempty"`
-	Blocks int  `json:"blocks,omitempty"`
+	// Level is the magnitude of a level effect; 0 turns it off.
+	Level int `json:"level,omitempty"`
 }
+
+// On reports whether a level effect is asking for anything at all.
+func (f CamFX) On() bool { return f.Level > 0 }
 
 // FXPlacements is the placement vocabulary an FX may target: the webcam
 // presets minus "off", which is a visibility state (cam hide), not a
@@ -136,24 +177,21 @@ func ParseCamFX(args []string) (CamFX, error) {
 			}
 			fx.Dur = d
 		}
-	case FXPixelate:
-		if len(rest) < 1 || len(rest) > 2 {
-			return CamFX{}, errors.New("cam pixelate wants on|off and an optional block width")
+	case FXPixelate, FXPurple:
+		if len(rest) != 1 {
+			return CamFX{}, fmt.Errorf("cam %s wants a level 0..%d (or on|off)", fx.Kind, FXMaxLevel)
 		}
 		switch rest[0] {
 		case "on":
-			fx.On = true
+			fx.Level = FXDefaultLevel
 		case "off":
+			fx.Level = 0
 		default:
-			return CamFX{}, fmt.Errorf("cam pixelate wants on or off, got %q", rest[0])
-		}
-		fx.Blocks = FXDefaultBlocks
-		if len(rest) == 2 {
-			n, err := strconv.Atoi(rest[1])
+			n, err := strconv.Atoi(rest[0])
 			if err != nil {
-				return CamFX{}, fmt.Errorf("cam pixelate block width %q is not a number", rest[1])
+				return CamFX{}, fmt.Errorf("cam %s level %q is not a number", fx.Kind, rest[0])
 			}
-			fx.Blocks = n
+			fx.Level = n
 		}
 	default:
 		return CamFX{}, fmt.Errorf("cam %q wants one of %s", fx.Kind, strings.Join(CamFXKinds, "|"))
@@ -179,9 +217,9 @@ func CheckCamFX(fx CamFX) error {
 		if !slices.Contains(FXEases, fx.Ease) {
 			return fmt.Errorf("cam move ease %q wants one of %s", fx.Ease, strings.Join(FXEases, "|"))
 		}
-	case FXPixelate:
-		if fx.Blocks < FXMinBlocks || fx.Blocks > FXMaxBlocks {
-			return fmt.Errorf("cam pixelate block width %d wants %d..%d", fx.Blocks, FXMinBlocks, FXMaxBlocks)
+	case FXPixelate, FXPurple:
+		if fx.Level < 0 || fx.Level > FXMaxLevel {
+			return fmt.Errorf("cam %s level %d wants 0..%d", fx.Kind, fx.Level, FXMaxLevel)
 		}
 	default:
 		return fmt.Errorf("cam %q wants one of %s", fx.Kind, strings.Join(CamFXKinds, "|"))
@@ -198,12 +236,8 @@ func (f CamFX) Args() []string {
 		return []string{FXMove, f.Preset, f.Dur.String(), f.Ease}
 	case FXJump:
 		return []string{FXJump, f.Preset}
-	case FXPixelate:
-		state := "off"
-		if f.On {
-			state = "on"
-		}
-		return []string{FXPixelate, state, strconv.Itoa(f.Blocks)}
+	case FXPixelate, FXPurple:
+		return []string{f.Kind, strconv.Itoa(f.Level)}
 	}
 	return []string{f.Kind}
 }
@@ -266,8 +300,8 @@ func BuildCamFXPlan(fx CamFX, env FXEnv) (*FXPlan, error) {
 		if err := addMove(p, fx, env); err != nil {
 			return nil, err
 		}
-	case FXPixelate:
-		if err := addPixelate(p, fx, env); err != nil {
+	case FXPixelate, FXPurple:
+		if err := addLevel(p, fx, env); err != nil {
 			return nil, err
 		}
 	}
@@ -299,53 +333,187 @@ func addMove(p *FXPlan, fx CamFX, env FXEnv) error {
 	return nil
 }
 
-// addPixelate drives the stock scaling filter. The capability probe is
-// the only guard between "pixelate" and a request OBS does not
-// understand, so an unadvertised kind refuses by name instead of failing
-// mid-batch.
-func addPixelate(p *FXPlan, fx CamFX, env FXEnv) error {
-	if !fx.On {
-		if !slices.Contains(env.Filters, FXFilterName) {
-			p.Summary += " (no filter to disable)"
-			return nil
+// levelStage is one khudson-owned filter in a level effect's chain: the
+// name it occupies on reno-cam, the stock kind it needs OBS to advertise,
+// and its settings at this level. Purple is one stage, pixelate is two.
+type levelStage struct {
+	Name     string
+	Kind     string
+	Settings map[string]any
+}
+
+// levelStages is the filter chain a level effect wants, in the order OBS
+// must run it (index 0 first).
+func levelStages(fx CamFX, env FXEnv) []levelStage {
+	switch fx.Kind {
+	case FXPixelate:
+		return pixelateStages(fx, env)
+	case FXPurple:
+		return []levelStage{{
+			Name: FXPurpleFilterName, Kind: FXPurpleFilterKind,
+			Settings: map[string]any{"color_multiply": FXPurpleTint(fx.Level)},
+		}}
+	}
+	return nil
+}
+
+// levelStageNames is the chain's names alone, for the disable path -- which
+// needs them without a level to compute settings from.
+func levelStageNames(kind string) []string {
+	switch kind {
+	case FXPixelate:
+		return []string{FXPixelateDownName, FXPixelateUpName}
+	case FXPurple:
+		return []string{FXPurpleFilterName}
+	}
+	return nil
+}
+
+// addLevel drives a level effect's filter chain. The capability probe is
+// the only guard between the effect and a request OBS does not understand,
+// so an unadvertised kind refuses by name instead of failing mid-batch.
+//
+// Level 0 disables the stages that are there and refuses to invent the
+// ones that are not: turning off an effect that was never on has nothing
+// to send. It leaves the settings alone, so the next level re-enables into
+// a chain that is already shaped right.
+func addLevel(p *FXPlan, fx CamFX, env FXEnv) error {
+	if !fx.On() {
+		var off int
+		for _, name := range levelStageNames(fx.Kind) {
+			if slices.Contains(env.Filters, name) {
+				p.add(filterEnabledReq(env, name, false))
+				off++
+			}
 		}
-		p.add(filterEnabledReq(env, false))
+		if off == 0 {
+			p.Summary += " (no filter to disable)"
+		}
 		return nil
 	}
-	if len(env.FilterKinds) == 0 {
-		return fmt.Errorf("cam pixelate: this obs advertises no filter kinds, so %q cannot be confirmed", FXFilterKind)
+	stages := levelStages(fx, env)
+	if len(stages) == 0 {
+		return fmt.Errorf("cam %s: no level filter", fx.Kind)
 	}
-	if !slices.Contains(env.FilterKinds, FXFilterKind) {
-		return fmt.Errorf("cam pixelate: this obs has no %q filter kind (%d kinds advertised)", FXFilterKind, len(env.FilterKinds))
+	for _, s := range stages {
+		if len(env.FilterKinds) == 0 {
+			return fmt.Errorf("cam %s: this obs advertises no filter kinds, so %q cannot be confirmed", fx.Kind, s.Kind)
+		}
+		if !slices.Contains(env.FilterKinds, s.Kind) {
+			return fmt.Errorf("cam %s: this obs has no %q filter kind (%d kinds advertised)", fx.Kind, s.Kind, len(env.FilterKinds))
+		}
 	}
-	// the grid follows the item's aspect when the pose is known, the
-	// canvas otherwise -- the camera's own source dimensions never reach
-	// this plan
-	aspectW, aspectH := env.CanvasW, env.CanvasH
-	if env.From.BoundsW > 0 && env.From.BoundsH > 0 {
-		aspectW, aspectH = env.From.BoundsW, env.From.BoundsH
+	// Created in chain order, because CreateSourceFilter appends: a chain
+	// whose stages arrived out of order gets pinned back below.
+	for _, s := range stages {
+		if slices.Contains(env.Filters, s.Name) {
+			p.add(FXRequest{Type: "SetSourceFilterSettings", Data: map[string]any{
+				"sourceName": env.Source, "filterName": s.Name,
+				"filterSettings": s.Settings, "overlay": true,
+			}})
+		} else {
+			p.add(FXRequest{Type: "CreateSourceFilter", Data: map[string]any{
+				"sourceName": env.Source, "filterName": s.Name,
+				"filterKind": s.Kind, "filterSettings": s.Settings,
+			}})
+		}
 	}
-	h := 1
-	if aspectW > 0 {
-		h = max(int(math.Round(float64(fx.Blocks)*aspectH/aspectW)), 1)
+	addStageOrder(p, stages, env)
+	for _, s := range stages {
+		p.add(filterEnabledReq(env, s.Name, true))
 	}
-	settings := map[string]any{
-		"resolution": fmt.Sprintf("%dx%d", fx.Blocks, h),
-		"sampling":   "point",
-	}
-	if slices.Contains(env.Filters, FXFilterName) {
-		p.add(FXRequest{Type: "SetSourceFilterSettings", Data: map[string]any{
-			"sourceName": env.Source, "filterName": FXFilterName,
-			"filterSettings": settings, "overlay": true,
-		}})
-	} else {
-		p.add(FXRequest{Type: "CreateSourceFilter", Data: map[string]any{
-			"sourceName": env.Source, "filterName": FXFilterName,
-			"filterKind": FXFilterKind, "filterSettings": settings,
-		}})
-	}
-	p.add(filterEnabledReq(env, true))
 	return nil
+}
+
+// addStageOrder repairs a chain whose stages sit in the wrong order on the
+// source. It matters for pixelate and nothing else: the up stage exists to
+// force the intermediate texture the down stage produced, so upstream of
+// the downscale it does nothing at all.
+func addStageOrder(p *FXPlan, stages []levelStage, env FXEnv) {
+	if len(stages) < 2 {
+		return
+	}
+	want := make([]string, 0, len(stages))
+	for _, s := range stages {
+		want = append(want, s.Name)
+	}
+	// the order the chain WILL have once the creates above land: they
+	// append, so a stage that was missing arrives at the tail
+	after := slices.Clone(env.Filters)
+	for _, name := range want {
+		if !slices.Contains(after, name) {
+			after = append(after, name)
+		}
+	}
+	if slices.Equal(filterOrder(after, want), want) {
+		return
+	}
+	base := len(after) - len(want) // stages sort to the chain's tail
+	for i, name := range want {
+		p.add(FXRequest{Type: "SetSourceFilterIndex", Data: map[string]any{
+			"sourceName": env.Source, "filterName": name, "filterIndex": base + i,
+		}})
+	}
+}
+
+// filterOrder is order's entries that appear in keep, order preserved.
+func filterOrder(order, keep []string) []string {
+	out := make([]string, 0, len(keep))
+	for _, name := range order {
+		if slices.Contains(keep, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// pixelateStages is the pixelate chain: downscale to the level's grid,
+// then scale back up, both point-sampled.
+//
+// The upscale is not decoration. A LONE downscale filter is a visual no-op
+// (glass, 2026-08-22): it reports the small size, so the item's transform
+// math sees 16x9, but obs-filters renders the scale filter with
+// OBS_ALLOW_DIRECT_RENDERING, so the parent goes straight to the
+// destination rect at full resolution and the frame comes out sharp. A
+// second stage forces the intermediate texture, and point-sampling back up
+// is what turns it into blocks. It also restores the source's reported
+// size, which is what keeps a later apply's scale honest.
+func pixelateStages(fx CamFX, env FXEnv) []levelStage {
+	w, h := env.CanvasW, env.CanvasH
+	if env.From.BoundsW > 0 && env.From.BoundsH > 0 {
+		// the item's own box: the source then reports exactly the size it
+		// renders at, so ScaleInner comes out at 1
+		w, h = env.From.BoundsW, env.From.BoundsH
+	}
+	blocks := FXPixelateBlocks(fx.Level)
+	rows := 1
+	if w > 0 {
+		rows = max(int(math.Round(float64(blocks)*h/w)), 1)
+	}
+	return []levelStage{
+		{
+			Name: FXPixelateDownName, Kind: FXFilterKind,
+			Settings: map[string]any{
+				"resolution": fmt.Sprintf("%dx%d", blocks, rows),
+				"sampling":   "point",
+			},
+		},
+		{
+			Name: FXPixelateUpName, Kind: FXFilterKind,
+			Settings: map[string]any{
+				"resolution": fmt.Sprintf("%dx%d", int(w), int(h)),
+				"sampling":   "point",
+			},
+		},
+	}
+}
+
+// purpleSettings multiplies the camera by a violet. Multiply and not
+// hue_shift: a hue rotation moves every colour in the frame and the
+// result depends on what was in it, where a tint is the same wash on any
+// source, which is what a level is supposed to promise.
+func purpleSettings(fx CamFX, _ FXEnv) map[string]any {
+	return map[string]any{"color_multiply": FXPurpleTint(fx.Level)}
 }
 
 func enableReq(env FXEnv, on bool) FXRequest {
@@ -367,9 +535,9 @@ func sleepReq(frames int) FXRequest {
 	return FXRequest{Type: "Sleep", Data: map[string]any{"sleepFrames": frames}}
 }
 
-func filterEnabledReq(env FXEnv, on bool) FXRequest {
+func filterEnabledReq(env FXEnv, filter string, on bool) FXRequest {
 	return FXRequest{Type: "SetSourceFilterEnabled", Data: map[string]any{
-		"sourceName": env.Source, "filterName": FXFilterName, "filterEnabled": on,
+		"sourceName": env.Source, "filterName": filter, "filterEnabled": on,
 	}}
 }
 

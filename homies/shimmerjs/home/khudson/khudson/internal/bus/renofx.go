@@ -66,7 +66,7 @@ func (v *RenoVerbs) CamFX(fx renocore.CamFX, dial func() (ObsTransport, error), 
 
 // fxEnv gathers exactly what the effect needs and nothing more: the
 // canvas and frame rate always, the current pose only for a move, the
-// filter probe only for a pixelate.
+// filter probe only for a level effect.
 func fxEnv(obs ObsTransport, fx renocore.CamFX) (renocore.FXEnv, error) {
 	env := renocore.FXEnv{Scene: renocore.SceneName, Source: renocore.CamInput}
 	var err error
@@ -79,12 +79,14 @@ func fxEnv(obs ObsTransport, fx renocore.CamFX) (renocore.FXEnv, error) {
 		return env, fmt.Errorf("no %s item in the %s scene -- set a webcam preset first (khudson reno config --webcam br): %w",
 			env.Source, env.Scene, err)
 	}
-	if fx.Kind == renocore.FXMove {
+	// a move interpolates out of the current pose; pixelate sizes its grid
+	// and its upscale against the item's box, so both want the transform
+	if fx.Kind == renocore.FXMove || renocore.IsLevelFX(fx.Kind) {
 		if env.From, err = obs.ItemTransform(env.Scene, env.ItemID); err != nil {
 			return env, fmt.Errorf("current transform: %w", err)
 		}
 	}
-	if fx.Kind == renocore.FXPixelate {
+	if renocore.IsLevelFX(fx.Kind) {
 		if env.FilterKinds, err = obs.FilterKinds(); err != nil {
 			return env, fmt.Errorf("filter kinds: %w", err)
 		}

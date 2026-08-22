@@ -102,6 +102,12 @@ type Mod struct {
 	fxGen  uint64
 	fxNote string
 	fxFail bool
+	// fxLevels holds each level effect's magnitude, keyed by FX kind. It
+	// is the only record of it anywhere: the filters these drive report
+	// their settings but never which step of khudson's scale produced
+	// them, so this map IS the level, which is what earns the tile the
+	// right to show one.
+	fxLevels map[string]int
 
 	// standby is phase one of recording: OBS up, scene matching. It gets
 	// its own latch and readout because the whole point of splitting the
@@ -162,6 +168,7 @@ func New() *Mod {
 	m.recover()
 	m.recoverInventory()
 	m.recoverConfig()
+	m.recoverFXLevels()
 	renocore.SweepRuns(m.runsDir, m.now())
 	return m
 }

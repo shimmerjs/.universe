@@ -34,6 +34,7 @@ const (
 	KeyCfgWebcam   = "cfg:webcam"
 	KeyFXMove      = "fx:move"
 	KeyFXHide      = "fx:hide"
+	KeyFXLevel     = "fx:level"
 	KeyCfgScript   = "cfg:script"
 	KeyNotes       = "notes"
 	KeyHead        = "head"
@@ -428,17 +429,54 @@ func (m *Mod) recorderTiles() []module.Row {
 
 	// The FX band is the same placements arrived at by an eased path
 	// instead of a jump cut, so its tiles light off the same selection --
-	// a move that landed IS the current placement. Pixelate stays off the
-	// pad deliberately: its state lives in an OBS filter nothing here can
-	// read back, and a toggle that cannot show its own state is the lying
-	// button this pad refuses to draw.
+	// a move that landed IS the current placement.
 	for _, p := range renocore.FXPlacements() {
 		tiles = append(tiles, m.choiceTile(secFX, KeyFXMove+":"+p, "slide "+p,
 			glyphCam, actFXMove, p, m.desired.Webcam == p))
 	}
-	return append(tiles, module.Row{Kind: module.RowPad, Section: secFX,
+	tiles = append(tiles, module.Row{Kind: module.RowPad, Section: secFX,
 		Key: KeyFXHide, Glyph: glyphCamOff, Text: "hide",
 		Act: []string{actFXHide}})
+
+	// The level effects each get a plus and a minus, like a remote. They
+	// are allowed on the pad where a toggle was not: the level is khudson's
+	// own number rather than a filter setting nothing can read back, so the
+	// tile showing it is showing the truth.
+	for _, kind := range renocore.LevelFXKinds {
+		tiles = append(tiles,
+			m.levelTile(kind, levelUp), m.levelTile(kind, levelDown))
+	}
+	return tiles
+}
+
+// levelTile is one half of a level effect's remote. The end of the range
+// dims: a tile that cannot move the level any further must not look like
+// one that can.
+func (m *Mod) levelTile(kind, dir string) module.Row {
+	level := m.fxLevels[kind]
+	sign, stuck := "+", level >= renocore.FXMaxLevel
+	if dir == levelDown {
+		sign, stuck = "-", level <= 0
+	}
+	t := module.Row{Kind: module.RowPad, Section: secFX,
+		Key: KeyFXLevel + ":" + kind + ":" + dir, Glyph: glyphCam,
+		Text: kind + " " + sign, Value: levelValue(level),
+		Act: []string{actFXLevel, kind, dir}}
+	switch {
+	case stuck:
+		t.Style = module.StyleDim
+	case level > 0:
+		t.Style = module.StyleAccent
+	}
+	return t
+}
+
+// levelValue is the readout both halves of a pair carry.
+func levelValue(level int) string {
+	if level <= 0 {
+		return "off"
+	}
+	return fmt.Sprintf("%d/%d", level, renocore.FXMaxLevel)
 }
 
 // shortSel labels a display selector that has no name left to show: the
