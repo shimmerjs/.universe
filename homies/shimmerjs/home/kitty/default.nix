@@ -89,7 +89,10 @@ in
       "cmd+n" = "new_os_window";
       "cmd+q" = "quit";
       # Splits / "kitty windows"
-      "cmd+enter" = "new_window_with_cwd";
+      # the dynamic split is the one reached for constantly, so it takes the
+      # cheap chord; a plain new window is the rarer act and can afford meh
+      "cmd+enter" = "launch --location=split --cwd=current"; # axis picked from the current split
+      "ctrl+shift+enter" = "new_window_with_cwd";
       "cmd+]" = "next_window";
       "cmd+[" = "previous_window";
       "cmd+w" = "close_window";
@@ -115,8 +118,12 @@ in
       # neighboring_window {up,left,right,down} (switch focus to the neighboring window in the indicated direction)
       "kitty_mod+enter" = "launch --location=hsplit --cwd=current"; # One above the other
       "kitty_mod+cmd+enter" = "launch --location=vsplit --cwd=current"; # One beside the other
-      "ctrl+shift+enter" = "launch --location=split --cwd=current"; # Dynamic based on the current split
       "kitty_mod+r" = "layout_action rotate"; # Rotate orientation of active split
+      # rotate 180 swaps the pair in place rather than flipping its axis --
+      # a different act, so a different chord. kitty has no `hyper` alias
+      # (mod_map knows ctrl/shift/alt/super/kitty_mod only), but kitty_mod is
+      # meh, so kitty_mod+cmd IS hyper here.
+      "kitty_mod+cmd+r" = "layout_action rotate 180"; # Swap the two panes
       "kitty_mod+e" = "layout_action equalize"; # Even out every split along each axis
 
       # Tab management
