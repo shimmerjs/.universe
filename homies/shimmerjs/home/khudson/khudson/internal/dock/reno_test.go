@@ -389,6 +389,44 @@ func TestRenoRecorderPadKeySizeIgnoresTileContent(t *testing.T) {
 	}
 }
 
+// The pad's loudest alarm has its longest value, and a readout that does
+// not survive the tile is the pad lying by omission. It is the one state
+// worth checking whole: everything else here is a device name or an age.
+func TestRenoRecorderPadRendersTheLongestAlarmValue(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	d := padAlarmedRows()
+	d.Rows = append(d.Rows, module.Row{Kind: module.RowPad, Section: "transport",
+		Key: "probe", Glyph: "*", Text: "RE-PROBE", Value: "displays moved",
+		Style: module.StyleWarn, Act: []string{"act", "probe"}})
+	m.widgetData["reno-presenter"] = d
+	m.invalidateHome("reno-presenter")
+
+	body := ansi.Strip(m.View().Content)
+	if !strings.Contains(body, "displays moved") {
+		t.Errorf("the alarm's value did not reach the glass:\n%s", body)
+	}
+}
+
+// A long label crops; it never costs the tile its icon. The band reads as a
+// strip of icons, and one tile losing its own because its text ran long
+// reads as that tile being a different kind of thing.
+func TestRenoRecorderPadKeepsTheGlyphOnALongLabel(t *testing.T) {
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	d := padAlarmedRows()
+	d.Rows = append(d.Rows, module.Row{Kind: module.RowPad, Section: "screens",
+		Key: "wide", Glyph: "@", Text: "display 1 3840x2160",
+		Act: []string{"act", "wide"}})
+	m.widgetData["reno-presenter"] = d
+	m.invalidateHome("reno-presenter")
+
+	body := ansi.Strip(m.View().Content)
+	if !strings.Contains(body, "@") {
+		t.Errorf("a long label dropped the tile's glyph:\n%s", body)
+	}
+}
+
 // The transport carries weight: it asks for height with MinHeight and gets it
 // before the choice bands divide the remainder, which is what buys its glyph a
 // line of its own -- a record circle you hit without aiming. A choice tile

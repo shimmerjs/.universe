@@ -285,34 +285,51 @@ func padTile(t module.Row, w, h int, border, label lipgloss.Style) []string {
 	}
 	inner, interior := w-2, h-2
 	text := t.Text
+	// What the tile is owed: a label, a state line under it when it has a
+	// value, and the glyph on a line of its own only if both still fit. The
+	// value is state the pad is REPORTING; the glyph is decoration over a
+	// label that already names the button. So when the interior fits two of
+	// the three, the glyph joins the label and the value keeps its line --
+	// the pad's loudest alarm is also the one with the longest value, and it
+	// was the readout that vanished.
+	want := 1
+	if t.Value != "" {
+		want++
+	}
 	var body []string
 	switch {
 	case t.Glyph == "":
-	case interior >= 3:
+	case interior > want:
 		// Room for the icon to BE the button rather than prefix it: glyph on
 		// its own line, name under it, state under that. A band earns this by
 		// asking for the height (MinHeight), which on the recorder is the
 		// transport's -- a record circle you aim a thumb at.
 		body = append(body, label.Bold(true).Render(fitCell(t.Glyph, inner)))
-	case lipgloss.Width(text)+2 <= inner:
-		text = t.Glyph + " " + text
+	case inner > 2:
+		// Crop the label, never drop the icon. A band reads as a strip of
+		// icons, and the one tile whose generated label ran a cell long
+		// losing its own reads as a different kind of button.
+		text = t.Glyph + " " + fitCell(text, inner-2)
 	}
 	body = append(body, label.Bold(true).Render(fitCell(text, inner)))
 	if t.Value != "" {
-		switch {
-		case interior > len(body):
+		if interior > len(body) {
 			body = append(body, chromeDim.Render(fitCell(t.Value, inner)))
-		case lipgloss.Width(text)+1+lipgloss.Width(t.Value) <= inner:
-			// A crowded pad -- five bands over this glass -- leaves exactly
-			// one interior line per tile, and a value that silently never
-			// renders is a readout lying by omission: every state this pad
-			// reports (standing by, the device list's age, a clip's name)
-			// lived in Value and simply did not draw. Fold it onto the label
-			// when both fit, pushed right so the band still scans as a
-			// column of labels.
-			gap := inner - lipgloss.Width(text) - lipgloss.Width(t.Value)
-			body[0] = label.Bold(true).Render(text) +
-				strings.Repeat(" ", gap) + chromeDim.Render(t.Value)
+		} else {
+			// One interior line for both, so fold the value onto the label,
+			// pushed right so the band still scans as a column of labels. A
+			// value that silently never renders is a readout lying by
+			// omission: every state this pad reports (standing by, the device
+			// list's age, a clip's name) lives in Value, so the label is what
+			// gives way. A value with no room left for any label at all is
+			// still dropped -- a tile crushed down to a state with no name on
+			// it is not a button any more.
+			if keep := inner - 1 - lipgloss.Width(t.Value); keep >= 1 {
+				lab := fitCell(text, keep)
+				gap := inner - lipgloss.Width(lab) - lipgloss.Width(t.Value)
+				body[len(body)-1] = label.Bold(true).Render(lab) +
+					strings.Repeat(" ", gap) + chromeDim.Render(t.Value)
+			}
 		}
 	}
 	// Width/Height are the OUTER extent here (borderedTile's convention),
