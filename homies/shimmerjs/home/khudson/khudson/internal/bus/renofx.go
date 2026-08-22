@@ -79,11 +79,18 @@ func fxEnv(obs ObsTransport, fx renocore.CamFX) (renocore.FXEnv, error) {
 		return env, fmt.Errorf("no %s item in the %s scene -- set a webcam preset first (khudson reno config --webcam br): %w",
 			env.Source, env.Scene, err)
 	}
-	// a move interpolates out of the current pose; pixelate sizes its grid
-	// and its upscale against the item's box, so both want the transform
-	if fx.Kind == renocore.FXMove || renocore.IsLevelFX(fx.Kind) {
+	// a move interpolates out of the current pose and a jitter shakes around
+	// it, so both want the transform
+	if fx.Kind == renocore.FXMove || fx.Kind == renocore.FXJitter {
 		if env.From, err = obs.ItemTransform(env.Scene, env.ItemID); err != nil {
 			return env, fmt.Errorf("current transform: %w", err)
+		}
+	}
+	// pixelate scales down and back up, and the size it goes back to has to
+	// be the one it was handed or the item's scale stops matching its source
+	if fx.Kind == renocore.FXPixelate {
+		if env.SourceW, env.SourceH, err = obs.ItemSourceSize(env.Scene, env.ItemID); err != nil {
+			return env, fmt.Errorf("source size: %w", err)
 		}
 	}
 	if renocore.IsFilterFX(fx.Kind) {

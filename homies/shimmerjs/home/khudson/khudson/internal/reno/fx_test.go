@@ -13,6 +13,9 @@ func fxTestEnv() FXEnv {
 		CanvasW: 1920, CanvasH: 1080, FPS: 60,
 		Scene: SceneName, Source: CamInput, ItemID: 7,
 		From: Transform{X: 24, Y: 24, BoundsW: 384, BoundsH: 216},
+		// deliberately none of the canvas, the bounds, or a multiple of
+		// either: pixelate must scale back to the SOURCE
+		SourceW: 1280, SourceH: 720,
 	}
 }
 
@@ -232,14 +235,15 @@ func TestPixelatePlan(t *testing.T) {
 		}
 	}
 	down := plan.Requests[0].Data["filterSettings"].(map[string]any)
-	// level 3 is 64 wide; against the 384x216 pip box that is 36 tall
+	// level 3 is 64 wide; against the 1280x720 source that is 36 tall
 	if down["resolution"] != "64x36" || down["sampling"] != "point" {
 		t.Errorf("down = %v", down)
 	}
-	// and back up to the item's own box, so the source reports the size it
-	// renders at and a later apply's ScaleInner comes out at 1
+	// and back up to the SOURCE's own size. Any other size and the item is
+	// left holding a scale derived for a source it no longer has -- which
+	// bites hardest when the level drops to 0 and the filters switch off.
 	up := plan.Requests[1].Data["filterSettings"].(map[string]any)
-	if up["resolution"] != "384x216" || up["sampling"] != "point" {
+	if up["resolution"] != "1280x720" || up["sampling"] != "point" {
 		t.Errorf("up = %v", up)
 	}
 
@@ -322,6 +326,19 @@ func TestPixelateDegradesLoudly(t *testing.T) {
 	_, err := BuildCamFXPlan(fx, env)
 	if err == nil || !strings.Contains(err.Error(), FXFilterKind) {
 		t.Errorf("missing kind err = %v", err)
+	}
+	// and a cam with no source size refuses too: there is no size to scale
+	// back up to, and inventing one leaves the item's scale wrong
+	env.FilterKinds = []string{FXFilterKind}
+	env.SourceW, env.SourceH = 0, 0
+	if _, err := BuildCamFXPlan(fx, env); err == nil || !strings.Contains(err.Error(), "no source size") {
+		t.Errorf("sizeless cam err = %v", err)
+	}
+	// turning it OFF still works: nothing needs a size to be disabled
+	off, _ := ParseCamFX([]string{"pixelate", "0"})
+	env.Filters = []string{FXPixelateDownName, FXPixelateUpName}
+	if _, err := BuildCamFXPlan(off, env); err != nil {
+		t.Errorf("pixelate off on a sizeless cam: %v", err)
 	}
 }
 

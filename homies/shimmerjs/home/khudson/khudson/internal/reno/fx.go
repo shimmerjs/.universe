@@ -288,6 +288,11 @@ type FXEnv struct {
 	// From is the item's current transform; zero bounds mean the pose is
 	// unknown and a move has nothing to interpolate out of.
 	From Transform
+	// SourceW/SourceH are the item's source dimensions, which pixelate has
+	// to restore exactly: a bounds box derives its scale ONCE, so a filter
+	// chain that hands back a different size than it was given leaves the
+	// item rendering at a scale computed for the old one.
+	SourceW, SourceH int
 	// FilterKinds is what this OBS advertises (nil when the server has no
 	// filter-kind list at all); Filters names the filters already on
 	// Source.
@@ -468,6 +473,11 @@ func addLevel(p *FXPlan, fx CamFX, env FXEnv) error {
 		}
 		return nil
 	}
+	if fx.Kind == FXPixelate && (env.SourceW <= 0 || env.SourceH <= 0) {
+		// the chain has to hand the item back the size it was given, and
+		// there is no honest one to restore
+		return errors.New("cam pixelate: reno-cam reports no source size, so the grid it would scale back up to is unknown")
+	}
 	stages := levelStages(fx, env)
 	if len(stages) == 0 {
 		return fmt.Errorf("cam %s: no level filter", fx.Kind)
@@ -545,28 +555,28 @@ func filterOrder(order, keep []string) []string {
 }
 
 // pixelateStages is the pixelate chain: downscale to the level's grid,
-// then scale back up, both point-sampled.
+// then straight back up to the source's own size, both point-sampled.
 //
-// The upscale is not decoration. A LONE downscale filter is a visual no-op
-// (glass, 2026-08-22): it reports the small size, so the item's transform
-// math sees 16x9, but obs-filters renders the scale filter with
+// Neither stage is decoration. A LONE downscale is a visual no-op (glass,
+// 2026-08-22): it reports the small size, so the item's transform math sees
+// 16x9, but obs-filters renders the scale filter with
 // OBS_ALLOW_DIRECT_RENDERING, so the parent goes straight to the
-// destination rect at full resolution and the frame comes out sharp. A
-// second stage forces the intermediate texture, and point-sampling back up
-// is what turns it into blocks. It also restores the source's reported
-// size, which is what keeps a later apply's scale honest.
+// destination rect at full resolution and the frame comes out sharp. The
+// second stage forces the intermediate texture, and point-sampling out of
+// it is what turns it into blocks.
+//
+// The upscale goes back to the size the chain was HANDED, which is the only
+// size that leaves the item's scale alone. Sizing it to anything else --
+// the item's own box, say, which makes the scale come out at a tidy 1 --
+// breaks the moment the level drops to 0: the filters switch off, the
+// source reverts to its native size, and a bounds box that derived its
+// scale once keeps the one it computed for the other size. The camera then
+// renders at 1920x1080 inside a 768x432 PiP, spilling off the canvas, and
+// nothing about the effect being OFF suggests that is what happened.
 func pixelateStages(fx CamFX, env FXEnv) []levelStage {
-	w, h := env.CanvasW, env.CanvasH
-	if env.From.BoundsW > 0 && env.From.BoundsH > 0 {
-		// the item's own box: the source then reports exactly the size it
-		// renders at, so ScaleInner comes out at 1
-		w, h = env.From.BoundsW, env.From.BoundsH
-	}
+	w, h := env.SourceW, env.SourceH
 	blocks := FXPixelateBlocks(fx.Level)
-	rows := 1
-	if w > 0 {
-		rows = max(int(math.Round(float64(blocks)*h/w)), 1)
-	}
+	rows := max(int(math.Round(float64(blocks)*float64(h)/float64(w))), 1)
 	return []levelStage{
 		{
 			Name: FXPixelateDownName, Kind: FXFilterKind,
@@ -578,7 +588,7 @@ func pixelateStages(fx CamFX, env FXEnv) []levelStage {
 		{
 			Name: FXPixelateUpName, Kind: FXFilterKind,
 			Settings: map[string]any{
-				"resolution": fmt.Sprintf("%dx%d", int(w), int(h)),
+				"resolution": fmt.Sprintf("%dx%d", w, h),
 				"sampling":   "point",
 			},
 		},
