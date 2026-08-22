@@ -106,7 +106,8 @@
           "bitwarden" # Bitwarden GUI
           # "logi-options+" # Manage my mouse, ideally
           "signal" # Holla at ya boy
-          "obs" # khudson reno capture engine (nixpkgs obs-studio is linux-only)
+          # obs lives in khudson/nix/obs-cask.nix -- it is reno's capture
+          # engine, and it needs a per-cask appdir this list cannot express
         ];
       };
     };

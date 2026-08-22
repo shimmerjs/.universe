@@ -16,6 +16,10 @@
         # darwin-side clod companion: fresh claude-code/codex overlay (the hm
         # module can't set overlays under useGlobalPkgs)
         ./clod/overlays.nix
+        # khudson's capture engine. Darwin-scoped because homebrew.casks is a
+        # system option, but owned by khudson -- see the home-manager module
+        # imported below.
+        ../../homies/shimmerjs/home/khudson/nix/obs-cask.nix
       ];
 
       # Edge-glass screensaver hazard (khudson nix/edge-host.md, live-probed

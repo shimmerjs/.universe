@@ -120,7 +120,20 @@ func (v *RenoVerbs) ObsWindow(op string, ctl CtlCall, corr RenoCorr) error {
 		return v.Act(corr, "obs", "window "+op, "error", err.Error(), err)
 	}
 	if err := ax.SetAppHidden(obsBundleID, want); err != nil {
-		return fail(err.Error(), err)
+		// Unhiding is not enough to bring OBS back, and the failure is the
+		// posture khudson itself seeds: SysTrayMinimizeToTray stows the main
+		// window in the menu bar, which is not the app-level AXHidden flag.
+		// An OBS started to tray owns no window at all, so the unhide has
+		// nothing to reveal, the readback never changes, and SetAppHidden
+		// reports it did not take -- correctly. Cooperative activation (the
+		// reopen `open -b` sends) is what OBS answers by restoring the
+		// window, so on the show path that is the verb, not a fallback.
+		if want {
+			return fail(err.Error(), err)
+		}
+		if ferr := ax.FocusApp(obsBundleID); ferr != nil {
+			return fail(errors.Join(err, ferr).Error(), errors.Join(err, ferr))
+		}
 	}
 	state := "shown"
 	if want {

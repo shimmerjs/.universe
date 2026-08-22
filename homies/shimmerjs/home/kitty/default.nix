@@ -205,11 +205,16 @@ in
       font_family = "FiraCode Nerd Font Mono";
       disable_ligatures = "always"; # render ->, =>, !=, etc. as plain glyphs
 
+      # splits ONLY. layout_action (equalize, rotate) is implemented in the
+      # splits layout and nowhere else, so a tab that had wandered onto fat or
+      # vertical answered kitty_mod+e with silence -- the binding was fine, the
+      # layout just had no such action. One layout, one set of verbs.
+      #
       # equalize on close keeps the survivors balanced instead of handing
       # the closed window's space to whichever neighbour happened to abut it.
       # the splits parser reads equalize_on_window_close; 0.48.2's docs name it
       # equalize_on_close, which it silently ignores (kitty #10312 fixed the docs).
-      enabled_layouts = "splits:split_axis=vertical;equalize_on_window_close=true,fat:bias=50;full_size=2,vertical";
+      enabled_layouts = "splits:split_axis=vertical;equalize_on_window_close=true";
 
       # Scrollback
       scrollback_lines = 5000;
