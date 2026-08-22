@@ -86,7 +86,7 @@ func fxEnv(obs ObsTransport, fx renocore.CamFX) (renocore.FXEnv, error) {
 			return env, fmt.Errorf("current transform: %w", err)
 		}
 	}
-	if renocore.IsLevelFX(fx.Kind) {
+	if renocore.IsFilterFX(fx.Kind) {
 		if env.FilterKinds, err = obs.FilterKinds(); err != nil {
 			return env, fmt.Errorf("filter kinds: %w", err)
 		}

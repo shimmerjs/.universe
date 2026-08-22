@@ -31,19 +31,28 @@ const (
 	FXHide     = "hide"
 	FXPixelate = "pixelate"
 	FXPurple   = "purple"
+	FXJitter   = "jitter"
 )
 
 // CamFXKinds is the vocabulary in error-message order.
-var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate, FXPurple}
+var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate, FXPurple, FXJitter}
 
 // LevelFXKinds are the magnitude effects: one integer, 0 for off, walked
-// by a plus/minus pair on the pad instead of flipped by a toggle. The
-// filter each one lands in reads back to nobody, so the level has to be
-// state khudson holds -- which is exactly why a tile may show it.
-var LevelFXKinds = []string{FXPixelate, FXPurple}
+// by a plus/minus pair on the pad instead of flipped by a toggle. Nothing
+// downstream reports the magnitude back -- a filter tells you its settings
+// but not which step of khudson's scale produced them, and a shake leaves
+// no trace at all -- so the level has to be state khudson holds, which is
+// exactly why a tile may show it.
+var LevelFXKinds = []string{FXPixelate, FXPurple, FXJitter}
 
 // IsLevelFX reports whether kind is a magnitude effect.
 func IsLevelFX(kind string) bool { return slices.Contains(LevelFXKinds, kind) }
+
+// IsFilterFX reports whether kind lands in a source filter, and so needs
+// the filter capability probe in front of it. Jitter is a level effect
+// that is pure motion, and probing filters for it would be a round trip
+// spent on nothing.
+func IsFilterFX(kind string) bool { return kind == FXPixelate || kind == FXPurple }
 
 // FXEases names the interpolation curves a move may take.
 var FXEases = []string{"linear", "smooth", "bounce"}
@@ -66,6 +75,15 @@ const (
 	// tap is visible without being the whole effect.
 	FXMaxLevel     = 5
 	FXDefaultLevel = 3
+	// FXJitterDur is how long a shake runs, and FXJitterHz how fast it
+	// oscillates inside that: short and quick, because a jitter is
+	// punctuation and a slow one reads as a broken move.
+	FXJitterDur = 400 * time.Millisecond
+	FXJitterHz  = 12.0
+	// FXJitterStep is the peak offset one level adds, as a fraction of the
+	// item's box width. Level 5 is a tenth of the box, which is plenty on
+	// a corner PiP and still inside the canvas.
+	FXJitterStep = 0.02
 )
 
 // The stock filters the level effects drive, and the khudson-owned filter
@@ -177,9 +195,14 @@ func ParseCamFX(args []string) (CamFX, error) {
 			}
 			fx.Dur = d
 		}
-	case FXPixelate, FXPurple:
+	case FXPixelate, FXPurple, FXJitter:
 		if len(rest) != 1 {
 			return CamFX{}, fmt.Errorf("cam %s wants a level 0..%d (or on|off)", fx.Kind, FXMaxLevel)
+		}
+		if fx.Kind == FXJitter {
+			// the shake's own length, so the batch budget and the sampler
+			// agree without a second constant on the wire
+			fx.Dur = FXJitterDur
 		}
 		switch rest[0] {
 		case "on":
@@ -217,7 +240,7 @@ func CheckCamFX(fx CamFX) error {
 		if !slices.Contains(FXEases, fx.Ease) {
 			return fmt.Errorf("cam move ease %q wants one of %s", fx.Ease, strings.Join(FXEases, "|"))
 		}
-	case FXPixelate, FXPurple:
+	case FXPixelate, FXPurple, FXJitter:
 		if fx.Level < 0 || fx.Level > FXMaxLevel {
 			return fmt.Errorf("cam %s level %d wants 0..%d", fx.Kind, fx.Level, FXMaxLevel)
 		}
@@ -236,7 +259,7 @@ func (f CamFX) Args() []string {
 		return []string{FXMove, f.Preset, f.Dur.String(), f.Ease}
 	case FXJump:
 		return []string{FXJump, f.Preset}
-	case FXPixelate, FXPurple:
+	case FXPixelate, FXPurple, FXJitter:
 		return []string{f.Kind, strconv.Itoa(f.Level)}
 	}
 	return []string{f.Kind}
@@ -304,8 +327,62 @@ func BuildCamFXPlan(fx CamFX, env FXEnv) (*FXPlan, error) {
 		if err := addLevel(p, fx, env); err != nil {
 			return nil, err
 		}
+	case FXJitter:
+		if err := addJitter(p, fx, env); err != nil {
+			return nil, err
+		}
 	}
 	return p, nil
+}
+
+// addJitter shakes the cam around the pose it is already in and puts it
+// back. The level is the amplitude, so walking the pair walks how hard it
+// shakes -- and a shake is a one-shot, so every tap on either half fires
+// one at the new amplitude instead of arming a state.
+//
+// The oscillation decays to nothing, which is what lands the last sample
+// exactly on the starting pose. A shake that stopped anywhere else would
+// walk the camera off its placement a tap at a time.
+func addJitter(p *FXPlan, fx CamFX, env FXEnv) error {
+	if !fx.On() {
+		p.Summary += " (nothing to shake)"
+		return nil
+	}
+	if env.From.BoundsW <= 0 || env.From.BoundsH <= 0 {
+		return errors.New("reno-cam has no bounds box to shake -- set a webcam preset first (khudson reno config --webcam br)")
+	}
+	fps := env.FPS
+	if fps <= 0 {
+		fps = FXFallbackFPS
+	}
+	frames := max(int(math.Round(fx.Dur.Seconds()*fps)), 2)
+	samples := min(frames, FXMaxSamples)
+	sleep := max(frames/samples, 1)
+	amp := FXJitterStep * float64(fx.Level) * env.From.BoundsW
+	p.add(enableReq(env, true))
+	for i := 1; i <= samples; i++ {
+		if i > 1 {
+			p.add(sleepReq(sleep))
+		}
+		t := float64(i) / float64(samples)
+		// decay to zero at t=1, so the last sample IS the starting pose
+		phase := 2 * math.Pi * FXJitterHz * t * fx.Dur.Seconds()
+		swing := amp * (1 - t)
+		at := env.From
+		at.X = clampAxis(env.From.X+swing*math.Sin(phase), env.CanvasW, env.From.BoundsW)
+		// the vertical throw is smaller and a quarter turn out of phase, so
+		// the shake orbits instead of sliding along one diagonal
+		at.Y = clampAxis(env.From.Y+0.6*swing*math.Cos(phase), env.CanvasH, env.From.BoundsH)
+		p.add(transformReq(env, at))
+	}
+	return nil
+}
+
+// clampAxis keeps a shaken box inside the canvas on one axis. A canvas
+// smaller than the box (a "big" preset against a tiny canvas) has nowhere
+// to clamp to, so it pins at the origin rather than going negative.
+func clampAxis(v, canvas, box float64) float64 {
+	return min(max(v, 0), max(canvas-box, 0))
 }
 
 // addMove samples the eased path from the item's current pose to the

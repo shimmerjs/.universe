@@ -1,6 +1,7 @@
 package reno
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -375,6 +376,94 @@ func TestPurplePlan(t *testing.T) {
 	if len(plan.Requests) != 0 {
 		t.Errorf("purple off touched the pixelate filter: %+v", plan.Requests)
 	}
+}
+
+// A jitter shakes around the pose it starts in and LANDS on it. Anywhere
+// else and repeated taps would walk the camera off its placement.
+func TestJitterPlan(t *testing.T) {
+	env := fxTestEnv()
+	fx, err := ParseCamFX([]string{"jitter", "4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.Dur != FXJitterDur {
+		t.Errorf("jitter dur = %s", fx.Dur)
+	}
+	plan, err := BuildCamFXPlan(fx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Requests[0].Type != "SetSceneItemEnabled" {
+		t.Fatalf("a shake implies visible: %+v", plan.Requests[0])
+	}
+	var poses []map[string]any
+	for _, r := range plan.Requests {
+		if r.Type == "SetSceneItemTransform" {
+			poses = append(poses, r.Data["sceneItemTransform"].(map[string]any))
+		}
+	}
+	if len(poses) < 8 {
+		t.Fatalf("samples = %d", len(poses))
+	}
+	last := poses[len(poses)-1]
+	if last["positionX"] != env.From.X || last["positionY"] != env.From.Y {
+		t.Errorf("landed at %v,%v, started at %v,%v",
+			last["positionX"], last["positionY"], env.From.X, env.From.Y)
+	}
+	// it actually moves, and never off the canvas
+	var moved bool
+	for _, pose := range poses {
+		x, y := pose["positionX"].(float64), pose["positionY"].(float64)
+		if x != env.From.X || y != env.From.Y {
+			moved = true
+		}
+		if x < 0 || y < 0 || x+env.From.BoundsW > env.CanvasW || y+env.From.BoundsH > env.CanvasH {
+			t.Fatalf("shook off the canvas: %v,%v", x, y)
+		}
+	}
+	if !moved {
+		t.Error("a jitter that never moves is not a jitter")
+	}
+
+	// a bigger level throws further
+	small, _ := ParseCamFX([]string{"jitter", "1"})
+	if peak(t, small, env) >= peak(t, fx, env) {
+		t.Error("level 1 must throw less than level 4")
+	}
+
+	// level 0 has nothing to shake, and says so
+	off, _ := ParseCamFX([]string{"jitter", "0"})
+	plan, err = BuildCamFXPlan(off, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Requests) != 0 || !strings.Contains(plan.Summary, "nothing to shake") {
+		t.Errorf("jitter off = %+v %q", plan.Requests, plan.Summary)
+	}
+
+	// and an unplaced cam refuses rather than shaking a box it cannot see
+	env.From = Transform{}
+	if _, err := BuildCamFXPlan(fx, env); err == nil || !strings.Contains(err.Error(), "bounds box") {
+		t.Errorf("unplaced cam err = %v", err)
+	}
+}
+
+// peak is the furthest a plan's samples get from the starting pose.
+func peak(t *testing.T, fx CamFX, env FXEnv) float64 {
+	t.Helper()
+	plan, err := BuildCamFXPlan(fx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out float64
+	for _, r := range plan.Requests {
+		if r.Type != "SetSceneItemTransform" {
+			continue
+		}
+		pose := r.Data["sceneItemTransform"].(map[string]any)
+		out = max(out, math.Abs(pose["positionX"].(float64)-env.From.X))
+	}
+	return out
 }
 
 // Both level scales run monotonically from level 1 to the top: a step that
