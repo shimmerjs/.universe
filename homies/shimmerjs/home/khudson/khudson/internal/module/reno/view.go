@@ -46,8 +46,8 @@ const (
 	glyphRecord = "\U000F044A" // nf-md-record
 	glyphStop   = "\U000F04DB" // nf-md-stop
 	glyphProbe  = "\U000F0450" // nf-md-refresh
-	glyphArm    = "\U000F140B" // nf-md-timer_sand_empty
-	glyphWindow = "\U000F05E7" // nf-md-window_restore
+	glyphArm    = "\U000F06AD" // nf-md-timer_sand_empty
+	glyphWindow = "\U000F05B2" // nf-md-window_restore
 	glyphMic    = "\U000F036C" // nf-md-microphone
 	glyphMicOff = "\U000F036D" // nf-md-microphone_off
 	glyphCam    = "\U000F0567" // nf-md-video

@@ -11,6 +11,9 @@
 #                             fast-path) for hosts with khudson enabled.
 #   - khudson-posture-<host>: RC + state-root posture pins on the rendered
 #                             khudson artifacts, same gate.
+#   - khudson-glyphs-<host>:  every nerd-font codepoint in the dock's Go
+#                             sources resolves in the host's installed fonts
+#                             AND is the icon its comment names.
 #   - krib-sheets-<host>:     CUE-export drift guard for the committed
 #                             pkgs/krib/sheets JSON artifacts.
 #   - clod-plugins-<host>:    claude-code plugin-estate integrity on the
@@ -158,6 +161,24 @@ let
            value = import ../homies/shimmerjs/home/khudson/nix/posture-check.nix { inherit pkgs; hmCfg = hmUserCfg; }; }
     else null;
 
+  # Nerd Font glyph pins in the dock's Go sources, resolved against the fonts
+  # the HOST installs -- so a codepoint the font carries as a DIFFERENT icon
+  # than its comment claims fails the build instead of shipping a confident
+  # wrong button.
+  mkKhudsonGlyphCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+    fonts = config.fonts.packages or [];
+  in if (hmUserCfg.universe.home.khudson.enable or false) && fonts != []
+    then { inherit system; name = "khudson-glyphs-${hostname}";
+           value = import ../homies/shimmerjs/home/khudson/nix/glyph-check.nix {
+             inherit pkgs fonts;
+             src = ../homies/shimmerjs/home/khudson/khudson;
+           }; }
+    else null;
+
   # CUE-export drift guard for pkgs/krib/sheets: the committed JSON artifacts
   # (go:embed'd into krib) must equal `cue export` of their .cue sources.
   # Host-independent content, discovered per host like every other builder.
@@ -227,7 +248,7 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck mkNixGcCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck mkNixGcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:
