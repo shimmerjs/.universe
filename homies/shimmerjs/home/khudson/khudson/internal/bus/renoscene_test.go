@@ -199,6 +199,72 @@ func TestApplyScalesLiveSourcesExplicitly(t *testing.T) {
 	}
 }
 
+// The webcam ends up ABOVE the screen capture whatever order the items
+// were created in. OBS renders by item index and puts a new item on top,
+// so a screen capture recreated after the cam covers the whole canvas and
+// the PiP vanishes -- source healthy, transform correct, every readout ok
+// (glass, 2026-08-22).
+func TestApplyStacksWebcamOverScreen(t *testing.T) {
+	fakeCGDisplays(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	// the cam item exists first; the screen gets created last and lands on top
+	if _, err := obs.SceneItemID("reno", "reno-cam", true); err != nil {
+		t.Fatal(err)
+	}
+	cfg := renocore.RecordConfig{
+		Screens: []renocore.ScreenSel{{Display: "built-in"}},
+		Webcam:  "bl",
+	}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	order := filterKeep(obs.order["reno"], []string{"reno-screen-0", "reno-cam"})
+	if !slices.Equal(order, []string{"reno-screen-0", "reno-cam"}) {
+		t.Errorf("stack bottom-first = %v; the cam must render over the screen", order)
+	}
+}
+
+// An off webcam is not in the stack: there is no item to order, and an
+// index write against a disabled one is a request spent on nothing.
+func TestApplyStackSkipsDisabledWebcam(t *testing.T) {
+	fakeCGDisplays(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	cfg := renocore.RecordConfig{
+		Screens: []renocore.ScreenSel{{Display: "built-in"}},
+		Webcam:  "off",
+	}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(obs.ops, "index:reno-cam=1") {
+		t.Errorf("a disabled cam was stacked: %v", obs.ops)
+	}
+}
+
+// A stack the server did not take fails the apply. Ordering is the one
+// thing here with no visible symptom short of watching the pixels.
+func TestApplyStackReadbackMismatchFails(t *testing.T) {
+	fakeCGDisplays(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	cfg := renocore.RecordConfig{
+		Screens: []renocore.ScreenSel{{Display: "built-in"}},
+		Webcam:  "bl",
+	}
+	// first apply builds the items, then the order is pinned against the
+	// writes: the server accepts every index and changes nothing
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	obs.order["reno"] = []string{"reno-cam", "reno-screen-0"}
+	obs.orderFrozen = true
+	if _, err := ApplyRecordConfig(obs, cfg); err == nil || !strings.Contains(err.Error(), "bottom-first") {
+		t.Errorf("a stack the server ignored must fail the apply, got %v", err)
+	}
+}
+
 // noSettleDelay strips the inter-poll sleep so a dead-source test costs
 // nothing; the retry count still exercises the loop.
 func noSettleDelay(t *testing.T) {

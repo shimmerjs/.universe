@@ -238,6 +238,8 @@ type fakeObs struct {
 	props        map[string][]renocore.PropertyItem // "input/prop" -> items
 	sizes        map[string][2]int                  // input -> source w,h
 	itemIDs      map[string]int                     // "scene/source" -> id
+	order        map[string][]string                // scene -> item names bottom-first
+	orderFrozen  bool                               // index writes succeed and change nothing
 	enabled      map[int]bool
 	tfs          map[int]renocore.Transform
 	mutes        map[string]bool
@@ -323,7 +325,33 @@ func (f *fakeObs) SceneItemID(scene, source string, ensure bool) (int, error) {
 	}
 	id := len(f.itemIDs) + 1
 	f.itemIDs[scene+"/"+source] = id
+	// OBS puts a new item on TOP, which is the whole reason the stack has to
+	// be asserted: a screen capture recreated last covers the webcam
+	if f.order == nil {
+		f.order = map[string][]string{}
+	}
+	f.order[scene] = append(f.order[scene], source)
 	return id, f.op("item:" + source)
+}
+func (f *fakeObs) SetSceneItemIndex(scene string, id, index int) error {
+	name := ""
+	for key, itemID := range f.itemIDs {
+		if itemID == id && strings.HasPrefix(key, scene+"/") {
+			name = strings.TrimPrefix(key, scene+"/")
+		}
+	}
+	if name == "" {
+		return fmt.Errorf("no item %d in %s", id, scene)
+	}
+	if !f.orderFrozen {
+		cur := slices.DeleteFunc(slices.Clone(f.order[scene]), func(s string) bool { return s == name })
+		index = min(max(index, 0), len(cur))
+		f.order[scene] = slices.Insert(cur, index, name)
+	}
+	return f.op(fmt.Sprintf("index:%s=%d", name, index))
+}
+func (f *fakeObs) SceneItemOrder(scene string) ([]string, error) {
+	return f.order[scene], f.op("order:" + scene)
 }
 func (f *fakeObs) SetSceneItemEnabled(scene string, id int, enabled bool) error {
 	if f.enabled == nil {

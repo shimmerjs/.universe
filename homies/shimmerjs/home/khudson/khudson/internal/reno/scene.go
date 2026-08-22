@@ -285,6 +285,14 @@ type Plan struct {
 	CreateScene  bool
 	Inputs       []PlanInput
 	RemoveInputs []string
+	// Stack is the enabled VISUAL items bottom-first: screens, then the
+	// webcam over them. OBS renders by item index and nothing here used to
+	// set one, so the stack was whatever creation order left behind -- a
+	// screen capture recreated after the cam covers the whole canvas and
+	// the PiP disappears with the cam source healthy, its transform
+	// correct, and every readout ok (glass, 2026-08-22). Audio items never
+	// enter: they have no geometry to be occluded.
+	Stack []string
 	// Mutes maps audio input name -> muted. Under AudioNone every
 	// non-reno audio input mutes; with a device selected they are left
 	// alone (the khudson mic is additive); with no audio knob only the
@@ -329,6 +337,7 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 			Region:   sel.Region,
 			Monitor:  monitorByName(env.Monitors, it.Name),
 		})
+		p.Stack = append(p.Stack, ScreenInputName(i))
 	}
 	// stale screen slots from a wider previous config get removed
 	for name, kind := range env.Inputs {
@@ -387,6 +396,9 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 			in.Settings = map[string]any{env.CamProp: env.Cams[0].Value}
 		}
 		p.Inputs = append(p.Inputs, in)
+		if in.Enabled {
+			p.Stack = append(p.Stack, CamInput)
+		}
 	default:
 		// Webcam=="" means NO webcam item: a prior take's still-enabled
 		// reno-cam must not ride into this recording (arc-2 review #5 --

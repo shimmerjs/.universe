@@ -224,10 +224,58 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []stri
 			return nil, fmt.Errorf("mute %s: %w", name, err)
 		}
 	}
+	if err := applyStack(obs, plan.Scene, plan.Stack); err != nil {
+		return nil, err
+	}
 	if err := obs.SetScene(plan.Scene); err != nil {
 		return nil, fmt.Errorf("switch to %s: %w", plan.Scene, err)
 	}
 	return dead, nil
+}
+
+// applyStack asserts the plan's stacking order: item stack[i] goes to
+// index i, bottom-first. Assigning ascending indices in that order
+// converges from any starting arrangement, because by the time index i is
+// written, indices 0..i-1 already hold stack[0..i-1]. Items the plan does
+// not name -- audio, anything hand-added to the scene -- float above the
+// stack, which is where an overlay someone added by hand wants to be
+// anyway.
+//
+// Then read the order back, because getting this wrong is silent: the
+// webcam renders under a full-canvas screen capture and looks exactly like
+// a webcam that was never enabled.
+func applyStack(obs ObsTransport, scene string, stack []string) error {
+	for i, name := range stack {
+		id, err := obs.SceneItemID(scene, name, false)
+		if err != nil {
+			return fmt.Errorf("stack %s: %w", name, err)
+		}
+		if err := obs.SetSceneItemIndex(scene, id, i); err != nil {
+			return fmt.Errorf("stack %s -> %d: %w", name, i, err)
+		}
+	}
+	if len(stack) < 2 {
+		return nil // nothing can occlude anything
+	}
+	order, err := obs.SceneItemOrder(scene)
+	if err != nil {
+		return fmt.Errorf("stack readback %s: %w", scene, err)
+	}
+	if got := filterKeep(order, stack); !slices.Equal(got, stack) {
+		return fmt.Errorf("stack %s: want %v bottom-first, got %v", scene, stack, got)
+	}
+	return nil
+}
+
+// filterKeep returns order's elements that appear in keep, order preserved.
+func filterKeep(order, keep []string) []string {
+	out := make([]string, 0, len(keep))
+	for _, name := range order {
+		if slices.Contains(keep, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // sourceSettle bounds the wait for a freshly-configured capture to report

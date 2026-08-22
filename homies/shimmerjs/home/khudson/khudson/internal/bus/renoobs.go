@@ -76,6 +76,12 @@ type ObsTransport interface {
 	// existing input to the scene when it is not yet an item there.
 	SceneItemID(scene, source string, ensure bool) (int, error)
 	SetSceneItemEnabled(scene string, id int, enabled bool) error
+	// SetSceneItemIndex moves an item in the scene's stacking order, where
+	// index 0 is the BOTTOM and the highest index renders on top.
+	SetSceneItemIndex(scene string, id, index int) error
+	// SceneItemOrder names the scene's items bottom-first, the readback for
+	// the stack the plan asserts.
+	SceneItemOrder(scene string) ([]string, error)
 	// ItemSourceSize reads the item's source dimensions (0,0 while the
 	// source is not yet streaming, e.g. pre-TCC).
 	ItemSourceSize(scene string, id int) (w, h int, err error)
@@ -318,6 +324,29 @@ func (t *goobsTransport) SetSceneItemEnabled(scene string, id int, enabled bool)
 	_, err := t.c.SceneItems.SetSceneItemEnabled(sceneitems.NewSetSceneItemEnabledParams().
 		WithSceneName(scene).WithSceneItemId(id).WithSceneItemEnabled(enabled))
 	return err
+}
+
+func (t *goobsTransport) SetSceneItemIndex(scene string, id, index int) error {
+	_, err := t.c.SceneItems.SetSceneItemIndex(sceneitems.NewSetSceneItemIndexParams().
+		WithSceneName(scene).WithSceneItemId(id).WithSceneItemIndex(index))
+	return err
+}
+
+func (t *goobsTransport) SceneItemOrder(scene string) ([]string, error) {
+	resp, err := t.c.SceneItems.GetSceneItemList(
+		sceneitems.NewGetSceneItemListParams().WithSceneName(scene))
+	if err != nil {
+		return nil, err
+	}
+	items := slices.Clone(resp.SceneItems)
+	slices.SortFunc(items, func(a, b *typedefs.SceneItem) int {
+		return a.SceneItemIndex - b.SceneItemIndex
+	})
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.SourceName)
+	}
+	return out, nil
 }
 
 func (t *goobsTransport) ItemSourceSize(scene string, id int) (int, int, error) {

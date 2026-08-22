@@ -1,6 +1,7 @@
 package reno
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -196,6 +197,33 @@ func TestBuildScenePlanWebcam(t *testing.T) {
 	env.CamKind = ""
 	if _, err := BuildScenePlan(RecordConfig{Webcam: "br"}, env); err == nil {
 		t.Error("no cam kind must fail loudly")
+	}
+}
+
+// The stack names the visual items bottom-first: screens in slot order,
+// the webcam over all of them, audio never.
+func TestBuildScenePlanStack(t *testing.T) {
+	p, err := BuildScenePlan(RecordConfig{
+		Screens: []ScreenSel{{Display: "0"}, {Display: "1"}},
+		Audio:   "MacBook Pro Microphone",
+		Webcam:  "bl",
+	}, sckEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ScreenInputName(0), ScreenInputName(1), CamInput}
+	if !slices.Equal(p.Stack, want) {
+		t.Errorf("stack = %v, want %v", p.Stack, want)
+	}
+	p, err = BuildScenePlan(RecordConfig{
+		Screens: []ScreenSel{{Display: "0"}},
+		Webcam:  "off",
+	}, sckEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(p.Stack, CamInput) {
+		t.Errorf("an off webcam has nothing to stack: %v", p.Stack)
 	}
 }
 
