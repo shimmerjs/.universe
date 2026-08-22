@@ -125,14 +125,14 @@ in
       # meh, so kitty_mod+cmd IS hyper here.
       "kitty_mod+cmd+r" = "layout_action rotate 180"; # Swap the two panes
       "kitty_mod+e" = "layout_action equalize"; # Even out every split along each axis
-      # Bias the active split: [ yields, ] takes, | centres. kitty's own bias
-      # action is absolute and int-only, so the steps come from a kitten that
-      # reads the live bias off the layout tree (kits/bias.py) -- the only
-      # relative path kitty ships counts cells, not percent. `bias 50` centres
-      # THIS pair, unlike equalize above, which resets the whole tree.
-      "kitty_mod+bracketleft" = "kitten kits/bias.py -20";
-      "kitty_mod+backslash" = "layout_action bias 50";
+      # Bias the active split. kitty's own bias action is absolute and
+      # int-only, so the step comes from a kitten that reads the live bias off
+      # the layout tree (kits/bias.py) -- the only relative path kitty ships
+      # counts cells, not percent. It WRAPS, so one key covers the whole range
+      # and cmd only exists to walk it the short way round. Not shift: kitty_mod
+      # already holds shift, so cmd is the modifier left to qualify with.
       "kitty_mod+bracketright" = "kitten kits/bias.py 20";
+      "kitty_mod+cmd+bracketright" = "kitten kits/bias.py -20";
 
       # Tab management
       "cmd+t" = "new_tab_with_cwd";
