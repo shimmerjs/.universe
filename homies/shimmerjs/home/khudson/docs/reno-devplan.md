@@ -4,7 +4,7 @@ state: rewritten 2026-08-21 at `d156c57`, after the FIRST live session on glass.
 
 VERIFIED at that commit: `go build ./...`, `go vet ./...`, `go test ./...` (36 packages) and `nix build .#darwinConfigurations.aw-chainguard.system` all exit 0. NEVER `nix flake check` (kraken's darwinConfiguration fails eval, pre-existing).
 
-NOT SWITCHED. the last two commits are in the tree but not on the machine, so the running bus is older than this file. the first thing a fresh session should establish is whether a switch has happened.
+SWITCHED at 2026-08-21 23:23, confirmed by the deployed binary carrying the dead-capture gate (`strings ~/Library/Application\ Support/khudson/bin/khudson | grep 'no frames from'`). so the scale fix and the arm gate ARE running. anything committed after that timestamp is not; check before trusting this line.
 
 ## gate 0 is PARTLY discharged -- what glass actually showed
 
