@@ -179,7 +179,7 @@ func cmdReno(args []string) error {
 		// dial-only (stopping a recording must never boot OBS); ensure
 		// and probe own the launch path
 		if len(rest) == 0 {
-			return fmt.Errorf("reno obs: need an op: ensure | arm | release | probe | apply | window <show|hide|toggle> | vcam <status|stop> | cam <fx> | stop | pause | resume | scene <name>")
+			return fmt.Errorf("reno obs: need an op: ensure | arm | release | quit | probe | apply | window <show|hide|toggle> | vcam <status|stop> | cam <fx> | stop | pause | resume | scene <name>")
 		}
 		op := rest[0]
 		arg := ""
@@ -237,6 +237,18 @@ func cmdReno(args []string) error {
 			// dial-only: releasing a cold OBS is a no-op, never a launch
 			defer renoWatchdog()()
 			return v.Release(func() (bus.ObsTransport, error) {
+				return bus.DialOBS(*host, bus.ObsPassword())
+			}, renoCtlData, corr)
+		case "quit":
+			v, err := bus.NewRenoVerbs()
+			if err != nil {
+				return err
+			}
+			// dial-only, like release: quitting an OBS that is not running
+			// must never boot one first. The budget covers the grace the
+			// verb spends watching for the app to actually go.
+			defer renoWatchdogFor(renoVerbDeadline + bus.ObsQuitGrace)()
+			return v.Quit(func() (bus.ObsTransport, error) {
 				return bus.DialOBS(*host, bus.ObsPassword())
 			}, renoCtlData, corr)
 		case "window":

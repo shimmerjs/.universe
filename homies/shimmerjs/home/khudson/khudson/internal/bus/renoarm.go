@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/ax"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
@@ -272,9 +274,172 @@ func (v *RenoVerbs) Release(dial func() (ObsTransport, error), ctl CtlCall, corr
 	}
 	defer obs.Close()
 
+	detail, err := releaseHardware(obs, ctl)
+	if err != nil {
+		if _, nerr := ctl([]string{"arm-note", "error", "release: " + err.Error()}); nerr != nil {
+			err = errors.Join(err, nerr)
+		}
+		return v.Act(corr, "obs", "release", "error", err.Error(), err)
+	}
+	if err := noteWithRetry(ctl, []string{"arm-note", "released", detail}); err != nil {
+		return v.Act(corr, "obs", "release", "unconfirmed",
+			"released ("+detail+") but the note failed: "+err.Error(), err)
+	}
+	fmt.Println("released: " + detail)
+	return v.Act(corr, "obs", "release", "ok", detail, nil)
+}
+
+// Quit puts OBS all the way down, which nothing else here does. Release
+// drops the hardware but leaves the app running, and a session therefore
+// ended in four verbs -- close the run, stop the take, release, quit the
+// app -- with the last one an osascript nobody had wrapped. This is those
+// four, in the only order that works.
+//
+// The order matters twice over. The take stops before the release, because
+// releasing a scene mid-recording writes a clip of disabled sources; and
+// the app quits last, over a socket already closed, because a quit
+// delivered while a request is in flight is how you get a half-written
+// clip. And it is a GRACEFUL quit -- an AppleEvent, never a signal. OBS
+// opens its next log with "Crash or unclean shutdown detected" after a hard
+// kill, and the sentinel that leaves behind wedges the websocket on the
+// following launch.
+func (v *RenoVerbs) Quit(dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr) error {
+	fail := func(detail string, err error) error {
+		return v.Act(corr, "obs", "quit", "error", detail, err)
+	}
+	// closes the run and hands back the take still owing a stop note. It
+	// emits no release and no record-stop of its own: those are the two
+	// things this verb is about to do itself, and a second pair of children
+	// would race it to an OBS that is on its way out.
+	raw, err := ctl([]string{"quit-begin"})
+	if err != nil {
+		return fail("begin: "+err.Error(), err)
+	}
+	var req QuitRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return fail("begin decode: "+err.Error(), err)
+	}
+
+	var done []string
+	obs, err := dial()
+	if err != nil {
+		// a cold socket is not a cold app: OBS with obs-websocket off, or
+		// still starting, still needs the quit below
+		done = append(done, "obs socket down")
+	} else {
+		if req.Recording {
+			path, serr := obs.StopRecord()
+			switch {
+			case serr != nil && !isOutputNotRunning(serr):
+				obs.Close()
+				return fail("stop recording: "+serr.Error(), serr)
+			case serr != nil:
+				// the journal thinks a take is open and OBS says otherwise;
+				// close it without a path rather than leave it open forever
+				// (the ObsOp stop precedent)
+				noteRecordStopped(ctl, req.Run, "")
+				done = append(done, "no active recording")
+			default:
+				noteRecordStopped(ctl, req.Run, path)
+				done = append(done, "recording stopped ("+path+")")
+			}
+		}
+		detail, rerr := releaseHardware(obs, ctl)
+		if rerr != nil {
+			obs.Close()
+			return fail("release: "+rerr.Error(), rerr)
+		}
+		done = append(done, detail)
+		// closed HERE, not on a defer: the quit below must not race a
+		// request still on the wire
+		obs.Close()
+	}
+	if _, err := ctl([]string{"arm-note", "released", strings.Join(done, ", ")}); err != nil {
+		// the rig is down either way, and saying so is worth more than the
+		// readout that failed to land
+		fmt.Fprintln(os.Stderr, "khudson reno obs quit: release note: "+err.Error())
+	}
+
+	switch err := quitObsApp(); {
+	case errors.Is(err, ax.ErrNotFound):
+		done = append(done, "obs was not running")
+	case err != nil:
+		return fail("quit obs: "+err.Error()+
+			" (an AppleEvent quit needs the one-time Automation grant for khudson -> OBS)", err)
+	default:
+		done = append(done, obsQuitOutcome())
+	}
+	detail := strings.Join(done, ", ")
+	fmt.Println("quit: " + detail)
+	return v.Act(corr, "obs", "quit", "ok", detail, nil)
+}
+
+// The app-level half of the quit, injectable for the same reason the ax
+// package makes its own osascript and kill seams injectable: a test that
+// exercised the real ones would quit an app on the machine running it.
+var (
+	quitObsApp    = func() error { return ax.QuitBundle(obsBundleID) }
+	obsAppRunning = func() (bool, error) { return ax.BundleRunning(obsBundleID) }
+)
+
+// ObsQuitGrace bounds the wait for OBS to actually go. A quit AppleEvent
+// returns once it is DELIVERED, so without this the verb would report a
+// dead app while it was still flushing its recording. Generous, because
+// what OBS spends the time on is finalising a file.
+const ObsQuitGrace = 15 * time.Second
+
+// obsQuitPoll is how often the departure is checked; each check is an
+// lsappinfo exec, so it is coarse.
+const obsQuitPoll = 250 * time.Millisecond
+
+// obsQuitWait is the grace the departure check actually spends; tests
+// shorten it rather than sit out the real one.
+var obsQuitWait = ObsQuitGrace
+
+// obsQuitOutcome waits out the grace and says what actually happened. An
+// OBS still up at the end is NOT an error -- it is most likely sitting on
+// its own "save changes?" sheet, which is a human's to answer -- but the
+// verb must not claim it quit.
+func obsQuitOutcome() string {
+	deadline := time.Now().Add(obsQuitWait)
+	for {
+		running, err := obsAppRunning()
+		if err != nil {
+			return "obs asked to quit (could not confirm: " + err.Error() + ")"
+		}
+		if !running {
+			return "obs quit"
+		}
+		if time.Now().After(deadline) {
+			return fmt.Sprintf("obs asked to quit but still up after %s (a dialog may be waiting)", obsQuitWait)
+		}
+		time.Sleep(obsQuitPoll)
+	}
+}
+
+// noteRecordStopped closes the take in the journal. Best effort with a
+// retry: the clip is already written, and a lost note costs the output
+// path on the pad, never the file.
+func noteRecordStopped(ctl CtlCall, run, path string) {
+	args := []string{"record-note", run, "stopped"}
+	if path != "" {
+		args = append(args, path)
+	}
+	if err := noteWithRetry(ctl, args); err != nil {
+		fmt.Fprintln(os.Stderr, "khudson reno obs quit: record note: "+err.Error())
+	}
+}
+
+// releaseHardware drops everything holding a device: OBS's virtual camera
+// first, because that is the output holding the camera light, then every
+// reno scene item. It returns the human summary the caller notes back.
+//
+// Shared by Release and Quit, and the sharing is the point -- a quit that
+// re-implemented this would be the one path that eventually forgot the
+// virtual camera, which is precisely the failure Release exists to prevent.
+func releaseHardware(obs ObsTransport, ctl CtlCall) (string, error) {
 	var done []string
 	var errs []error
-	// the virtual camera first: it is the one holding the camera light
 	if active, err := obs.VirtualCamActive(); err != nil {
 		errs = append(errs, fmt.Errorf("virtual cam status: %w", err))
 	} else if active {
@@ -294,23 +459,13 @@ func (v *RenoVerbs) Release(dial func() (ObsTransport, error), ctl CtlCall, corr
 	if n > 0 {
 		done = append(done, fmt.Sprintf("%d sources released", n))
 	}
-	detail := "nothing was holding hardware"
-	if len(done) > 0 {
-		detail = strings.Join(done, ", ")
-	}
 	if len(errs) > 0 {
-		joined := errors.Join(errs...)
-		if _, nerr := ctl([]string{"arm-note", "error", "release: " + joined.Error()}); nerr != nil {
-			joined = errors.Join(joined, nerr)
-		}
-		return v.Act(corr, "obs", "release", "error", joined.Error(), joined)
+		return "", errors.Join(errs...)
 	}
-	if err := noteWithRetry(ctl, []string{"arm-note", "released", detail}); err != nil {
-		return v.Act(corr, "obs", "release", "unconfirmed",
-			"released ("+detail+") but the note failed: "+err.Error(), err)
+	if len(done) == 0 {
+		return "nothing was holding hardware", nil
 	}
-	fmt.Println("released: " + detail)
-	return v.Act(corr, "obs", "release", "ok", detail, nil)
+	return strings.Join(done, ", "), nil
 }
 
 // releaseSceneItems disables every item khudson owns in the reno scene,

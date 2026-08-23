@@ -353,6 +353,13 @@ type ApplyRequest struct {
 	Config *renocore.RecordConfig `json:"config,omitempty"`
 }
 
+// QuitRequest mirrors the module's quit-begin payload: the run a
+// record-stop note belongs to, and whether a take is still open.
+type QuitRequest struct {
+	Run       string `json:"run,omitempty"`
+	Recording bool   `json:"recording,omitempty"`
+}
+
 // ApplyConfig is the `khudson reno obs apply` verb: read the pad's
 // current config over ctl, drive the reno scene to match, note the
 // outcome back. The dial is DELIBERATELY the non-launching one -- a

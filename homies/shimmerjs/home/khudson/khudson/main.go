@@ -107,6 +107,8 @@ func usage() {
   reno obs stop|pause|resume|scene <name>
                       recording transport ops (exec'd as step effects
                       for scene/record script commands)
+  reno obs quit       end the session: close the run, stop the take,
+                      drop the hardware, and quit OBS gracefully
   reno chrome-tab <match>
                       activate the first Chrome tab whose URL or title
                       contains match (AppleScript; needs the Automation

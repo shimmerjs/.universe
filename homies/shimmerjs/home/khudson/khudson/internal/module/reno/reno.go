@@ -390,8 +390,32 @@ func (m *Mod) journal() {
 // boundary the bus executor needs: a stopped run's queued step actions
 // must not execute into the next run.
 func (m *Mod) stopLocked() []module.Effect {
-	if m.run == nil || !m.run.Live() {
+	if !m.finishRunLocked() {
 		return nil
+	}
+	effects := []module.Effect{module.Boundary()}
+	// ending the session puts the rig down. Stopping a take deliberately
+	// does not -- the devices stay held so the next take is instant -- so
+	// this is the only path that turns the camera light back off.
+	if m.armed() {
+		m.armLive, m.armNote, m.armFail = false, "", false
+		effects = append(effects, module.Effect{
+			Key:  fmt.Sprintf("%s/release/%d", m.run.ID, m.now().UnixNano()),
+			Argv: []string{m.exe, "reno", "obs", "release"},
+		})
+	}
+	if m.stopWorthyLocked() {
+		effects = append(effects, m.obsStopEffect())
+	}
+	return effects
+}
+
+// finishRunLocked closes the live run's books -- the open step's clock,
+// the stop stamp, the journal write -- and reports whether there was one
+// to close. Caller holds mu.
+func (m *Mod) finishRunLocked() bool {
+	if m.run == nil || !m.run.Live() {
+		return false
 	}
 	now := m.now()
 	if cur := m.run.Cursor; cur >= 0 && cur < len(m.run.Steps) {
@@ -404,28 +428,50 @@ func (m *Mod) stopLocked() []module.Effect {
 	m.run.StoppedAt = now
 	m.stale = ""
 	m.journal()
-	effects := []module.Effect{module.Boundary()}
-	// ending the session puts the rig down. Stopping a take deliberately
-	// does not -- the devices stay held so the next take is instant -- so
-	// this is the only path that turns the camera light back off.
-	if m.armed() {
-		m.armLive, m.armNote, m.armFail = false, "", false
-		effects = append(effects, module.Effect{
-			Key:  fmt.Sprintf("%s/release/%d", m.run.ID, m.now().UnixNano()),
-			Argv: []string{m.exe, "reno", "obs", "release"},
-		})
+	return true
+}
+
+// stopWorthyLocked reports a take OBS may still be rolling: any recording
+// intent not yet stopped and not known-failed-before-start. An UNPROVEN
+// start (intent journaled, started note lost or the verb still in flight)
+// counts, or OBS records with no owner (arc-2 review #7/#12). Caller holds
+// mu.
+func (m *Mod) stopWorthyLocked() bool {
+	if m.run == nil {
+		return false
 	}
-	if rec := m.run.Recording; rec != nil && rec.StoppedAt.IsZero() &&
-		(rec.Failed == "" || !rec.StartedAt.IsZero()) {
-		// stop-worthy = any recording intent not yet stopped and not
-		// known-failed-before-start: an UNPROVEN start (intent journaled,
-		// started note lost or verb still in flight) must get the stop
-		// verb too, or OBS records with no owner (arc-2 review #7/#12).
-		// The stop verb runs after the boundary cut and notes the output
-		// path back into this (finalized) run's journal.
-		effects = append(effects, m.obsStopEffect())
+	rec := m.run.Recording
+	return rec != nil && rec.StoppedAt.IsZero() && (rec.Failed == "" || !rec.StartedAt.IsZero())
+}
+
+// QuitRequest is the quit-begin ctl reply: what the quit verb still has to
+// put down once the module has closed the run. Run names the run a
+// record-stop note belongs to ("" when none was live), and Recording marks
+// a take OBS may still be rolling.
+type QuitRequest struct {
+	Run       string `json:"run,omitempty"`
+	Recording bool   `json:"recording,omitempty"`
+}
+
+// quitLocked closes the run for a quit and hands the verb the cleanup.
+// Unlike stopLocked it emits NO release and NO record-stop effect: the
+// quit verb performs both itself over the one connection it is about to
+// close, and a second pair of children racing it would arrive at an OBS
+// that had already gone. The boundary still fires -- queued step actions
+// must not execute into an OBS that is quitting. Caller holds mu.
+func (m *Mod) quitLocked() (QuitRequest, []module.Effect) {
+	req := QuitRequest{Recording: m.stopWorthyLocked()}
+	if m.run != nil {
+		req.Run = m.run.ID
 	}
-	return effects
+	var effects []module.Effect
+	if m.finishRunLocked() {
+		effects = []module.Effect{module.Boundary()}
+	}
+	// the rig is going down whether or not a run was live: this is the
+	// path that exists for the hand-driven session with no script at all
+	m.armLive, m.armNote, m.armFail = false, "", false
+	return req, effects
 }
 
 // HandleCtl is the run-lifecycle control seam behind `khudson reno
@@ -454,6 +500,9 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 			return nil, nil, errors.New("reno stop: no live run")
 		}
 		return nil, m.stopLocked(), nil
+	case "quit-begin":
+		req, effects := m.quitLocked()
+		return req, effects, nil
 	case "status":
 		return m.statusLocked(), nil, nil
 	case "record-open":

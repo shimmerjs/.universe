@@ -115,6 +115,7 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 		return errors.New("no modules running")
 	}
 	go rate.run(ctx, inputRateEvery)
+	go newWedgeWatch(rate).run(ctx, wedgePoll)
 	return runModules(ctx, sc, entries)
 }
 

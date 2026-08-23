@@ -407,6 +407,18 @@ func ForceQuitBundle(bundleID string) error {
 	return kerr
 }
 
+// BundleRunning reports whether any process owning bundleID is up. It is
+// the confirmation half of QuitBundle: an AppleEvent asking an app to quit
+// returns as soon as the event is delivered, not once the app has gone, so
+// a caller that has to say "it is down" has to look.
+func BundleRunning(bundleID string) (bool, error) {
+	pids, err := resolveBundlePids(bundleID)
+	if err != nil {
+		return false, err
+	}
+	return len(pids) > 0, nil
+}
+
 // resolveBundlePids parses a fresh lsappinfo listing for entries whose
 // bundleID is exactly bundleID and returns their pids.
 func resolveBundlePids(bundleID string) ([]int, error) {

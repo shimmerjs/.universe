@@ -47,6 +47,19 @@ func (r *inputRate) source(name string) *atomic.Int64 {
 	return c
 }
 
+// total sums every source's live counter WITHOUT draining it. The wedge
+// watch polls this far faster than the log line drains, so it must not
+// disturb the counts the forensic line reports.
+func (r *inputRate) total() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int64
+	for _, c := range r.counters {
+		n += c.Load()
+	}
+	return n
+}
+
 // drain renders the interval's counts and zeroes them. Sources that have
 // opened stay in the line at zero: a source reporting nothing is the
 // observation, so it must not vanish from the record.
