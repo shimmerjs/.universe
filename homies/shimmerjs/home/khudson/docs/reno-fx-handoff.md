@@ -1,79 +1,56 @@
 # reno/obs handoff -- 2026-08-23
 
-open items from the session that landed the stacked-screen canvas, the sustained jitter and the stepper. everything below is unstarted unless it says otherwise. the investigation into the input-hang lead is running separately; nothing here depends on it.
+the four items from the previous handoff all landed. this is what they became, what is verified and what is not, and what is left.
 
-## state you are starting from
+## state
 
-all staged, not committed. full go suite + `go vet` + `nix build .#darwinConfigurations.aw-chainguard.system` green.
+committed on main, `2b9aa6e..deb3982`. `go build`, `go vet`, `go test -race ./...`, `gofmt -l`, and `nix build .#darwinConfigurations.aw-chainguard.system` all green -- the nix build runs the go suite in-sandbox (`doCheck = true`), so the tests are green twice over. the three khudson flake checks (glyphs, posture, bininstall) pass.
 
-landed and verified against live obs:
+`nix flake check` does NOT pass, and did not before any of this: `nixosConfigurations.snake` fails to eval on `attribute 'buildDTBs' missing` from nixpkgs' `hardware/device-tree.nix`. verified pre-existing by stashing every uncommitted change and re-evaluating. it is a pinned-nixpkgs problem, not a config one.
 
-- **stacked screens.** `StackBoxes` in `internal/reno/scene.go` lays screens as aspect-proportional rows sharing one width, replacing the old equal-column split. gutter is `StackGutterFrac` (1/64 of canvas width).
-- **derived canvas.** `StackCanvas` picks the canvas from the sources: width = narrowest source so nothing upscales, height = rows + gutters. dell+edge -> 2560x2200, edge alone -> 2560x720 with the strip at scale 1.000. applied by `fitCanvas` in `internal/bus/renoscene.go`, which reads the canvas back before writing any transform -- obs rescales scene items asynchronously on a base-resolution change and transforms written into that gap get multiplied by the ratio of the two canvases.
-- **webcam corner sizes.** `br+ tr+ bl+ tl+` are the quarter-canvas-area variants. `CamTransform` now takes `srcW, srcH` and shapes the box to the camera's aspect so a corner preset hugs its corner on a non-16:9 canvas.
-- **sustained jitter.** level > 0 runs continuously in `FXJitterChunk` (3s) batches re-fired by `watchJitter` in `internal/module/reno/jitterwatch.go`. chunks are whole cycles so each ends on the pose it started from. amplitude fits the box's headroom symmetrically.
-- **level scale 5 -> 20 steps.** `FXMaxLevel`. pixelate's curve is geometric (256 -> 16) since the old `256 >> (level-1)` hit zero.
-- **stepper.** `module.RowStepper` + `module.End`, rendered by `stepperTile` in `internal/dock/pad.go`. one label, one reading, two independently-hittable ends. `Ends[].Argv` is harvested into the bus act allowlist in `internal/bus/scheduler.go` -- anything new carrying acts outside `Act`/`Menu` must be added there or the button lights and does nothing.
+**nothing here has been run against live OBS.** everything below is verified by unit tests and by the build. the last session's work was verified on glass; this session's was not, and the difference matters most for the two items that touch OBS in ways nothing else does -- the sustained driver's process lifecycle and the browser source.
 
-## 1. d-pad for slide directions
+## what landed
 
-the `FX` band publishes one `slide <corner>` tile per direction. wanted: a single element with the four corners arranged spatially.
+**`khudson reno obs quit`** (`97d796c`). one verb for what took four: close the run, stop the take, drop the hardware, quit OBS. the order is load-bearing -- the take stops before the release (releasing mid-recording writes a clip of disabled sources) and the socket closes before the AppleEvent (a quit racing a request in flight is how a clip comes out half written). graceful quit only, never a signal, for the crash-sentinel reason. `ax.BundleRunning` is the confirmation half: the event returns once delivered, so the verb watches up to `ObsQuitGrace` (15s) and reports "still up (a dialog may be waiting)" rather than claiming a quit it did not see.
 
-the stepper is the precedent -- copy its shape rather than inventing a second mechanism. `module.End` already carries `Label`/`Argv`/`Dim`/`Key` and is a slice, so a `RowDpad` kind with four ends needs no new wire type. the work is:
+`quit-begin` is the ctl handshake, shaped like `apply-begin`. it closes the run and reports the take still owing a stop note, but emits neither the release nor the record-stop that `stop` emits -- the verb does both itself, and a second pair of children would race it to an OBS already leaving. `Release`'s body moved to `releaseHardware` so the two paths cannot drift.
 
-- `renderPad` in `internal/dock/pad.go` dispatches on `t.Kind`; add the case beside `RowStepper`.
-- hit regions: `registerStepperHits` splits the interior into two spans. a d-pad splits into quadrants -- same pattern, four rects.
-- `MinHeight` matters. the stepper needed 4 (two interior lines) or the label cropped to `purp`. a d-pad wants at least that.
-- `internal/dock/reno.go` collects tiles by kind; add `RowDpad` to the filter next to `RowStepper`.
-- `internal/dock/rows.go` needs a degraded case for the classic panel (no grid, no aiming).
-- `padTile` in `internal/module/reno/record_test.go` is the test helper that finds a published element by key; it filters on kind.
+**sustained-effect driver** (`1c76626`). the jitter off-latency is fixed, and this is the shape the lamp went on. the old driver re-fired a one-shot per chunk, paying a process spawn and a websocket handshake between every batch, which is why a chunk had to be 3s and why "off" took 3s. now it is one long-lived verb per effect -- `reno obs cam <kind> <level> --sustain` -- holding one socket and its own phase. reading the pose ONCE is what frees a chunk from covering whole cycles, so `FXSustainChunk` is 250ms and that is the worst an off can cost.
 
-note the corner presets are now eight (`br`,`br+`, ...) plus `big`. decide whether the d-pad drives the plain corners with size on a separate control, or grows a `+` end. the plain four plus a size stepper beside it is the smaller change and matches the remote idiom already on the pad.
+an effect is three plans: `SustainSetup`, `SustainChunk` (carrying the phase it ended at, so the seam is invisible), `SustainHome`. the supervisor stops a driver by CLOSING ITS STDIN -- a stop needing neither a signal delivered nor a supervisor alive to deliver it, so a SIGKILLed bus still leaves an orphan putting the camera back. `sustainLifetime` (30m) is the backstop under that.
 
-## 2. lavalamp
+sustained levels no longer survive a bus restart, deliberately: a pixelate does because its filter is still on the camera, a shake does not because its driver put the pose back on the way out.
 
-a fourth level effect, "behaves similarly" to the others -- so `LevelFXKinds`, a 0..20 magnitude, off at 0.
+**lava** (`1c76626`, `deb3982`). the fourth level effect, driver-driven as the last handoff's second option. a slow hue swing either side of the camera's own colour on its own `color_filter_v2` (never purple's -- two independently levelled tiles sharing one filter would each overwrite the other). it oscillates rather than running round the wheel: a full rotation spends half its time with skin the colour of a bruise, and there is no graceful place to stop from the far side.
 
-two shapes are available and they are not equivalent:
+`deb3982` is worth knowing about if you touch this. the driver's home does NOT disable the lamp's filter, because a level change stops one driver and starts another and a home that darkened it would flash the filter off and back on under every tap of the pair. level 0 fires the one-shot that disables it. a one-shot span still ends dark on its own, because nothing drives after one.
 
-- **filter-driven**, like pixelate and purple. add to `IsFilterFX`, give it `levelStages`. the constraint is hard: only stock filters exist, `nix owns no obs plugin on this machine`, and a level effect must fail loudly when its stock kind is absent. the confirmed-good kinds are `scale_filter` and `color_filter_v2`. a slow colour cycle through `color_filter_v2`'s `hue_shift` is the obvious candidate, but a *cycle* is motion and a filter setting is static -- which pushes it to:
-- **driver-driven**, like jitter. re-fire batches that walk `hue_shift` around the wheel. `jitterwatch.go` is the whole pattern: `touchJitterLocked` / `jitterCheckLocked` / `watchJitter` / `fireJitterChunk`, ~100 lines, and the generalisation to "any sustained level fx" is mostly renaming. do that generalisation rather than copy-pasting a second watcher.
+**d-pad** (`7b96a9f`). `module.RowDpad`: four presses in one tile, arranged where they point, sharing the stepper's renderer (`endsTile` / `registerEndsHits` draw two ends or four). the corner/size split is what makes four presses cover nine placements -- the d-pad slides at whatever size the camera has, a size pair grows or shrinks whichever corner it is in, both ends dim off a corner. `big` keeps a button. the FX band went from fourteen elements to eight.
 
-if you go driver-driven, the chunk arithmetic in `FXJitterChunk`'s comment is the thing to re-read: whole cycles per chunk is what stops successive chunks from drifting, and chunk length trades stutter-between-chunks against how far behind a tap on "off" lands.
+**lemmings** (`4f40d88`). a `browser_source` overlay on the camera's box. the page is `go:embed`ed from the source tree nix builds -- so it can never be a version behind the code that places it -- written to `<state>/reno/lemmings.html` and loaded by LOCAL FILE, never a url. it is written only when an apply wants one, and skipped when the file on disk is already that exact page (the source points at that path; rewriting under a live source blinks the overlay out).
 
-## 3. lemmings
+`PlanInput.Overlay` names the item an input takes its BOX from, so the two coincide over a camera of any aspect while the scale still comes from the overlay's own page. it stacks last (bottom-first), and goes down with no visible camera. on the pad it is a plain toggle, not a level: the page animates itself, so there is no magnitude khudson holds and a stepper would be reporting a number it invented.
 
-`browser_source` IS available in this obs (verified 2026-08-23 via `GetInputKindList`), so an html canvas composited over the cam is a real path and not a guess. sketch:
+## what to check on glass first
 
-- a khudson-owned `reno-lemmings` browser source, sized and positioned over the `reno-cam` item's box.
-- the html is a build artifact nix owns, referenced by local file url. it must not reach the network.
-- `Plan.Stack` is bottom-first and already orders screens then cam; lemmings goes above the cam. the stack readback exists because getting this wrong is silent -- the source renders under a full-canvas screen capture and looks exactly like a source that never loaded.
-- treat it as a level fx if you want density on the pad, or a plain toggle if not.
+in rough order of how likely they are to be wrong.
 
-the honest risk: obs-browser is bundled with obs but the cask is unpinned and nix owns none of it, which is the same exposure the design already accepts for obs itself.
+1. **the lemmings page renders at all.** obs-browser's settings keys are from its documented schema, NOT verified against this OBS the way the filter schemas were (`GetSourceFilterDefaultSettings`). if the overlay comes up blank or opaque, suspect `is_local_file`/`local_file` naming and the `css` key first. the transparency assertion in particular is a guess about obs-browser's default CSS being overridable this way.
+2. **the driver's stdin stop.** the whole lifecycle is unit-tested against a `sh -c 'cat >/dev/null'` child, which proves the supervisor and not the verb. what is untested is the verb's own `sustainStop` reading stdin to EOF while a batch is in flight.
+3. **250ms chunks against real OBS.** the claim is that a held socket makes the inter-chunk gap one loopback round trip. if there is a visible stutter at 4 chunks/second, the number to move is `FXSustainChunk`, and the trade is back to off-latency.
+4. **the d-pad's hit regions under a thumb.** the geometry is unit-tested; four cells wide by half a tile tall is small, and only glass says whether it is aimable.
+5. **`reno obs quit`'s AppleEvent.** it needs the one-time Automation grant (khudson -> OBS). the first run will prompt, or fail with the error naming the grant.
 
-## 4. `reno obs quit`
+## still open
 
-there is no single verb to fully put obs down. today it is:
+- **the canvas is not restored.** `fitCanvas` writes OBS's base+output resolution and never puts it back, so switching to a non-reno scene leaves a canvas shaped for reno's. untouched this session. `release` is still the obvious place if you want it.
+- **the lamp's filter survives the camera going away.** turning the webcam off stops the driver but does not disable the filter (only level 0 does). nothing renders, since the cam item is disabled, and the tint returns with the camera at the level the tile still reads -- consistent, but it is a filter sitting on a source with no driver.
+- **a script step's sustained effect double-starts.** `cam jitter 8` as a script step runs its one-shot span, then the module adopts the level off the fx-note and starts a driver. home and phase 0 are the same state by construction so there is no visible jump, but there is a driver spawn's worth of stillness between them.
 
-```
-khudson reno stop          # end the run
-khudson reno obs stop      # stop the recording
-khudson reno obs release   # drop the hardware
-osascript -e 'quit app "OBS"'
-```
+## traps (still true)
 
-`Release` (`internal/bus/renoarm.go:265`) stops the virtual cam first because that holds the camera light, then disables every `IsRenoInput` item. it does not quit obs. a `quit` op running all four in order is small and removes a four-step ritual from the end of every session.
-
-use a graceful quit, not `pkill -9`. obs's log opens with `Crash or unclean shutdown detected` after a hard kill, and the sentinel wedges the websocket on next launch.
-
-## open questions for you, not blockers
-
-- **jitter off-latency.** turning a jitter off can lag up to 3s while the in-flight chunk finishes. shorter chunks make "off" snappier and add a visible still moment between chunks, because the driver cannot dial the next batch until the last returns. currently biased toward smoothness.
-- **canvas is not restored.** `fitCanvas` writes obs's base+output resolution and never puts it back. that follows from reno owning this obs, but it means switching to a non-reno scene leaves a canvas shaped for reno's. restoring on `release` is the obvious place if you want it.
-
-## traps
-
-- **`git add` before any nix build.** the flake only sees tracked files. an untracked new file builds fine under `nix build --impure --expr` with a plain path (which copies untracked files) and then fails the real system build with an undefined symbol. cost an hour once already.
-- **the deployed daemon re-applies over you.** until a switch lands, `khudson reno config ...` makes the running (old-binary) daemon run its own apply, overwriting whatever you just applied with the new binary. it produced a bogus canvas reading and a duplicate `reno-screen-1 2` input during testing. apply twice, or switch first.
-- **obs readback fields lie.** `sceneItemTransform.scaleX` reads stale after a bounds change; the item renders correctly anyway. trust a screenshot (`GetSourceScreenshot`) over the transform readback when they disagree.
+- **`git add` before any nix build.** the flake only sees tracked files.
+- **the deployed daemon re-applies over you.** until a switch lands, `khudson reno config ...` makes the running old-binary daemon run its own apply over yours. apply twice, or switch first.
+- **obs readback fields lie.** `sceneItemTransform.scaleX` reads stale after a bounds change; trust a screenshot over the transform readback when they disagree.
+- **tests must not resolve the real state root.** `paths.Resolve` reads `$HOME`, not `XDG_STATE_HOME`. `renoStateDir` is the seam; a test that skips it writes into `~/Library/Application Support/khudson` (this cost one round trip already).
