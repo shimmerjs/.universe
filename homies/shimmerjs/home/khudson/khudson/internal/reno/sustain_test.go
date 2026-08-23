@@ -90,9 +90,9 @@ func TestSustainChunkIsShortEnoughToStopQuickly(t *testing.T) {
 	}
 }
 
-// Home is the state the effect FOUND, and it is the only thing that ever
-// puts it back. A shake goes to the pose read before the first chunk, a
-// lamp switches its filter off.
+// Home is the state a SHAKE found, and it is the only thing that ever puts
+// the camera back: the pose read before the first chunk. The lamp has no
+// home between drivers, for the reason below.
 func TestSustainHomeRestoresWhatWasThere(t *testing.T) {
 	env := fxTestEnv()
 	jitter, _ := ParseCamFX([]string{"jitter", "6"})
@@ -104,18 +104,17 @@ func TestSustainHomeRestoresWhatWasThere(t *testing.T) {
 		t.Errorf("jitter home = %v, want the base pose %v", got, env.From.X)
 	}
 
+	// The lamp's home is deliberately EMPTY. A level change stops one
+	// driver and starts another, so a home that disabled the filter would
+	// flash it off and back on under every tap of the pair; level 0 is what
+	// darkens it, and that is the only moment it should.
 	lava, _ := ParseCamFX([]string{"lava", "6"})
 	home, err = SustainHome(lava, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(home.Requests) != 1 {
-		t.Fatalf("lava home = %+v", home.Requests)
-	}
-	r := home.Requests[0]
-	if r.Type != "SetSourceFilterEnabled" || r.Data["filterName"] != FXLavaFilterName ||
-		r.Data["filterEnabled"] != false {
-		t.Errorf("lava home = %+v, want its filter switched off", r)
+	if len(home.Requests) != 0 {
+		t.Errorf("lava home = %+v, want nothing between two drivers", home.Requests)
 	}
 
 	// an unplaced cam has no pose to go home to, and saying so beats
@@ -261,13 +260,18 @@ func TestSustainOneShotEndsWhereItStarted(t *testing.T) {
 		if len(plan.Requests) < 8 {
 			t.Errorf("%s one-shot = %d requests, want a span you can see", kind, len(plan.Requests))
 		}
-		home, err := SustainHome(fx, env)
-		if err != nil {
-			t.Fatal(err)
-		}
+		// Nobody drives after a one-shot, so it owes the ending outright: a
+		// shake back on its pose, a lamp switched off.
 		last := plan.Requests[len(plan.Requests)-1]
-		if last.Type != home.Requests[0].Type {
-			t.Errorf("%s one-shot ended on %s, want home (%s)", kind, last.Type, home.Requests[0].Type)
+		want := "SetSceneItemTransform"
+		if kind == FXLava {
+			want = "SetSourceFilterEnabled"
+			if last.Data["filterEnabled"] != false {
+				t.Errorf("the lamp was left on with nobody driving it: %+v", last)
+			}
+		}
+		if last.Type != want {
+			t.Errorf("%s one-shot ended on %s, want %s", kind, last.Type, want)
 		}
 	}
 }

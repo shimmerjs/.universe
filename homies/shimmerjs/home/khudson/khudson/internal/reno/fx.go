@@ -546,10 +546,10 @@ func SustainChunk(fx CamFX, env FXEnv, phase float64, dur time.Duration) (*FXPla
 	return p, phase + turns, nil
 }
 
-// SustainHome is the state the effect found, restored: the pose a shake
-// started from, the filter a lamp switched on. It is the only thing that
-// puts either back -- a chunk deliberately ends wherever the phase left it
-// -- so the driver owes this plan on every exit path it has.
+// SustainHome is the state the effect found, restored. A chunk
+// deliberately ends wherever its phase left it, so for a shake this is the
+// only thing that ever puts the camera back, and the driver owes it on
+// every exit path it has.
 //
 // The pose comes from env.From, read ONCE before the first chunk. Reading
 // it now would capture the camera mid-swing and enshrine that as home.
@@ -562,7 +562,12 @@ func SustainHome(fx CamFX, env FXEnv) (*FXPlan, error) {
 		}
 		p.add(transformReq(env, env.From))
 	case FXLava:
-		p.add(filterEnabledReq(env, FXLavaFilterName, false))
+		// Nothing, deliberately. A level change stops one driver and starts
+		// another, so a home that disabled the lamp's filter would switch it
+		// off and straight back on under every tap of the pair -- a visible
+		// desaturation flash on each step of a control whose whole job is to
+		// be gradual. Level 0 is what darkens the lamp, through the one-shot
+		// that disables the filter, and that is the only moment it should.
 	default:
 		return nil, fmt.Errorf("cam %s is not a sustained effect", fx.Kind)
 	}
@@ -603,6 +608,14 @@ func addSustainOneShot(p *FXPlan, fx CamFX, env FXEnv) error {
 	p.add(setup.Requests...)
 	p.add(span.Requests...)
 	p.add(home.Requests...)
+	if fx.Kind == FXLava {
+		// The lamp goes dark HERE, where the driver's home deliberately does
+		// not. A driver hands over to the next one and must not flash the
+		// filter off between them; a one-shot hands over to nobody, so
+		// leaving the filter on would leave the camera tinted with nothing
+		// left running to explain it.
+		p.add(filterEnabledReq(env, FXLavaFilterName, false))
+	}
 	return nil
 }
 

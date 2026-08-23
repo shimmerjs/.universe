@@ -292,12 +292,21 @@ func (m *Mod) bumpFXLevelLocked(kind string, up bool) (renocore.CamFX, bool) {
 	m.fxLevels[kind] = next
 	m.writeState(levelsFile, m.fxLevels)
 	if renocore.IsSustainFX(kind) {
-		// a shake and a lamp are not one-shots: raising one off zero is what
-		// starts its driver, and dropping it to zero is what stops it. The
-		// driver owns the whole effect, home included, so an effect fired
-		// alongside it would be a second author of the same camera.
+		// A shake and a lamp are not one-shots: raising one off zero starts
+		// its driver, walking it restarts one, and dropping it to zero stops
+		// it. The driver owns the effect while it runs, so an effect fired
+		// alongside would be a second author of the same camera.
+		//
+		// Zero is the exception, and only where the effect leaves STATE. A
+		// shake leaves none -- its driver puts the pose back on the way out.
+		// The lamp leaves a filter, and switching that off cannot be the
+		// driver's job: a level change stops one driver and starts another,
+		// so a driver that darkened the lamp on its way out would flash it
+		// off under every tap of the pair. Level 0 fires the one-shot that
+		// does it, which is the only moment the lamp should go dark.
 		m.touchSustainLocked(kind)
-		return renocore.CamFX{}, false
+		off := next == 0 && renocore.IsFilterFX(kind)
+		return renocore.CamFX{Kind: kind, Level: next}, off
 	}
 	return renocore.CamFX{Kind: kind, Level: next}, true
 }
