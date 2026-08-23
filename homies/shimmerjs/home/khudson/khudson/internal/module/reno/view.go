@@ -35,6 +35,7 @@ const (
 	KeyFXMove      = "fx:move"
 	KeyFXSize      = "fx:size"
 	KeyFXHide      = "fx:hide"
+	KeyFXLemmings  = "fx:lemmings"
 	KeyFXLevel     = "fx:level"
 	KeyCfgScript   = "cfg:script"
 	KeyNotes       = "notes"
@@ -436,7 +437,8 @@ func (m *Mod) recorderTiles() []module.Row {
 			glyphCam, actFXMove, renocore.CamBig, m.desired.Webcam == renocore.CamBig),
 		module.Row{Kind: module.RowPad, Section: secFX,
 			Key: KeyFXHide, Glyph: glyphCamOff, Text: "hide",
-			Act: []string{actFXHide}})
+			Act: []string{actFXHide}},
+		m.lemmingsTile())
 
 	// The level effects each get ONE remote: the name and its reading, with
 	// a minus and a plus welded either side. They are allowed on the pad
@@ -447,6 +449,33 @@ func (m *Mod) recorderTiles() []module.Row {
 		tiles = append(tiles, m.levelStepper(kind))
 	}
 	return tiles
+}
+
+// lemmingsTile toggles the html overlay that rides on the camera's box. It
+// is a plain toggle rather than a level because the page animates itself:
+// there is no magnitude khudson holds, so there is nothing for a stepper to
+// report, and a stepper reporting a number it made up is the tile that lies.
+//
+// It dims with no camera visible, because the overlay hangs on the
+// camera's box and there is none -- the same honesty the size pair keeps.
+// Still pressable there: the config knob is real, and the overlay appears
+// with the camera when one is placed. Caller holds mu.
+func (m *Mod) lemmingsTile() module.Row {
+	t := module.Row{Kind: module.RowPad, Section: secFX,
+		Key: KeyFXLemmings, Glyph: glyphCam, Text: "lemmings",
+		Act: []string{actLemmings}}
+	switch {
+	case !m.desired.Lemmings:
+		t.Value = "off"
+		t.Style = module.StyleDim
+	case m.desired.Webcam == "" || m.desired.Webcam == "off":
+		t.Value = "no cam"
+		t.Style = module.StyleDim
+	default:
+		t.Value = "on"
+		t.Style = module.StyleAccent
+	}
+	return t
 }
 
 // slidePad is the four corner placements arranged where they point. It

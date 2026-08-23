@@ -27,6 +27,11 @@ type RecordConfig struct {
 	// Webcam is a placement preset from WebcamPresets; "" means no
 	// webcam item.
 	Webcam string `json:"webcam,omitempty"`
+	// Lemmings hangs the html overlay on the webcam's box. It rides in the
+	// config rather than being an FX one-shot because it is scene state --
+	// a source that stays where the reconciler put it -- and because it
+	// then survives a bus restart the way every other knob here does.
+	Lemmings bool `json:"lemmings,omitempty"`
 }
 
 // AudioNone records with no microphone: the plan mutes every audio
@@ -35,7 +40,7 @@ const AudioNone = "none"
 
 // Empty reports the zero config: record OBS exactly as it stands.
 func (c RecordConfig) Empty() bool {
-	return len(c.Screens) == 0 && c.Audio == "" && c.Webcam == ""
+	return len(c.Screens) == 0 && c.Audio == "" && c.Webcam == "" && !c.Lemmings
 }
 
 // Summary is the one-line human form for status rows and events.
@@ -52,6 +57,9 @@ func (c RecordConfig) Summary() string {
 	}
 	if c.Webcam != "" {
 		parts = append(parts, "webcam "+c.Webcam)
+	}
+	if c.Lemmings {
+		parts = append(parts, "lemmings")
 	}
 	return strings.Join(parts, ", ")
 }
@@ -258,7 +266,7 @@ func IsScreenInput(name string) bool { return strings.HasPrefix(name, screenStem
 // hand is theirs, and a verb that reached past its own inputs would be
 // editing a scene it does not own.
 func IsRenoInput(name string) bool {
-	return name == MicInput || name == CamInput || IsScreenInput(name)
+	return name == MicInput || name == CamInput || name == LemmingsInput || IsScreenInput(name)
 }
 
 // ObsEnv is the probed OBS environment a plan is built against. The
@@ -279,10 +287,16 @@ type ObsEnv struct {
 	DisplayProp    string
 	DisplayNumeric bool
 	CamProp        string
-	Displays       []PropertyItem
-	Mics           []PropertyItem
-	Cams           []PropertyItem
-	Monitors       []Monitor
+	// LemmingsKind is the browser source kind when this OBS advertises one
+	// (obs-browser is bundled, but nix owns none of this OBS, so it is
+	// probed like every other capability); LemmingsFile is where the
+	// overlay page has been written for it to load.
+	LemmingsKind string
+	LemmingsFile string
+	Displays     []PropertyItem
+	Mics         []PropertyItem
+	Cams         []PropertyItem
+	Monitors     []Monitor
 	// Scenes and Inputs are current OBS state: scene names, and every
 	// input's name -> kind.
 	Scenes []string
@@ -314,6 +328,11 @@ type PlanInput struct {
 	Region *Region
 	// Preset is the webcam placement ("" for screen items).
 	Preset string
+	// Overlay names the item this one hangs on: it takes that item's BOX
+	// (so the two coincide however oddly shaped the camera is) while
+	// rendering its own content into it. Empty for everything that has a
+	// box of its own.
+	Overlay string
 	// Monitor carries the resolved display's geometry when known (the
 	// source-dimension fallback for region math).
 	Monitor *Monitor
@@ -448,7 +467,52 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 			p.Inputs = append(p.Inputs, PlanInput{Name: CamInput, Kind: kind, Enabled: false})
 		}
 	}
+	if err := addLemmings(p, cfg, env); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// addLemmings hangs the html overlay on the camera's box. It goes on LAST
+// so it lands on top of the stack: Stack is bottom-first, the cam has just
+// been appended over the screens, and an overlay under the thing it is
+// overlaying is exactly the silent failure the stack readback exists for --
+// it renders beneath a full-canvas screen capture and looks identical to a
+// source that never loaded.
+//
+// The overlay needs a camera to hang on. Without a visible one there is no
+// box, so the source goes down rather than being placed somewhere arbitrary
+// -- and it goes down explicitly, the same stale-source prune the cam and
+// the screens get, because a browser source left enabled from a previous
+// posture is a page still rendering over a scene nobody asked it to.
+func addLemmings(p *Plan, cfg RecordConfig, env ObsEnv) error {
+	_, ok := env.Inputs[LemmingsInput]
+	on := cfg.Lemmings && cfg.Webcam != "" && cfg.Webcam != "off"
+	if !on {
+		if ok {
+			p.Inputs = append(p.Inputs, PlanInput{Name: LemmingsInput, Kind: LemmingsKind, Enabled: false})
+		}
+		return nil
+	}
+	// The capability probe, same rule as every filter effect: obs-browser
+	// is bundled with OBS, but nix owns none of this OBS, and a build
+	// without it has nothing else that renders html. Refuse by name.
+	if env.LemmingsKind == "" {
+		return fmt.Errorf("lemmings: this obs has no %q input kind, so there is nothing to render the overlay", LemmingsKind)
+	}
+	if env.LemmingsFile == "" {
+		return errors.New("lemmings: the overlay page has not been written anywhere for obs to load")
+	}
+	p.Inputs = append(p.Inputs, PlanInput{
+		Name:     LemmingsInput,
+		Kind:     env.LemmingsKind,
+		Settings: LemmingsSettings(env.LemmingsFile),
+		Enabled:  true,
+		Preset:   cfg.Webcam,
+		Overlay:  CamInput,
+	})
+	p.Stack = append(p.Stack, LemmingsInput)
+	return nil
 }
 
 func monitorByName(ms []Monitor, name string) *Monitor {

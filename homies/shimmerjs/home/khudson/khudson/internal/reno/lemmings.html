@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<!--
+  reno lemmings: a transparent overlay of small walking figures that
+  composites over the webcam.
+
+  Self-contained on purpose. It is loaded by OBS's browser source from a
+  file:// path and MUST NOT reach the network: no fonts, no scripts, no
+  images, nothing but this file. A demo overlay that fetched anything would
+  be a demo overlay that renders differently, or not at all, depending on
+  what the wifi is doing.
+
+  The page draws itself at whatever size it is given (the browser source's
+  width and height), so the same file works over a corner PiP and a
+  full-canvas camera without knowing which it is.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>reno lemmings</title>
+    <style>
+      /* transparent, and no scrollbars: obs-browser composites whatever
+         alpha the page leaves, so any background at all would be a grey
+         rectangle over the camera */
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <script>
+      "use strict";
+
+      // How many walk at once, and how fast in fractions of the frame's
+      // width per second. Slow enough to read as a crossing rather than a
+      // stampede: the camera is the subject and these are decoration.
+      var COUNT = 8;
+      var SPEED_MIN = 0.05;
+      var SPEED_MAX = 0.11;
+
+      // Sprite size as a fraction of the frame's SHORT side, so a lemming
+      // is the same visual weight in a corner PiP as full canvas.
+      var BODY_FRAC = 0.11;
+
+      var GREEN = "#22c55e";
+      var BLUE = "#3b82f6";
+      var SKIN = "#f5d0a9";
+
+      var stage = document.getElementById("stage");
+      var ctx = stage.getContext("2d");
+      var w = 0;
+      var h = 0;
+      var walkers = [];
+
+      // The frame can change size under us -- the corner preset grew, the
+      // canvas was refitted -- so the geometry is re-read rather than
+      // measured once at load.
+      function resize() {
+        var dpr = window.devicePixelRatio || 1;
+        w = window.innerWidth;
+        h = window.innerHeight;
+        stage.width = Math.round(w * dpr);
+        stage.height = Math.round(h * dpr);
+        stage.style.width = w + "px";
+        stage.style.height = h + "px";
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      function spawn(i) {
+        var dir = Math.random() < 0.5 ? 1 : -1;
+        return {
+          // spread the first cohort across the frame instead of marching
+          // them all in from one edge at t=0
+          x: Math.random(),
+          dir: dir,
+          speed: SPEED_MIN + Math.random() * (SPEED_MAX - SPEED_MIN),
+          // each walks its own lane in the bottom third, so a crowd reads
+          // as depth rather than as one line of clones
+          lane: 0.7 + (i % 4) * 0.07,
+          phase: Math.random() * Math.PI * 2
+        };
+      }
+
+      function reseed() {
+        walkers = [];
+        for (var i = 0; i < COUNT; i++) {
+          walkers.push(spawn(i));
+        }
+      }
+
+      // One figure: hair, face, body, and two legs that swing out of the
+      // walk phase. Drawn as rectangles rather than a sprite sheet because
+      // an image would be a second file, and this has to be one.
+      function draw(p, t) {
+        var unit = Math.min(w, h) * BODY_FRAC;
+        var x = p.x * w;
+        var y = p.lane * h;
+        var swing = Math.sin(t * 9 + p.phase);
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(p.dir, 1);
+
+        // legs, swinging opposite each other
+        ctx.fillStyle = GREEN;
+        ctx.fillRect(-unit * 0.28 + swing * unit * 0.16, unit * 0.1, unit * 0.22, unit * 0.34);
+        ctx.fillRect(unit * 0.06 - swing * unit * 0.16, unit * 0.1, unit * 0.22, unit * 0.34);
+        // body
+        ctx.fillStyle = BLUE;
+        ctx.fillRect(-unit * 0.3, -unit * 0.34, unit * 0.6, unit * 0.46);
+        // face
+        ctx.fillStyle = SKIN;
+        ctx.fillRect(-unit * 0.24, -unit * 0.62, unit * 0.48, unit * 0.3);
+        // hair
+        ctx.fillStyle = GREEN;
+        ctx.fillRect(-unit * 0.3, -unit * 0.78, unit * 0.6, unit * 0.22);
+
+        ctx.restore();
+      }
+
+      var last = 0;
+      function frame(now) {
+        var t = now / 1000;
+        var dt = last === 0 ? 0 : Math.min(t - last, 0.1);
+        last = t;
+
+        ctx.clearRect(0, 0, w, h);
+        for (var i = 0; i < walkers.length; i++) {
+          var p = walkers[i];
+          p.x += p.dir * p.speed * dt;
+          // off one edge, back on the other: the crowd never thins out
+          if (p.x > 1.15) {
+            p.x = -0.15;
+          } else if (p.x < -0.15) {
+            p.x = 1.15;
+          }
+          draw(p, t);
+        }
+        window.requestAnimationFrame(frame);
+      }
+
+      window.addEventListener("resize", resize);
+      resize();
+      reseed();
+      window.requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

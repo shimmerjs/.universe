@@ -117,13 +117,14 @@ func cmdReno(args []string) error {
 		var screens stringsFlag
 		fs.Var(&screens, "screen", "display selector, optionally :x,y,WxH (repeatable)")
 		audio := fs.String("audio", "", "audio input device query, or 'none' to mute all")
-		webcam := fs.String("webcam", "", "webcam preset: off|br|tr|bl|tl|big")
+		webcam := fs.String("webcam", "", "webcam preset: off|br|tr|bl|tl (+ for the grown corner) |big")
+		lemmings := fs.Bool("lemmings", false, "hang the html overlay on the webcam's box")
 		clear := fs.Bool("clear", false, "reset to 'obs as-is'")
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}
 		if *clear {
-			if len(screens) > 0 || *audio != "" || *webcam != "" {
+			if len(screens) > 0 || *audio != "" || *webcam != "" || *lemmings {
 				return fmt.Errorf("reno config: --clear takes no other flags")
 			}
 			return renoCtlCall([]string{"record-config", "--clear"})
@@ -143,8 +144,9 @@ func cmdReno(args []string) error {
 			}
 			cfg.Webcam = *webcam
 		}
+		cfg.Lemmings = *lemmings
 		if cfg.Empty() {
-			return fmt.Errorf("reno config: nothing set (want --screen/--audio/--webcam, or --clear)")
+			return fmt.Errorf("reno config: nothing set (want --screen/--audio/--webcam/--lemmings, or --clear)")
 		}
 		raw, err := json.Marshal(cfg)
 		if err != nil {

@@ -1206,3 +1206,55 @@ func TestFmtAge(t *testing.T) {
 		}
 	}
 }
+
+// The overlay is scene state, so its tile is a plain toggle driving the
+// same reconcile every other knob on this pad drives -- not an FX one-shot.
+// It is a toggle and not a level because the page animates itself: there is
+// no magnitude khudson holds, and a stepper reporting a number it invented
+// is the tile that lies.
+func TestRecorderLemmingsTile(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+
+	tile := padTile(m.recorderData().Rows, KeyFXLemmings)
+	if tile == nil || tile.Section != secFX || tile.Kind != module.RowPad {
+		t.Fatalf("no lemmings tile: %+v", tile)
+	}
+	if tile.Value != "off" {
+		t.Errorf("lemmings starts at %q, want off", tile.Value)
+	}
+
+	// let the webcam tap's apply land first, or the latch defers this one
+	ctl(t, m, "apply-note", "ok", "scene ok")
+	handled, effects := m.HandleActEffects(tile.Act)
+	if !handled {
+		t.Fatal("the lemmings tap must be handled in-process")
+	}
+	if !m.desired.Lemmings {
+		t.Error("the tap must set the config knob")
+	}
+	// scene state, so it goes through the ordinary live apply rather than
+	// an fx one-shot
+	if len(effects) != 1 || !strings.Contains(strings.Join(effects[0].Argv, " "), "obs apply") {
+		t.Fatalf("lemmings effects = %+v, want one apply", effects)
+	}
+	if tile = padTile(m.recorderData().Rows, KeyFXLemmings); tile.Value != "on" ||
+		tile.Style != module.StyleAccent {
+		t.Errorf("lit tile = %+v", tile)
+	}
+
+	// with no camera there is no box to hang on, and the tile says so
+	// rather than claiming an overlay nobody can see
+	ctl(t, m, "apply-note", "ok", "scene ok")
+	m.HandleActEffects([]string{actCfgWebcam, "off"})
+	if tile = padTile(m.recorderData().Rows, KeyFXLemmings); tile.Value != "no cam" {
+		t.Errorf("lemmings over a dead cam = %q, want it said so", tile.Value)
+	}
+
+	// and tapping again turns it off
+	m.HandleActEffects(tile.Act)
+	if m.desired.Lemmings {
+		t.Error("the tile must toggle")
+	}
+}

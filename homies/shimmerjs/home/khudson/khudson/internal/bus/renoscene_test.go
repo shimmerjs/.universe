@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -475,4 +476,76 @@ func TestProbeVerbNotesInventory(t *testing.T) {
 	if last.Verb != "obs" || last.Outcome != "ok" {
 		t.Errorf("event = %+v", last)
 	}
+}
+
+// The overlay takes the CAMERA's box, not its own page's shape. Its page
+// is 16:9 and a camera need not be, so an overlay sized from itself would
+// be visibly the wrong rectangle on the one shot where it matters.
+func TestApplyHangsLemmingsOnTheCameraBox(t *testing.T) {
+	fakeCGDisplays(t)
+	noSettleDelay(t)
+	fakeRenoState(t)
+	obs := sceneFake()
+	obs.kinds = append(obs.kinds, renocore.LemmingsKind)
+	// a 4:3 camera, so a box shaped from the overlay's own 16:9 page would
+	// come out visibly different
+	obs.sizes[renocore.CamInput] = [2]int{1440, 1080}
+	obs.sizes[renocore.LemmingsInput] = [2]int{renocore.LemmingsW, renocore.LemmingsH}
+
+	cfg := renocore.RecordConfig{
+		Screens:  []renocore.ScreenSel{{Display: "built-in"}},
+		Webcam:   "br",
+		Lemmings: true,
+	}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	camID, err := obs.SceneItemID("reno", renocore.CamInput, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lemID, err := obs.SceneItemID("reno", renocore.LemmingsInput, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cam, lem := obs.tfs[camID], obs.tfs[lemID]
+	if cam.BoundsW == 0 {
+		t.Fatal("the camera was never placed")
+	}
+	if lem.X != cam.X || lem.Y != cam.Y || lem.BoundsW != cam.BoundsW || lem.BoundsH != cam.BoundsH {
+		t.Errorf("overlay box %+v does not sit on the camera's %+v", lem, cam)
+	}
+	// the SCALE still comes from the overlay's own page, because that is
+	// what OBS is fitting into the box
+	wantX, wantY := renocore.ScaleInner(cam.BoundsW, cam.BoundsH, renocore.LemmingsW, renocore.LemmingsH)
+	if lem.ScaleX != wantX || lem.ScaleY != wantY {
+		t.Errorf("overlay scale = %v,%v, want %v,%v from its own page size",
+			lem.ScaleX, lem.ScaleY, wantX, wantY)
+	}
+	// and it renders over the camera, which is the whole point
+	order := filterKeep(obs.order["reno"], []string{renocore.CamInput, renocore.LemmingsInput})
+	if !slices.Equal(order, []string{renocore.CamInput, renocore.LemmingsInput}) {
+		t.Errorf("stack bottom-first = %v; the overlay must be on top", order)
+	}
+	// the page it loads is real and on disk
+	settings := obs.settings[renocore.LemmingsInput]
+	path, _ := settings["local_file"].(string)
+	if path == "" {
+		t.Fatalf("overlay settings = %+v, want a local file", settings)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the overlay points at a page that is not there: %v", err)
+	}
+}
+
+// fakeRenoState points the reno state dir at a temp dir, so the overlay
+// page is written there rather than into the state root of the machine
+// running the tests.
+func fakeRenoState(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	old := renoStateDir
+	renoStateDir = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { renoStateDir = old })
+	return dir
 }

@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
+	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
@@ -70,6 +72,10 @@ func ProbeEnv(obs ObsTransport) (renocore.ObsEnv, error) {
 	}
 	env.ScreenKind = renocore.PickKind(kinds, "screen_capture", "display_capture")
 	env.CamKind = renocore.PickKind(kinds, "macos-avcapture", "av_capture_input")
+	// The html overlay's renderer. Probed here with the rest, because this
+	// is where the question "what can this OBS do" is answered; the PAGE it
+	// renders is written by the apply, and only when the apply wants one.
+	env.LemmingsKind = renocore.PickKind(kinds, renocore.LemmingsKind)
 
 	if env.CanvasW, env.CanvasH, env.FPS, err = obs.Canvas(); err != nil {
 		return env, fmt.Errorf("canvas: %w", err)
@@ -146,6 +152,18 @@ func ProbeEnv(obs ObsTransport) (renocore.ObsEnv, error) {
 // localDisplays is the CG enumeration seam (tests fake it).
 var localDisplays = cgdisplay.Active
 
+// renoStateDir is where reno keeps what it owns on disk, and the seam
+// tests point somewhere temporary. It has to be a seam: the overlay page
+// is WRITTEN from here, and a test that resolved the real state root would
+// be a test editing the machine it runs on.
+var renoStateDir = func() (string, error) {
+	p, err := paths.Resolve()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p.Dir, "reno"), nil
+}
+
 // displayLabel names a CG display for menus: the OBS monitor whose
 // point geometry matches, else a positional fallback.
 func displayLabel(monitors []renocore.Monitor, d cgdisplay.Display, i int) string {
@@ -173,6 +191,19 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []stri
 	env, err := ProbeEnv(obs)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Lemmings {
+		// written HERE and not in the probe: the page is a file on disk, and
+		// an environment probe that wrote one every time it ran would be
+		// touching the machine to answer a question about OBS. The plan
+		// refuses by name if this did not land.
+		dir, derr := renoStateDir()
+		if derr != nil {
+			return nil, fmt.Errorf("lemmings: %w", derr)
+		}
+		if env.LemmingsFile, err = renocore.WriteLemmingsPage(dir); err != nil {
+			return nil, err
+		}
 	}
 	plan, err := renocore.BuildScenePlan(cfg, env)
 	if err != nil {
@@ -217,6 +248,7 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []stri
 			return nil, err
 		}
 	}
+	hangOverlays(items)
 	if err := fitCanvas(obs, items, &env); err != nil {
 		return nil, err
 	}
@@ -247,6 +279,32 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []stri
 		return nil, fmt.Errorf("switch to %s: %w", plan.Scene, err)
 	}
 	return dead, nil
+}
+
+// hangOverlays gives every overlay the shape of the item it hangs on, once
+// everything has been measured. An overlay sized from its own page would
+// sit in a 16:9 box over a camera that is not, and be visibly the wrong
+// rectangle on the one shot where it matters.
+//
+// An overlay whose host reported nothing keeps its own shape rather than
+// inheriting a zero: a dead camera is reported dead elsewhere, and a box
+// of no size is not an improvement on a box of the wrong one.
+func hangOverlays(items []placedItem) {
+	size := make(map[string][2]int, len(items))
+	for _, it := range items {
+		if it.w > 0 && it.h > 0 {
+			size[it.in.Name] = [2]int{it.w, it.h}
+		}
+	}
+	for i := range items {
+		host := items[i].in.Overlay
+		if host == "" {
+			continue
+		}
+		if wh, ok := size[host]; ok {
+			items[i].boxW, items[i].boxH = wh[0], wh[1]
+		}
+	}
 }
 
 // applyStack asserts the plan's stacking order: item stack[i] goes to
@@ -330,11 +388,26 @@ type placedItem struct {
 	in   renocore.PlanInput
 	id   int
 	w, h int
+	// boxW/boxH override what the box is shaped from; set only on an
+	// overlay, from the item it hangs on.
+	boxW, boxH int
 }
 
 // geometric reports whether the item has a position at all: webcam presets
 // and screen slots do, audio does not.
 func (p placedItem) geometric() bool { return p.in.Preset != "" || p.in.Slots > 0 }
+
+// boxSize is what the item's BOX is shaped from, which is not always what
+// the item renders. An overlay hangs on another item and takes its shape,
+// so the two coincide over a camera of any aspect; the scale below still
+// comes from the overlay's own size, because that is what OBS is actually
+// fitting into the box.
+func (p placedItem) boxSize() (int, int) {
+	if p.boxW > 0 && p.boxH > 0 {
+		return p.boxW, p.boxH
+	}
+	return p.w, p.h
+}
 
 // measure settles the item's source once; the crop math, the row heights,
 // and the scale all read the answer.
@@ -465,7 +538,8 @@ func applyTransform(obs ObsTransport, scene string, p placedItem, boxes []renoco
 	var tf renocore.Transform
 	switch {
 	case in.Preset != "":
-		tf = renocore.CamTransform(env.CanvasW, env.CanvasH, in.Preset, p.w, p.h)
+		bw, bh := p.boxSize()
+		tf = renocore.CamTransform(env.CanvasW, env.CanvasH, in.Preset, bw, bh)
 	case in.Slot < len(boxes):
 		lw, lh := p.layoutSize()
 		var cropped bool

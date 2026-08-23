@@ -34,6 +34,7 @@ const (
 	actVCam      = "reno:obs-vcam"
 	actOpenClip  = "reno:open-clip"
 	actFXMove    = "reno:fx-move" // + placement preset
+	actLemmings  = "reno:lemmings"
 	actFXHide    = "reno:fx-hide"
 	actFXLevel   = "reno:fx-level" // + level fx kind + up|down
 )
@@ -436,6 +437,15 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 			Key:  "reno/clip/" + argv[1],
 			Argv: []string{m.exe, "reno", "open-clip", argv[1]},
 		}}
+	}
+	if argv[0] == actLemmings {
+		if len(argv) != 1 {
+			return false, nil
+		}
+		// the overlay is scene state, not a one-shot, so it goes through the
+		// ordinary reconcile like every other knob on this pad
+		m.desired.Lemmings = !m.desired.Lemmings
+		return true, m.applyEffectsLocked()
 	}
 	if argv[0] == actFXHide {
 		if len(argv) != 1 {
