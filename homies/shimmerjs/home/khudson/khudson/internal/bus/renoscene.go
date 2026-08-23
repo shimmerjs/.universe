@@ -178,6 +178,7 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []stri
 	if err != nil {
 		return nil, err
 	}
+	items := make([]placedItem, 0, len(plan.Inputs))
 	for _, in := range plan.Inputs {
 		existingKind, exists := env.Inputs[in.Name]
 		if exists && existingKind != in.Kind {
@@ -206,12 +207,27 @@ func ApplyRecordConfig(obs ObsTransport, cfg renocore.RecordConfig) (dead []stri
 		if err := obs.SetSceneItemEnabled(plan.Scene, id, in.Enabled); err != nil {
 			return nil, fmt.Errorf("enable %s: %w", in.Name, err)
 		}
-		live, err := applyTransform(obs, plan.Scene, id, in, env)
+		items = append(items, placedItem{in: in, id: id})
+	}
+	// Sizes before boxes: a stacked slot's row height comes from what its
+	// capture reports, so every screen has to have settled before any one
+	// of them can be placed.
+	for i := range items {
+		if err := items[i].measure(obs, plan.Scene); err != nil {
+			return nil, err
+		}
+	}
+	if err := fitCanvas(obs, items, &env); err != nil {
+		return nil, err
+	}
+	boxes := screenBoxes(items, env)
+	for _, it := range items {
+		live, err := applyTransform(obs, plan.Scene, it, boxes, env)
 		if err != nil {
 			return nil, err
 		}
-		if in.Enabled && !live {
-			dead = append(dead, in.Name)
+		if it.in.Enabled && !live {
+			dead = append(dead, it.in.Name)
 		}
 	}
 	for _, name := range plan.RemoveInputs {
@@ -307,40 +323,168 @@ func liveSourceSize(obs ObsTransport, scene string, id int) (int, int, error) {
 	return 0, 0, nil
 }
 
-// applyTransform positions one planned item: webcam presets and screen
-// slots; audio items (no slot, no preset) have no geometry. It reports
-// whether the item's source is producing frames, because an apply that
-// placed everything perfectly over dead captures still records black.
-func applyTransform(obs ObsTransport, scene string, id int, in renocore.PlanInput, env renocore.ObsEnv) (live bool, err error) {
-	if in.Preset == "" && in.Slots == 0 {
+// placedItem is a planned input that now exists in the scene, carrying the
+// live source size its geometry is computed from. Audio items, and any
+// capture that never produced a frame, stay at 0x0.
+type placedItem struct {
+	in   renocore.PlanInput
+	id   int
+	w, h int
+}
+
+// geometric reports whether the item has a position at all: webcam presets
+// and screen slots do, audio does not.
+func (p placedItem) geometric() bool { return p.in.Preset != "" || p.in.Slots > 0 }
+
+// measure settles the item's source once; the crop math, the row heights,
+// and the scale all read the answer.
+func (p *placedItem) measure(obs ObsTransport, scene string) error {
+	if !p.geometric() {
+		return nil
+	}
+	w, h, err := liveSourceSize(obs, scene, p.id)
+	if err != nil {
+		return fmt.Errorf("source size %s: %w", p.in.Name, err)
+	}
+	p.w, p.h = w, h
+	return nil
+}
+
+// layoutSize is the size the canvas geometry is computed from: what the
+// capture reports, else the resolved monitor's geometry. A dead source
+// still beats garbage for the crop and row math, and it keeps one dead
+// screen from silently resizing the ones stacked with it -- reporting it
+// dead is the caller's job.
+func (p placedItem) layoutSize() (int, int) {
+	if p.w > 0 && p.h > 0 {
+		return p.w, p.h
+	}
+	if p.in.Monitor != nil {
+		return p.in.Monitor.Width, p.in.Monitor.Height
+	}
+	return 0, 0
+}
+
+// fitCanvas resizes OBS's canvas to the composition and updates env to
+// match, so the boxes computed next are computed against the canvas that
+// will actually render them.
+//
+// The canvas follows the sources rather than the sources being squeezed
+// into whatever canvas was there: the Edge is a strip of small text, and a
+// strip resampled by any non-integer factor -- 0.985 was enough -- turns
+// every glyph edge to mush. Sizing the frame to the content is the only way
+// the legible thing lands on the pixel grid.
+//
+// This WRITES a profile-global OBS setting and does not put it back. That is
+// the documented cost of the khudson-owned scene: reno drives this OBS, and
+// a canvas that disagreed with the scene in it would be the lying readout
+// the whole design avoids. Only ever called for a non-empty config.
+func fitCanvas(obs ObsTransport, items []placedItem, env *renocore.ObsEnv) error {
+	slots := 0
+	for _, it := range items {
+		slots = max(slots, it.in.Slots)
+	}
+	if slots == 0 {
+		return nil // no screens: nothing derives a canvas
+	}
+	sizes := make([][2]int, slots)
+	for _, it := range items {
+		if it.in.Slots == 0 || it.in.Slot >= slots {
+			continue
+		}
+		lw, lh := it.layoutSize()
+		w, h := renocore.EffectiveSize(lw, lh, it.in.Region)
+		sizes[it.in.Slot] = [2]int{w, h}
+	}
+	w, h, ok := renocore.StackCanvas(sizes)
+	if !ok {
+		// a screen that never reported a size and resolved to no monitor
+		// leaves nothing honest to size a canvas from; keep the one OBS has
+		// rather than inventing a frame around a dead capture
+		return nil
+	}
+	if w == env.CanvasW && h == env.CanvasH {
+		return nil
+	}
+	if err := obs.SetCanvas(int(w), int(h)); err != nil {
+		return fmt.Errorf("canvas %dx%d: %w", int(w), int(h), err)
+	}
+	// Read the canvas back before ANY transform is written against it.
+	// Resizing the base resolution makes OBS rescale every scene item to fit
+	// the new frame, and that rescale is not finished when SetVideoSettings
+	// returns: transforms written into the gap get multiplied by the ratio of
+	// the two canvases afterwards. Live, a 720 -> 2200 resize left every box
+	// at 0.328 of the size it was written at -- the whole composition shrunk
+	// into the middle of the frame with every readout reporting success. The
+	// round trip is the barrier.
+	gotW, gotH, fps, err := obs.Canvas()
+	if err != nil {
+		return fmt.Errorf("canvas readback: %w", err)
+	}
+	if gotW != w || gotH != h {
+		return fmt.Errorf("canvas %dx%d did not take (obs reports %vx%v)", int(w), int(h), gotW, gotH)
+	}
+	env.CanvasW, env.CanvasH, env.FPS = gotW, gotH, fps
+	return nil
+}
+
+// screenBoxes lays every screen slot out over the canvas as a stacked row.
+// Slot count comes from the plan rather than the item count so a partial
+// apply cannot silently renumber the stack.
+func screenBoxes(items []placedItem, env renocore.ObsEnv) []renocore.Transform {
+	slots := 0
+	for _, it := range items {
+		slots = max(slots, it.in.Slots)
+	}
+	if slots == 0 {
+		return nil
+	}
+	aspects := make([]float64, slots)
+	for _, it := range items {
+		if it.in.Slots == 0 || it.in.Slot >= slots {
+			continue
+		}
+		lw, lh := it.layoutSize()
+		w, h := renocore.EffectiveSize(lw, lh, it.in.Region)
+		if w > 0 && h > 0 {
+			aspects[it.in.Slot] = float64(w) / float64(h)
+		}
+	}
+	return renocore.StackBoxes(env.CanvasW, env.CanvasH, aspects)
+}
+
+// applyTransform positions one placed item: webcam presets and screen
+// slots; audio items have no geometry. It reports whether the item's
+// source is producing frames, because an apply that placed everything
+// perfectly over dead captures still records black.
+func applyTransform(obs ObsTransport, scene string, p placedItem, boxes []renocore.Transform, env renocore.ObsEnv) (live bool, err error) {
+	in, id := p.in, p.id
+	if !p.geometric() {
 		return true, nil // audio: no geometry, nothing to be dead about
 	}
-	// one settle serves the crop math and the scale both
-	w, h, err := liveSourceSize(obs, scene, id)
-	if err != nil {
-		return false, fmt.Errorf("source size %s: %w", in.Name, err)
-	}
 	var tf renocore.Transform
-	if in.Preset != "" {
-		tf = renocore.CamTransform(env.CanvasW, env.CanvasH, in.Preset)
-	} else {
-		cw, ch := w, h
-		if cw == 0 && in.Monitor != nil {
-			// dead, but the resolved monitor's geometry still beats garbage
-			// for the crop math -- reporting the source is the caller's job
-			cw, ch = in.Monitor.Width, in.Monitor.Height
-		}
+	switch {
+	case in.Preset != "":
+		tf = renocore.CamTransform(env.CanvasW, env.CanvasH, in.Preset, p.w, p.h)
+	case in.Slot < len(boxes):
+		lw, lh := p.layoutSize()
 		var cropped bool
-		tf, cropped = renocore.ItemTransform(env.CanvasW, env.CanvasH, in.Slot, in.Slots, cw, ch, in.Region)
+		tf, cropped = renocore.ItemTransform(boxes[in.Slot], lw, lh, in.Region)
 		if in.Region != nil && !cropped {
 			fmt.Fprintf(os.Stderr, "khudson reno: %s reports no source size yet; region %s skipped this run\n", in.Name, in.Region)
 		}
+	default:
+		return false, fmt.Errorf("transform %s: slot %d of %d has no canvas box", in.Name, in.Slot, in.Slots)
 	}
-	tf.ScaleX, tf.ScaleY = renocore.ScaleInner(tf.BoundsW, tf.BoundsH, w, h)
+	// The scale is denominated in what the canvas sees -- the crop, when
+	// there is one. Scaling a cropped source by its full sensor size renders
+	// it short of its box by exactly the crop ratio.
+	ew, eh := renocore.EffectiveSize(p.w, p.h, in.Region)
+	tf.ScaleX, tf.ScaleY = renocore.ScaleInner(tf.BoundsW, tf.BoundsH, ew, eh)
 	if err := obs.SetSceneItemTransform(scene, id, tf); err != nil {
 		return false, fmt.Errorf("transform %s: %w", in.Name, err)
 	}
-	if w == 0 {
+	if p.w == 0 {
 		return false, nil
 	}
 	// Read the scale back rather than trusting the write. A zero scale is the

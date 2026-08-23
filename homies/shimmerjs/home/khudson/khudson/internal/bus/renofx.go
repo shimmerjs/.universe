@@ -86,9 +86,11 @@ func fxEnv(obs ObsTransport, fx renocore.CamFX) (renocore.FXEnv, error) {
 			return env, fmt.Errorf("current transform: %w", err)
 		}
 	}
-	// pixelate scales down and back up, and the size it goes back to has to
-	// be the one it was handed or the item's scale stops matching its source
-	if fx.Kind == renocore.FXPixelate {
+	// Pixelate scales down and back up, and the size it goes back to has to
+	// be the one it was handed or the item's scale stops matching its source.
+	// A placement wants it too: a corner box is shaped to the CAMERA's aspect
+	// so the preset hugs the corner it is named after on any canvas.
+	if fx.Kind == renocore.FXPixelate || fx.Kind == renocore.FXMove || fx.Kind == renocore.FXJump {
 		if env.SourceW, env.SourceH, err = obs.ItemSourceSize(env.Scene, env.ItemID); err != nil {
 			return env, fmt.Errorf("source size: %w", err)
 		}

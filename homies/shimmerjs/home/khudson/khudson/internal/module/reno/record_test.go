@@ -195,9 +195,14 @@ func TestRecorderViewStates(t *testing.T) {
 }
 
 // padTile finds one pad button by key; readout rows never match.
+// padTile finds a published pad element by key. Steppers count: they take a
+// slot in a band exactly like a plain tile does.
 func padTile(rows []module.Row, key string) *module.Row {
 	for i := range rows {
-		if rows[i].Kind == module.RowPad && rows[i].Key == key {
+		if rows[i].Key != key {
+			continue
+		}
+		if k := rows[i].Kind; k == module.RowPad || k == module.RowStepper {
 			return &rows[i]
 		}
 	}

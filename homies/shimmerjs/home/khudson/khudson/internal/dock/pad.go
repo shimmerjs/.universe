@@ -27,7 +27,27 @@ const (
 	padTileFloorH = 3
 	// padGutterPad is the space around a section label in the gutter.
 	padGutterPad = 2
+	// stepperEndW is how wide each of a stepper's two ends is. Four cells is
+	// a thumb's worth on this glass and leaves the middle enough room to
+	// carry a name AND a reading, which is the only reason the element beats
+	// two plain buttons.
+	stepperEndW = 4
+	// padRule separates a stepper's ends from its middle. Two press targets
+	// in one frame have to LOOK like two.
+	padRule = "\u2502" // box drawings light vertical, matching the tile frame
 )
+
+// centerCell crops s to w cells and pads it out either side, so a stepper's
+// caps and label sit on the element's axis rather than ragged left.
+func centerCell(s string, w int) string {
+	t := fitCell(s, w)
+	pad := w - lipgloss.Width(t)
+	if pad <= 0 {
+		return t
+	}
+	left := pad / 2
+	return strings.Repeat(" ", left) + t + strings.Repeat(" ", pad-left)
+}
 
 // padBand is one labeled row of buttons.
 type padBand struct {
@@ -195,6 +215,15 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 			area := rect{x, y, w, tileH}
 			key := id + ":pad:" + t.Key
 			border, label := m.padTones(t)
+			if t.Kind == module.RowStepper {
+				// a stepper's ends light independently, so the tile as a
+				// whole never takes the press treatment
+				cells = append(cells, m.stepperTile(id, t, w, tileH, border, label))
+				m.registerStepperHits(id, t, area)
+				x += w
+				drawn++
+				continue
+			}
 			if m.flashLive(key) {
 				if bd, l, ok := m.pressStyles(); ok {
 					border, label = bd, l
@@ -218,6 +247,130 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 	// the pad owns every cell it drew; taps in the remainder die here
 	m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
 	return fixedBlock(lines, rr.w, rr.h)
+}
+
+// stepperEnds splits a stepper's interior into the two end caps and the
+// text width left between them. The middle pays for both rules and the
+// space either side of them, so mid is what the LABEL gets, not the gap
+// between the caps -- getting that wrong overflows the frame by exactly the
+// chrome it forgot. A tile too narrow to seat both ends and a legible
+// middle gets no ends at all: the caller falls back to a plain tile,
+// because half a remote is worse than a button.
+func stepperEnds(inner int) (end, mid int, ok bool) {
+	const chrome = 4 // two rules, one space inside each
+	mid = inner - 2*stepperEndW - chrome
+	if mid < 3 {
+		return 0, 0, false
+	}
+	return stepperEndW, mid, true
+}
+
+// stepperTile draws a label and readout with a press welded to each end.
+// The ends are separated by rules rather than whitespace: two targets in
+// one frame have to LOOK like two targets, or the whole element reads as a
+// single button that does something different depending on where you hit
+// it -- which is exactly what it is, and exactly what has to be obvious.
+func (m *model) stepperTile(id string, t module.Row, w, h int, border, label lipgloss.Style) []string {
+	inner, interior := w-2, h-2
+	endW, midInner, ok := stepperEnds(inner)
+	if !ok || len(t.Ends) != 2 {
+		return padTile(t, w, h, border, label)
+	}
+	ss := m.rowStyles()
+	cap := func(e module.End) string {
+		st := label.Bold(true)
+		if e.Dim {
+			// dim, never gone: an end that vanished at the top of the range
+			// would move the other one under the thumb about to press it
+			st = ss.dim
+		}
+		if m.flashLive(id + ":pad:" + e.Key) {
+			st = m.tapStyle(st)
+		}
+		return st.Render(centerCell(e.Label, endW))
+	}
+	rule := chromeDim.Render(padRule)
+	// The middle carries the name and the reading -- ONE reading, where two
+	// plain buttons each had to repeat it. On a tile with a single interior
+	// line they share it, the same fold padTile does: a value that silently
+	// never renders is a readout lying by omission, and the reading is the
+	// whole reason a magnitude is on the pad at all.
+	text := t.Text
+	var midLines []string
+	switch {
+	case t.Value == "":
+		midLines = []string{label.Bold(true).Render(centerCell(text, midInner))}
+	case interior > 1:
+		midLines = []string{
+			label.Bold(true).Render(centerCell(text, midInner)),
+			chromeDim.Render(centerCell(t.Value, midInner)),
+		}
+	default:
+		if keep := midInner - 1 - lipgloss.Width(t.Value); keep >= 1 {
+			lab := fitCell(text, keep)
+			gap := midInner - lipgloss.Width(lab) - lipgloss.Width(t.Value)
+			midLines = []string{label.Bold(true).Render(lab) +
+				strings.Repeat(" ", gap) + chromeDim.Render(t.Value)}
+		} else {
+			midLines = []string{chromeDim.Render(centerCell(t.Value, midInner))}
+		}
+	}
+	body := make([]string, 0, interior)
+	for j := range interior {
+		// the caps ride the same line as the name, so the element reads as
+		// one horizontal control rather than a stack
+		capLine := strings.Repeat(" ", endW)
+		lc, rc := capLine, capLine
+		if j == 0 {
+			lc, rc = cap(t.Ends[0]), cap(t.Ends[1])
+		}
+		mid := strings.Repeat(" ", midInner)
+		if j < len(midLines) {
+			mid = midLines[j]
+		}
+		body = append(body, lc+rule+" "+mid+" "+rule+rc)
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(border.GetForeground()).
+		Width(w).Height(h)
+	return strings.Split(
+		fixedBlock(strings.Split(box.Render(strings.Join(body, "\n")), "\n"), w, h),
+		"\n")
+}
+
+// registerStepperHits makes each end of a stepper live on its own. The
+// middle is inert: it names the control and reports its value, and a tap
+// that landed on the label would otherwise have to guess a direction.
+func (m *model) registerStepperHits(id string, t module.Row, area rect) {
+	endW, _, ok := stepperEnds(area.w - 2)
+	if !ok || len(t.Ends) != 2 {
+		m.registerPadHit(id, t, area, id+":pad:"+t.Key)
+		return
+	}
+	// x+1 clears the frame; the ends sit at the interior's two extremes
+	spans := []rect{
+		{area.x + 1, area.y, endW, area.h},
+		{area.x + area.w - 1 - endW, area.y, endW, area.h},
+	}
+	for i, e := range t.Ends {
+		if e.Dim || len(e.Argv) == 0 {
+			continue // nowhere left to go: the end shows, but it does not fire
+		}
+		key := id + ":pad:" + e.Key
+		argv := e.Argv
+		do := func(int, int) {
+			m.flash(key)
+			m.sendRowAct(id, argv)
+		}
+		m.hits = append(m.hits, hitRegion{
+			area: spans[i], do: do, longPress: do,
+			pressKey: key, weldTile: true,
+		})
+	}
+	// the element owns its whole frame: a tap on the label or the rules dies
+	// here rather than falling through to whatever is behind the pad
+	m.hits = append(m.hits, hitRegion{area: area, do: consumeTap})
 }
 
 // registerPadHit makes one button live. A tile carrying only a menu opens

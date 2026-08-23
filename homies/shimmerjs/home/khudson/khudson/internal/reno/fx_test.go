@@ -1,8 +1,10 @@
 package reno
 
 import (
+	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,8 +79,8 @@ func TestParseCamFXDefaultsAndErrors(t *testing.T) {
 		{[]string{"hide", "now"}, "takes no arguments"},
 		{[]string{"pixelate", "maybe"}, "not a number"},
 		{[]string{"pixelate", "on", "2"}, "wants a level"},
-		{[]string{"pixelate", "9"}, "wants 0..5"},
-		{[]string{"pixelate", "-1"}, "wants 0..5"},
+		{[]string{"pixelate", "99"}, "wants 0..20"},
+		{[]string{"pixelate", "-1"}, "wants 0..20"},
 		{[]string{"purple"}, "wants a level"},
 		{[]string{"purple", "lots"}, "not a number"},
 	} {
@@ -131,7 +133,7 @@ func TestBuildMovePlan(t *testing.T) {
 		t.Errorf("%d sleeps, %d transforms", sleeps, xforms)
 	}
 
-	want := CamTransform(1920, 1080, "big")
+	want := CamTransform(1920, 1080, "big", 1920, 1080)
 	last := plan.Requests[len(plan.Requests)-1].Data["sceneItemTransform"].(map[string]any)
 	if last["positionX"] != want.X || last["boundsWidth"] != want.BoundsW {
 		t.Errorf("last sample = %v, want %+v", last, want)
@@ -191,7 +193,7 @@ func TestJumpAndVisibilityPlans(t *testing.T) {
 	if len(plan.Requests) != 2 || plan.Requests[1].Type != "SetSceneItemTransform" {
 		t.Fatalf("jump plan = %+v", plan.Requests)
 	}
-	want := CamTransform(1920, 1080, "tr")
+	want := CamTransform(1920, 1080, "tr", 1920, 1080)
 	got := plan.Requests[1].Data["sceneItemTransform"].(map[string]any)
 	if got["positionX"] != want.X || got["positionY"] != want.Y {
 		t.Errorf("jump landed at %v, want %+v", got, want)
@@ -235,9 +237,11 @@ func TestPixelatePlan(t *testing.T) {
 		}
 	}
 	down := plan.Requests[0].Data["filterSettings"].(map[string]any)
-	// level 3 is 64 wide; against the 1280x720 source that is 36 tall
-	if down["resolution"] != "64x36" || down["sampling"] != "point" {
-		t.Errorf("down = %v", down)
+	// the level's grid width, against the 1280x720 source's 16:9
+	wantW := FXPixelateBlocks(fx.Level)
+	wantRes := fmt.Sprintf("%dx%d", wantW, int(math.Round(float64(wantW)*720/1280)))
+	if down["resolution"] != wantRes || down["sampling"] != "point" {
+		t.Errorf("down = %v, want %s", down, wantRes)
 	}
 	// and back up to the SOURCE's own size. Any other size and the item is
 	// left holding a scale derived for a source it no longer has -- which
@@ -347,7 +351,7 @@ func TestPixelateDegradesLoudly(t *testing.T) {
 func TestPurplePlan(t *testing.T) {
 	env := fxTestEnv()
 	env.FilterKinds = []string{FXFilterKind, FXPurpleFilterKind}
-	fx, _ := ParseCamFX([]string{"purple", "5"})
+	fx, _ := ParseCamFX([]string{"purple", strconv.Itoa(FXMaxLevel)})
 
 	plan, err := BuildCamFXPlan(fx, env)
 	if err != nil {
@@ -360,7 +364,8 @@ func TestPurplePlan(t *testing.T) {
 		t.Errorf("purple must own its own filter, got %v", got)
 	}
 	settings := plan.Requests[0].Data["filterSettings"].(map[string]any)
-	// level 5 is the full violet: R=170 G=0 B=255 packed 0xAABBGGRR
+	// the top of the scale is the full violet: R=170 G=0 B=255, packed
+	// 0xAABBGGRR
 	if settings["color_multiply"] != 0xFF00AA {
 		t.Errorf("full drank = %#v", settings)
 	}
@@ -403,8 +408,13 @@ func TestJitterPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fx.Dur != FXJitterDur {
+	if fx.Dur != FXJitterChunk {
 		t.Errorf("jitter dur = %s", fx.Dur)
+	}
+	// whole cycles per chunk is what lets a sustained shake tile chunk after
+	// chunk without walking the camera off its placement
+	if cycles := FXJitterHz * FXJitterChunk.Seconds(); cycles != math.Trunc(cycles) {
+		t.Errorf("a chunk must be whole cycles, got %v", cycles)
 	}
 	plan, err := BuildCamFXPlan(fx, env)
 	if err != nil {
@@ -448,13 +458,41 @@ func TestJitterPlan(t *testing.T) {
 		t.Error("level 1 must throw less than level 4")
 	}
 
-	// level 0 has nothing to shake, and says so
+	// The throw fits the room the box has, symmetrically. A box wedged
+	// against an edge used to clamp the half of the swing that ran out of
+	// canvas, which reads as a lurch, not a shake.
+	tight := fxTestEnv()
+	tight.From = Transform{X: 10, Y: 10, BoundsW: 384, BoundsH: 216}
+	top, _ := ParseCamFX([]string{"jitter", strconv.Itoa(FXMaxLevel)})
+	tightPlan, err := BuildCamFXPlan(top, tight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lo, hi float64 = 1e9, -1e9
+	for _, r := range tightPlan.Requests {
+		if r.Type != "SetSceneItemTransform" {
+			continue
+		}
+		x := r.Data["sceneItemTransform"].(map[string]any)["positionX"].(float64)
+		lo, hi = math.Min(lo, x), math.Max(hi, x)
+	}
+	// 10px of room on the left is the binding side, so the swing is +/-10
+	// around the base rather than -10/+whatever the level asked for
+	if left, right := tight.From.X-lo, hi-tight.From.X; math.Abs(left-right) > 0.5 {
+		t.Errorf("swing is lopsided: %.1f left, %.1f right", left, right)
+	}
+	if lo < 0 {
+		t.Errorf("shook off the canvas: min x %v", lo)
+	}
+
+	// level 0 sends nothing: the driver stops re-firing, and the chunk that
+	// already ran ended on the base pose, so there is nothing to undo
 	off, _ := ParseCamFX([]string{"jitter", "0"})
 	plan, err = BuildCamFXPlan(off, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Requests) != 0 || !strings.Contains(plan.Summary, "nothing to shake") {
+	if len(plan.Requests) != 0 || !strings.Contains(plan.Summary, "shake stopped") {
 		t.Errorf("jitter off = %+v %q", plan.Requests, plan.Summary)
 	}
 

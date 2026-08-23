@@ -2,6 +2,7 @@ package reno
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -780,14 +781,13 @@ func TestFXLevelPairWalksTheLevel(t *testing.T) {
 	m, _ := testMod(t)
 	freshInv(t, m)
 
-	rows := m.recorderTiles()
-	up := padTile(rows, KeyFXLevel+":pixelate:up")
-	down := padTile(rows, KeyFXLevel+":pixelate:down")
-	if up == nil || down == nil {
-		t.Fatal("pixelate needs both halves of its pair")
+	step := padTile(m.recorderTiles(), KeyFXLevel+":pixelate")
+	if step == nil || len(step.Ends) != 2 {
+		t.Fatal("pixelate needs one remote with two ends")
 	}
-	if up.Value != "off" || down.Style != module.StyleDim {
-		t.Errorf("at rest: up=%+v down=%+v", up, down)
+	// at rest the minus has nowhere to go and says so; the plus does not
+	if step.Value != "off" || !step.Ends[0].Dim || step.Ends[1].Dim {
+		t.Errorf("at rest: %+v", step)
 	}
 
 	handled, effects := m.HandleActEffects([]string{actFXLevel, "pixelate", levelUp})
@@ -798,7 +798,8 @@ func TestFXLevelPairWalksTheLevel(t *testing.T) {
 	if !slices.Equal(effects[0].Argv, want) {
 		t.Errorf("argv = %v", effects[0].Argv)
 	}
-	if got := padTile(m.recorderTiles(), KeyFXLevel+":pixelate:up").Value; got != "1/5" {
+	wantReadout := fmt.Sprintf("1/%d", renocore.FXMaxLevel)
+	if got := padTile(m.recorderTiles(), KeyFXLevel+":pixelate").Value; got != wantReadout {
 		t.Errorf("readout = %q", got)
 	}
 
@@ -814,7 +815,7 @@ func TestFXLevelPairWalksTheLevel(t *testing.T) {
 	if !handled || len(effects) != 0 {
 		t.Errorf("past the top: handled=%v effects=%+v", handled, effects)
 	}
-	if padTile(m.recorderTiles(), KeyFXLevel+":pixelate:up").Style != module.StyleDim {
+	if end := padTile(m.recorderTiles(), KeyFXLevel+":pixelate").Ends[1]; !end.Dim {
 		t.Error("a plus at the top must dim")
 	}
 
@@ -868,7 +869,8 @@ func TestFXLevelsRecoverAcrossABus(t *testing.T) {
 	if lvl := next.fxLevels["purple"]; lvl != 2 {
 		t.Errorf("recovered purple = %d", lvl)
 	}
-	if got := padTile(next.recorderTiles(), KeyFXLevel+":purple:up").Value; got != "2/5" {
+	wantReadout := fmt.Sprintf("2/%d", renocore.FXMaxLevel)
+	if got := padTile(next.recorderTiles(), KeyFXLevel+":purple").Value; got != wantReadout {
 		t.Errorf("recovered readout = %q", got)
 	}
 }

@@ -423,9 +423,12 @@ func (b *Bus) applyNative(r nativeResult) {
 		b.mu.Unlock()
 		if st, ok := reg.Get(r.id); ok {
 			st.setNative(data)
-			// publish the poll's row acts AND menu argvs for handleRowAct's
-			// allowlist -- menu items inherit the same vet/debounce/exec
-			// path; the error branches above keep the previous set
+			// publish the poll's row acts, menu argvs AND composite-element
+			// ends for handleRowAct's allowlist -- every one of them inherits
+			// the same vet/debounce/exec path; the error branches above keep
+			// the previous set. A stepper carries its presses in Ends rather
+			// than Act, and an end left out here is a button that lights
+			// under the thumb and then does nothing.
 			var acts [][]string
 			for _, row := range r.data.Rows {
 				if len(row.Act) > 0 {
@@ -434,6 +437,11 @@ func (b *Bus) applyNative(r nativeResult) {
 				for _, item := range row.Menu {
 					if len(item.Argv) > 0 {
 						acts = append(acts, item.Argv)
+					}
+				}
+				for _, e := range row.Ends {
+					if len(e.Argv) > 0 {
+						acts = append(acts, e.Argv)
 					}
 				}
 			}

@@ -270,6 +270,10 @@ func (f *fakeObs) Monitors() ([]renocore.Monitor, error) {
 func (f *fakeObs) Canvas() (float64, float64, float64, error) {
 	return f.canvasW, f.canvasH, f.canvasFPS, f.op("canvas")
 }
+func (f *fakeObs) SetCanvas(w, h int) error {
+	f.canvasW, f.canvasH = float64(w), float64(h)
+	return f.op(fmt.Sprintf("canvas:%dx%d", w, h))
+}
 func (f *fakeObs) Scenes() ([]string, error) { return f.scenes, f.op("scenes") }
 func (f *fakeObs) CreateScene(name string) error {
 	f.scenes = append(f.scenes, name)

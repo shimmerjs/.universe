@@ -3,6 +3,7 @@ package bus
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -262,6 +263,118 @@ func TestApplyStackReadbackMismatchFails(t *testing.T) {
 	obs.orderFrozen = true
 	if _, err := ApplyRecordConfig(obs, cfg); err == nil || !strings.Contains(err.Error(), "bottom-first") {
 		t.Errorf("a stack the server ignored must fail the apply, got %v", err)
+	}
+}
+
+// fakeDellAndEdge pins the two-display rig this records: a 4K dell and the
+// Xeneon Edge strip, in pixel dims.
+func fakeDellAndEdge(t *testing.T) {
+	t.Helper()
+	old := localDisplays
+	localDisplays = func() []cgdisplay.Display {
+		return []cgdisplay.Display{
+			{ID: 1, UUID: "uuid-dell", W: 3840, H: 2160, PxW: 3840, PxH: 2160, Main: true},
+			{ID: 2, UUID: "uuid-edge", W: 2560, H: 720, PxW: 2560, PxH: 720},
+		}
+	}
+	t.Cleanup(func() { localDisplays = old })
+}
+
+// Two screens stack as rows, not columns. The edge goes UNDER the dell and
+// both keep one shared width -- 2560 of the 3840 canvas, where the columns
+// this replaced gave each of them 1920. Height is what binds: these
+// displays are far wider than they are tall, so side-by-side spent width
+// the composition could not use.
+func TestApplyStacksScreensAsRows(t *testing.T) {
+	fakeDellAndEdge(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	obs.canvasW, obs.canvasH = 3840, 2160
+	obs.sizes = map[string][2]int{
+		"reno-screen-0": {3840, 2160},
+		"reno-screen-1": {2560, 720},
+	}
+	cfg := renocore.RecordConfig{Screens: []renocore.ScreenSel{
+		{Display: "uuid-dell"}, {Display: "uuid-edge"},
+	}}
+	dead, err := ApplyRecordConfig(obs, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dead) != 0 {
+		t.Fatalf("live sources reported dead: %v", dead)
+	}
+	dell := obs.tfs[obs.itemIDs["reno/reno-screen-0"]]
+	edge := obs.tfs[obs.itemIDs["reno/reno-screen-1"]]
+
+	if dell.BoundsW != edge.BoundsW {
+		t.Errorf("stacked rows must share a width: dell %v, edge %v", dell.BoundsW, edge.BoundsW)
+	}
+	if dell.BoundsW <= 1920 {
+		t.Errorf("stacking must beat the 1920 the old columns gave: %v", dell.BoundsW)
+	}
+	// under, not beside, held apart by a gutter so the two read as two
+	gutter := math.Round(dell.BoundsW * renocore.StackGutterFrac)
+	if gap := edge.Y - (dell.Y + dell.BoundsH); math.Abs(gap-gutter) > 0.01 {
+		t.Errorf("gap between rows = %v, want a %v gutter", gap, gutter)
+	}
+	if edge.X != dell.X {
+		t.Errorf("rows must share a left edge: dell X %v, edge X %v", dell.X, edge.X)
+	}
+	// The canvas is now DERIVED from the composition, so the stack fills it
+	// edge to edge: no bars, and the narrowest source at 1:1. That is the
+	// whole point -- the Edge is small text, and any non-integer resample of
+	// it turns every glyph to mush.
+	if dell.X != 0 || edge.X != 0 || dell.Y != 0 {
+		t.Errorf("stack must fill the derived canvas: dell %+v, edge %+v", dell, edge)
+	}
+	if obs.canvasW != 2560 || obs.canvasH != 2200 {
+		t.Errorf("canvas = %vx%v, want 2560x2200", obs.canvasW, obs.canvasH)
+	}
+	if edge.BoundsW != 2560 || edge.BoundsH != 720 || edge.ScaleX != 1 {
+		t.Errorf("edge must land at native 2560x720 scale 1: %+v", edge)
+	}
+	if bottom := edge.Y + edge.BoundsH; bottom != obs.canvasH {
+		t.Errorf("stack bottom = %v, want the canvas height %v", bottom, obs.canvasH)
+	}
+	// each row is its source's own aspect, so nothing is letterboxed inside
+	// its own box
+	if ar := dell.BoundsW / dell.BoundsH; ar-3840.0/2160 > 0.001 {
+		t.Errorf("dell row must keep its aspect: %+v", dell)
+	}
+	if ar := edge.BoundsW / edge.BoundsH; ar-2560.0/720 > 0.001 {
+		t.Errorf("edge row must keep its aspect: %+v", edge)
+	}
+}
+
+// A cropped screen is scaled by its CROP, not its sensor. The row it gets
+// is sized to the crop's aspect, so scaling by the full source renders it
+// short of its box by exactly the crop ratio -- a visible gap with every
+// readout clean.
+func TestApplyScalesCroppedSourceByItsCrop(t *testing.T) {
+	fakeDellAndEdge(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	obs.canvasW, obs.canvasH = 3840, 2160
+	obs.sizes = map[string][2]int{"reno-screen-0": {3840, 2160}}
+	cfg := renocore.RecordConfig{Screens: []renocore.ScreenSel{
+		{Display: "uuid-dell", Region: &renocore.Region{X: 0, Y: 0, W: 1920, H: 1080}},
+	}}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	tf := obs.tfs[obs.itemIDs["reno/reno-screen-0"]]
+	// The canvas is derived from what the canvas SEES, so a cropped screen
+	// sizes the frame to its crop and lands 1:1. Scaling by the full sensor
+	// instead would render it at half its box, which is the bug this guards.
+	if obs.canvasW != 1920 || obs.canvasH != 1080 {
+		t.Errorf("canvas = %vx%v, want the crop's 1920x1080", obs.canvasW, obs.canvasH)
+	}
+	if tf.ScaleX != 1 || tf.ScaleY != 1 {
+		t.Errorf("crop scale = %v/%v, want 1", tf.ScaleX, tf.ScaleY)
+	}
+	if tf.CropR != 1920 || tf.CropB != 1080 {
+		t.Errorf("the crop itself must still be applied: %+v", tf)
 	}
 }
 

@@ -118,6 +118,13 @@ type Mod struct {
 	armGen  uint64
 	armNote string
 	armFail bool
+	// armDeadline is when an untouched arm gets released out from under
+	// itself; armWatch says a watchdog goroutine is already counting down.
+	armDeadline time.Time
+	armWatch    bool
+	// jitterWatch says a driver goroutine is already re-firing the shake;
+	// the level it shakes at lives in fxLevels like every other level FX.
+	jitterWatch bool
 
 	// winState is OBS's own window: "" unknown, "shown", "hidden". Unlike
 	// an OBS filter this reads back (kAXHidden), so the tile is allowed to
@@ -431,6 +438,10 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Any verb is someone using the rig, so it pushes the idle deadline out;
+	// registered after the unlock defer so it runs first, and placed here so
+	// the arm-note that arms the rig is the pass that starts the watchdog.
+	defer m.touchArmLocked()
 	switch args[0] {
 	case "load":
 		effects, err := m.loadLocked(args[1:])

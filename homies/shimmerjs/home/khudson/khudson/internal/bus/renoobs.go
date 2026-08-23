@@ -54,6 +54,12 @@ type ObsTransport interface {
 	// Canvas is the base resolution plus the frame rate FX sleeps are
 	// denominated in.
 	Canvas() (w, h, fps float64, err error)
+	// SetCanvas resizes the canvas AND the output to match, so the
+	// recording is the composition rather than a rescale of it. The two
+	// have to move together: a base the output then squeezes back to a
+	// different shape puts every source through a second resample, which
+	// is the exact thing sizing the canvas to the sources was for.
+	SetCanvas(w, h int) error
 	Scenes() ([]string, error)
 	CreateScene(name string) error
 	// Inputs maps input name -> kind for every OBS input.
@@ -227,6 +233,13 @@ func (t *goobsTransport) Canvas() (float64, float64, float64, error) {
 		fps = resp.FpsNumerator / resp.FpsDenominator
 	}
 	return resp.BaseWidth, resp.BaseHeight, fps, nil
+}
+
+func (t *goobsTransport) SetCanvas(w, h int) error {
+	_, err := t.c.Config.SetVideoSettings(config.NewSetVideoSettingsParams().
+		WithBaseWidth(float64(w)).WithBaseHeight(float64(h)).
+		WithOutputWidth(float64(w)).WithOutputHeight(float64(h)))
+	return err
 }
 
 func (t *goobsTransport) Scenes() ([]string, error) {

@@ -280,6 +280,11 @@ func (m *Mod) bumpFXLevelLocked(kind string, up bool) (renocore.CamFX, bool) {
 	}
 	m.fxLevels[kind] = next
 	m.writeState(levelsFile, m.fxLevels)
+	// a jitter is not a one-shot: raising it off zero is what starts the
+	// shake running, and dropping it to zero is what stops it
+	if kind == renocore.FXJitter {
+		m.touchJitterLocked()
+	}
 	return renocore.CamFX{Kind: kind, Level: next}, true
 }
 
@@ -685,6 +690,14 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 	if err != nil || !renocore.IsLevelFX(fx.Kind) {
 		return
 	}
+	// A sustained jitter notes every chunk it fires, and those notes are
+	// echoes of a level this module already owns, not news from outside it.
+	// Adopting them loses the race against turning the shake off: the tap
+	// sets 0, an in-flight chunk fired at the old level lands afterwards,
+	// and the level it carries would put the shake straight back up.
+	if fx.Kind == renocore.FXJitter && m.jitterWatch {
+		return
+	}
 	if m.fxLevels == nil {
 		m.fxLevels = map[string]int{}
 	}
@@ -693,6 +706,10 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 	}
 	m.fxLevels[fx.Kind] = fx.Level
 	m.writeState(levelsFile, m.fxLevels)
+	// a hand-run `khudson reno obs cam jitter 5` starts the shake too
+	if fx.Kind == renocore.FXJitter {
+		m.touchJitterLocked()
+	}
 }
 
 // beginApplyLocked hands the apply verb the config to drive OBS to. The

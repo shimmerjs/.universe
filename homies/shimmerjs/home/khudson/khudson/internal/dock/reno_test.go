@@ -574,3 +574,89 @@ func TestPadTileFoldsValueWhenShort(t *testing.T) {
 		t.Errorf("label lost to an oversized value:\n%s", tight)
 	}
 }
+
+// A stepper is ONE tile that answers TWO presses. Its ends have to land on
+// separate hit regions inside the same frame, or the element is a single
+// button that does something different depending where you hit it -- which
+// is what it is, and exactly what must not be a surprise.
+func TestRenoPadStepperEndsArePressedIndependently(t *testing.T) {
+	d := module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowStepper, Section: "fx", Key: "fx:purple", MinHeight: 4,
+			Text: "purple", Value: "12/20",
+			Ends: []module.End{
+				{Label: "-", Key: "fx:purple:down", Argv: []string{"act", "purple", "down"}},
+				{Label: "+", Key: "fx:purple:up", Argv: []string{"act", "purple", "up"}},
+			}},
+	}}
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = d
+	m.invalidateHome("reno-presenter")
+	body := ansi.Strip(m.View().Content)
+
+	spans := map[string]rect{}
+	for _, h := range m.hits {
+		if key, ok := strings.CutPrefix(h.pressKey, "reno-presenter:pad:"); ok {
+			spans[key] = h.area
+		}
+	}
+	down, okD := spans["fx:purple:down"]
+	up, okU := spans["fx:purple:up"]
+	if !okD || !okU {
+		t.Fatalf("both ends must be pressable, got %v", spans)
+	}
+	// two targets, not one: they cannot overlap, and the minus is left of
+	// the plus so the element reads the way every remote does
+	if down.x+down.w > up.x {
+		t.Errorf("ends overlap: minus %+v plus %+v", down, up)
+	}
+	if down.w <= 0 || up.w <= 0 {
+		t.Errorf("an end with no width is not a button: %+v %+v", down, up)
+	}
+	// one name and ONE reading for the pair, which is the whole reason the
+	// element exists -- two plain buttons each had to repeat both
+	if n := strings.Count(body, "12/20"); n != 1 {
+		t.Errorf("reading appears %d times, want once:\n%s", n, body)
+	}
+	if n := strings.Count(body, "purple"); n != 1 {
+		t.Errorf("name appears %d times, want once:\n%s", n, body)
+	}
+}
+
+// An end at the end of its range stays visible and stops firing. Dropping
+// it would slide the other end sideways under a thumb already coming down.
+func TestRenoPadStepperDimEndDoesNotFire(t *testing.T) {
+	d := module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowStepper, Section: "fx", Key: "fx:jitter", MinHeight: 4,
+			Text: "jitter", Value: "off",
+			Ends: []module.End{
+				{Label: "-", Key: "fx:jitter:down", Dim: true,
+					Argv: []string{"act", "jitter", "down"}},
+				{Label: "+", Key: "fx:jitter:up", Argv: []string{"act", "jitter", "up"}},
+			}},
+	}}
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = d
+	m.invalidateHome("reno-presenter")
+	body := ansi.Strip(m.View().Content)
+
+	for _, h := range m.hits {
+		if h.pressKey == "reno-presenter:pad:fx:jitter:down" {
+			t.Error("a dim end must not register a press")
+		}
+	}
+	var sawUp bool
+	for _, h := range m.hits {
+		if h.pressKey == "reno-presenter:pad:fx:jitter:up" {
+			sawUp = true
+		}
+	}
+	if !sawUp {
+		t.Error("the live end must still fire")
+	}
+	// dim, not gone
+	if !strings.Contains(body, "-") {
+		t.Errorf("the dim end vanished:\n%s", body)
+	}
+}

@@ -54,6 +54,16 @@ const (
 	// they get and where they sit. Pad rows are pressables only -- a
 	// readout belongs in a header row, not a tile nobody can press.
 	RowPad = "pad"
+	// RowStepper is a pad tile carrying TWO presses: one label and readout
+	// with a minus welded to its left end and a plus to its right, the way
+	// a remote puts volume-down and volume-up either side of the word
+	// VOLUME. It occupies a pad band exactly like a RowPad tile does.
+	//
+	// A magnitude published as two independent buttons had to repeat its
+	// own name and its own readout on both of them, so a single value read
+	// as two controls that happened to agree. One element with two ends is
+	// what it always was.
+	RowStepper = "stepper"
 )
 
 // Row styles (dock palette names, not colors: modules stay theme-blind).
@@ -137,6 +147,23 @@ type Row struct {
 	// preset -- is its own button, and the section is what says which set
 	// it belongs to.
 	Section string `json:"section,omitempty"`
+	// Ends are a stepper's press targets (RowStepper only), left to right.
+	// Act is unused there: the whole point of the element is that one tile
+	// answers more than one press.
+	Ends []End `json:"ends,omitempty"`
+}
+
+// End is one press target welded into a composite pad element: a stepper's
+// minus and plus, a direction pad's four corners. Dim marks an end with
+// nowhere left to go, which the dock tones down without dropping -- a
+// control that lost half of itself at the end of its range would move
+// under the thumb.
+type End struct {
+	Label string   `json:"label,omitempty"`
+	Argv  []string `json:"argv,omitempty"`
+	Dim   bool     `json:"dim,omitempty"`
+	// Key distinguishes one end's press feedback from its neighbour's.
+	Key string `json:"key,omitempty"`
 }
 
 // ActHandler is an optional Module capability: HandleAct runs a published

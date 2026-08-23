@@ -3,6 +3,7 @@ package reno
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -118,10 +119,11 @@ func ParseScreenSel(s string) (ScreenSel, error) {
 	return sel, nil
 }
 
-// WebcamPresets is the ad hoc placement vocabulary: corner PiP or big.
-// "off" keeps the reno-cam item disabled (a loaded preset can be turned
-// off without forgetting the device).
-var WebcamPresets = []string{"off", "br", "tr", "bl", "tl", "big"}
+// WebcamPresets is the ad hoc placement vocabulary: a corner at either
+// size, or big. A "+" suffix is the same corner at quarter-canvas size --
+// br+ is br, grown. "off" keeps the reno-cam item disabled (a loaded
+// preset can be turned off without forgetting the device).
+var WebcamPresets = []string{"off", "br", "tr", "bl", "tl", "br+", "tr+", "bl+", "tl+", "big"}
 
 // CheckWebcam vets a webcam preset.
 func CheckWebcam(p string) error {
@@ -266,8 +268,9 @@ type PlanInput struct {
 	Kind     string
 	Settings map[string]any
 	Enabled  bool
-	// Slot/Region drive the transform: the executor reads the item's
-	// source dimensions after settings land and calls ItemTransform.
+	// Slot/Region drive the transform: the executor reads every screen's
+	// source dimensions after settings land, lays the slots out with
+	// StackBoxes, and places each one with ItemTransform.
 	Slot   int
 	Slots  int
 	Region *Region
@@ -459,17 +462,111 @@ func ScaleInner(boundsW, boundsH float64, srcW, srcH int) (float64, float64) {
 	return s, s
 }
 
-// ItemTransform computes slot i-of-n's transform on the canvas: slots
-// split the canvas into columns, each item scale-inner fitted. Region
-// crops in source pixels against srcW/srcH; a zero source dimension
-// (capture not yet streaming, e.g. pre-TCC) skips the crop rather than
-// producing garbage -- callers surface that loudly.
-func ItemTransform(canvasW, canvasH float64, slot, slots int, srcW, srcH int, region *Region) (Transform, bool) {
-	if slots < 1 {
-		slots = 1
+// EffectiveSize is the source size the canvas actually sees: the region
+// crop when one is set against a source reporting real dimensions, else
+// the source itself. Both the row heights and the scale are denominated
+// in it -- a cropped source occupies its crop, not its full sensor.
+func EffectiveSize(srcW, srcH int, region *Region) (int, int) {
+	if region == nil || srcW <= 0 || srcH <= 0 {
+		return srcW, srcH
 	}
-	colW := canvasW / float64(slots)
-	t := Transform{X: colW * float64(slot), Y: 0, BoundsW: colW, BoundsH: canvasH}
+	r := clampRegion(*region, srcW, srcH)
+	return r.W, r.H
+}
+
+// StackGutterFrac is the gap between stacked rows as a fraction of canvas
+// WIDTH. Two captures butted edge to edge share an invisible seam -- the
+// desktop just runs on into the strip below it -- so the rows are held
+// apart far enough to read as two screens. Width, not height, because the
+// canvas height is now derived FROM the stack (StackCanvas) and a gutter
+// denominated in it would not have a value to be a fraction of yet.
+//
+// A sixty-fourth lands on whole pixels for every canvas width this records.
+const StackGutterFrac = 1.0 / 64
+
+// StackCanvas is the canvas a stack of screens wants: wide enough that
+// nothing has to be UPSCALED, and exactly tall enough to hold the rows and
+// their gutters. sizes are the screens' effective pixel dimensions in slot
+// order. Zero, or any non-positive size, means there is nothing to derive
+// from and the caller keeps the canvas it has.
+//
+// The width is the NARROWEST source, so that one lands at 1:1 and every
+// other merely shrinks. That asymmetry is the point: downscaling a desktop
+// costs it some sharpness, where upscaling a 2560x720 status strip to 3840
+// invents pixels across every glyph edge and turns small text to mush. The
+// legible thing wins the pixel grid.
+func StackCanvas(sizes [][2]int) (w, h float64, ok bool) {
+	if len(sizes) == 0 {
+		return 0, 0, false
+	}
+	cw := 0
+	for _, s := range sizes {
+		if s[0] <= 0 || s[1] <= 0 {
+			return 0, 0, false
+		}
+		if cw == 0 || s[0] < cw {
+			cw = s[0]
+		}
+	}
+	gutter := math.Round(float64(cw) * StackGutterFrac)
+	total := gutter * float64(len(sizes)-1)
+	for _, s := range sizes {
+		total += math.Round(float64(cw) * float64(s[1]) / float64(s[0]))
+	}
+	return float64(cw), total, true
+}
+
+// StackBoxes lays the screen slots out as rows, one under the next, every
+// slot at the same width: the widest the whole stack fits the canvas at,
+// gutters included. aspects[i] is slot i's effective width/height; a
+// non-positive one falls back to the canvas aspect, which is all a source
+// not yet reporting a size supports.
+//
+// Columns wasted width on the displays this records. A 3840x2160 and a
+// 2560x720 in half-canvas columns each render 1920 wide; stacked they
+// share about 2520, because the stack's limit is canvas HEIGHT and these
+// two are far wider than they are tall. The block centers, and nothing is
+// cropped to make it fit -- a stack that cannot use the full width leaves
+// bars at the sides, which is the honest rendering of a tall composition
+// in a wide frame.
+func StackBoxes(canvasW, canvasH float64, aspects []float64) []Transform {
+	if len(aspects) == 0 || canvasW <= 0 || canvasH <= 0 {
+		return nil
+	}
+	inv := make([]float64, len(aspects))
+	var sum float64
+	for i, a := range aspects {
+		if a <= 0 {
+			a = canvasW / canvasH
+		}
+		inv[i] = 1 / a
+		sum += inv[i]
+	}
+	gutter := 0.0
+	if len(aspects) > 1 {
+		// width, matching StackCanvas: the canvas height is derived FROM
+		// this gutter, so measuring the gutter against the height would be
+		// each defining the other
+		gutter = math.Round(canvasW * StackGutterFrac)
+	}
+	gaps := gutter * float64(len(aspects)-1)
+	w := min(canvasW, max(canvasH-gaps, 0)/sum)
+	x, y := (canvasW-w)/2, (canvasH-(w*sum+gaps))/2
+	out := make([]Transform, len(aspects))
+	for i, iv := range inv {
+		h := w * iv
+		out[i] = Transform{X: x, Y: y, BoundsW: w, BoundsH: h}
+		y += h + gutter
+	}
+	return out
+}
+
+// ItemTransform places a source in its canvas box and converts an optional
+// region into source crops. Crops are in source pixels against srcW/srcH;
+// a zero source dimension (capture not yet streaming, e.g. pre-TCC) skips
+// the crop rather than producing garbage -- callers surface that loudly.
+func ItemTransform(box Transform, srcW, srcH int, region *Region) (Transform, bool) {
+	t := box
 	if region == nil {
 		return t, true
 	}
@@ -482,22 +579,51 @@ func ItemTransform(canvasW, canvasH float64, slot, slots int, srcW, srcH int, re
 	return t, true
 }
 
-// CamTransform places the webcam preset on the canvas: corner PiPs at a
-// fifth of the canvas width, big at nine tenths centered.
-func CamTransform(canvasW, canvasH float64, preset string) Transform {
-	const pipFrac, pipPad, bigFrac = 0.2, 24.0, 0.9
-	switch preset {
-	case "big":
-		w, h := canvasW*bigFrac, canvasH*bigFrac
-		return Transform{X: (canvasW - w) / 2, Y: (canvasH - h) / 2, BoundsW: w, BoundsH: h}
-	case "tl", "tr", "bl", "br", "off":
-		w, h := canvasW*pipFrac, canvasH*pipFrac
-		t := Transform{BoundsW: w, BoundsH: h, X: pipPad, Y: pipPad}
-		if strings.HasSuffix(preset, "r") {
-			t.X = canvasW - w - pipPad
+// CamTransform places the webcam preset on the canvas. A corner sits at a
+// fifth of the canvas per side, or half with a "+" -- half each way is a
+// QUARTER of the canvas area, prominent while the screen stays readable
+// around it, and it stays pinned to its corner rather than drifting to the
+// middle over the content. big is nine tenths, centered, and is the only
+// preset that leaves a corner.
+// srcW/srcH are the camera's own dimensions; they shape the box so a
+// corner preset actually HUGS its corner. A box sized to the canvas
+// instead only hugs when the camera happens to share the canvas's aspect,
+// which stopped being true the moment the canvas started following the
+// screens: a 16:9 camera in a half-of-2560x2200 box floats 380px clear of
+// the bottom edge it is named after. Zero means the size is unknown and
+// the box falls back to the canvas's own proportions.
+func CamTransform(canvasW, canvasH float64, preset string, srcW, srcH int) Transform {
+	const pipFrac, quarterFrac, bigFrac, pad = 0.2, 0.5, 0.9, 24.0
+	// box sizes a w x h that fits frac of the canvas and keeps the camera's
+	// aspect, so the bounds are the picture rather than a rect around it
+	box := func(frac float64) (float64, float64) {
+		w, h := canvasW*frac, canvasH*frac
+		if srcW <= 0 || srcH <= 0 {
+			return w, h
 		}
-		if strings.HasPrefix(preset, "b") {
-			t.Y = canvasH - h - pipPad
+		if byW := w * float64(srcH) / float64(srcW); byW <= h {
+			return w, byW
+		}
+		return h * float64(srcW) / float64(srcH), h
+	}
+	if preset == "big" {
+		w, h := box(bigFrac)
+		return Transform{X: (canvasW - w) / 2, Y: (canvasH - h) / 2, BoundsW: w, BoundsH: h}
+	}
+	corner, quarter := strings.CutSuffix(preset, "+")
+	switch corner {
+	case "tl", "tr", "bl", "br", "off":
+		f := pipFrac
+		if quarter {
+			f = quarterFrac
+		}
+		w, h := box(f)
+		t := Transform{BoundsW: w, BoundsH: h, X: pad, Y: pad}
+		if strings.HasSuffix(corner, "r") {
+			t.X = canvasW - w - pad
+		}
+		if strings.HasPrefix(corner, "b") {
+			t.Y = canvasH - h - pad
 		}
 		return t
 	}

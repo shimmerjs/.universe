@@ -72,18 +72,36 @@ const (
 	FXFallbackFPS = 60.0
 	// FXMaxLevel is the top of every level effect's range and
 	// FXDefaultLevel where a bare "on" lands -- mid-scale, so the first
-	// tap is visible without being the whole effect.
-	FXMaxLevel     = 5
-	FXDefaultLevel = 3
-	// FXJitterDur is how long a shake runs, and FXJitterHz how fast it
-	// oscillates inside that: short and quick, because a jitter is
-	// punctuation and a slow one reads as a broken move.
-	FXJitterDur = 400 * time.Millisecond
-	FXJitterHz  = 12.0
-	// FXJitterStep is the peak offset one level adds, as a fraction of the
-	// item's box width. Level 5 is a tenth of the box, which is plenty on
-	// a corner PiP and still inside the canvas.
-	FXJitterStep = 0.02
+	// tap is visible without being the whole effect. The scale is fine
+	// rather than coarse: the endpoints of each effect are unchanged, a
+	// step is just a smaller bite of the same range, so a level can be
+	// dialled to taste mid-demo instead of jumping.
+	FXMaxLevel     = 20
+	FXDefaultLevel = 10
+	// FXJitterHz is how fast a shake oscillates. Slower than a one-shot
+	// buzz, because this one SUSTAINS: a 12Hz vibration held for a minute
+	// reads as a broken capture, where a slow wobble reads as a handheld
+	// camera.
+	FXJitterHz = 6.0
+	// FXJitterMaxFrac is the peak offset at FXMaxLevel, as a fraction of
+	// the item's box width. A tenth of the box is plenty on a corner PiP
+	// and still inside the canvas.
+	FXJitterMaxFrac = 0.10
+	// FXJitterChunk is one sustained-shake batch's length, and
+	// FXJitterSamples the poses it spends. OBS runs one SERIAL_FRAME batch
+	// at a time, so a shake that outlives a batch has to be re-fired, and
+	// the chunk length is a straight trade: the driver cannot dial the next
+	// batch until this one returns, so a short chunk stutters between
+	// chunks, and a long one is how far behind a tap on "off" lands. 3s is
+	// 18 whole cycles at FXJitterHz -- whole cycles are load-bearing, see
+	// addJitter -- and 150 poses over it is about 8 per cycle, enough that
+	// the wobble reads as motion instead of stepping.
+	//
+	// Jitter gets its own sample budget rather than FXMaxSamples: that cap
+	// bounds a half-second one-shot, and spending it on a chunk this long
+	// would sample the shake below the rate its own frequency needs.
+	FXJitterChunk   = 3 * time.Second
+	FXJitterSamples = 150
 )
 
 // The stock filters the level effects drive, and the khudson-owned filter
@@ -106,13 +124,24 @@ const (
 	FXPurpleFilterName = "reno-purple"
 )
 
-// FXPixelateBlocks is the pixelate grid's width in pixels at a level: a
-// halving per step, from a mosaic you have to look for to one nothing
-// survives.
-func FXPixelateBlocks(level int) int { return 256 >> (level - 1) }
+// FXPixelateBlocks is the width in pixels the pixelate chain downscales to
+// at a level: 256 at level 1, a mosaic you have to look for, down to 16 at
+// the top, where nothing survives. Geometric rather than linear, so every
+// step is the same proportional bite -- the coarse end of the scale is
+// where the visible difference per step lives, and a linear walk would
+// spend most of its steps there and none at the fine end.
+func FXPixelateBlocks(level int) int {
+	const top, floor = 256.0, 16.0
+	if level <= 1 {
+		return int(top)
+	}
+	f := float64(level-1) / float64(FXMaxLevel-1)
+	return max(int(math.Round(top*math.Pow(floor/top, f))), 1)
+}
 
 // FXPurpleTint is the color_multiply value at a level: white lerped
-// toward violet, so level 1 is a wash and level 5 the whole drank.
+// toward violet, so level 1 is a wash and the top of the scale the whole
+// drank.
 //
 // OBS packs a color setting as 0xAABBGGRR -- the LOW byte is RED, which is
 // backwards from how the number reads. Verified against live OBS 32.2:
@@ -200,9 +229,9 @@ func ParseCamFX(args []string) (CamFX, error) {
 			return CamFX{}, fmt.Errorf("cam %s wants a level 0..%d (or on|off)", fx.Kind, FXMaxLevel)
 		}
 		if fx.Kind == FXJitter {
-			// the shake's own length, so the batch budget and the sampler
-			// agree without a second constant on the wire
-			fx.Dur = FXJitterDur
+			// one chunk's length, so the batch budget and the sampler agree
+			// without a second constant on the wire
+			fx.Dur = FXJitterChunk
 		}
 		switch rest[0] {
 		case "on":
@@ -323,7 +352,7 @@ func BuildCamFXPlan(fx CamFX, env FXEnv) (*FXPlan, error) {
 		p.add(enableReq(env, false))
 	case FXJump:
 		p.add(enableReq(env, true),
-			transformReq(env, CamTransform(env.CanvasW, env.CanvasH, fx.Preset)))
+			transformReq(env, CamTransform(env.CanvasW, env.CanvasH, fx.Preset, env.SourceW, env.SourceH)))
 	case FXMove:
 		if err := addMove(p, fx, env); err != nil {
 			return nil, err
@@ -340,17 +369,22 @@ func BuildCamFXPlan(fx CamFX, env FXEnv) (*FXPlan, error) {
 	return p, nil
 }
 
-// addJitter shakes the cam around the pose it is already in and puts it
-// back. The level is the amplitude, so walking the pair walks how hard it
-// shakes -- and a shake is a one-shot, so every tap on either half fires
-// one at the new amplitude instead of arming a state.
+// addJitter shakes the cam around the pose it is already in, for one chunk
+// of a shake that runs as long as its level is up. The level is the
+// amplitude, so walking the pair walks how hard it shakes; the module
+// re-fires chunks while the level is non-zero, and level 0 just stops the
+// re-firing.
 //
-// The oscillation decays to nothing, which is what lands the last sample
-// exactly on the starting pose. A shake that stopped anywhere else would
-// walk the camera off its placement a tap at a time.
+// Every chunk covers WHOLE oscillations, so it ends on the pose it started
+// from. That is what makes a sustained shake safe to run: each chunk hands
+// the next one the same base pose, and a jitter left up for a minute puts
+// the camera back exactly where it found it. A chunk that ended mid-swing
+// would walk the camera off its placement one chunk at a time.
 func addJitter(p *FXPlan, fx CamFX, env FXEnv) error {
 	if !fx.On() {
-		p.Summary += " (nothing to shake)"
+		// the last chunk already ended on the base pose and the driver stops
+		// re-firing on its own, so there is nothing to undo here
+		p.Summary += " (shake stopped)"
 		return nil
 	}
 	if env.From.BoundsW <= 0 || env.From.BoundsH <= 0 {
@@ -361,23 +395,39 @@ func addJitter(p *FXPlan, fx CamFX, env FXEnv) error {
 		fps = FXFallbackFPS
 	}
 	frames := max(int(math.Round(fx.Dur.Seconds()*fps)), 2)
-	samples := min(frames, FXMaxSamples)
+	samples := min(frames, FXJitterSamples)
 	sleep := max(frames/samples, 1)
-	amp := FXJitterStep * float64(fx.Level) * env.From.BoundsW
+	amp := FXJitterMaxFrac * float64(fx.Level) / float64(FXMaxLevel) * env.From.BoundsW
+	// Fit the throw to the room the box actually has, per axis, rather than
+	// clamping each pose as it is computed. Clamping flattens the half of
+	// the swing that runs out of canvas, and a shake with one side squared
+	// off does not read as a shake -- it reads as the camera being shoved
+	// into the corner and sliding back (glass: a br PiP at the top level has
+	// 24px of room to its right and swings 77px left, so it just lurches).
+	// A smaller symmetric shake is the honest rendering of a box with
+	// nowhere to go.
+	ampX := min(amp, headroom(env.From.X, env.From.BoundsW, env.CanvasW))
+	ampY := min(0.6*amp, headroom(env.From.Y, env.From.BoundsH, env.CanvasH))
+	cycles := FXJitterHz * fx.Dur.Seconds()
 	p.add(enableReq(env, true))
 	for i := 1; i <= samples; i++ {
 		if i > 1 {
 			p.add(sleepReq(sleep))
 		}
-		t := float64(i) / float64(samples)
-		// decay to zero at t=1, so the last sample IS the starting pose
-		phase := 2 * math.Pi * FXJitterHz * t * fx.Dur.Seconds()
-		swing := amp * (1 - t)
 		at := env.From
-		at.X = clampAxis(env.From.X+swing*math.Sin(phase), env.CanvasW, env.From.BoundsW)
-		// the vertical throw is smaller and a quarter turn out of phase, so
-		// the shake orbits instead of sliding along one diagonal
-		at.Y = clampAxis(env.From.Y+0.6*swing*math.Cos(phase), env.CanvasH, env.From.BoundsH)
+		if i < samples {
+			// The last pose is the base pose ITSELF, not the base pose the
+			// arithmetic happens to land on. Whole cycles put sin() at zero
+			// there in exact math, but sin(2*pi*18) in float64 is 4e-15, not
+			// 0, and the chunks tile: every one would hand the next a pose a
+			// hair off the last, and the shake would creep across the canvas
+			// over a long take.
+			phase := 2 * math.Pi * cycles * float64(i) / float64(samples)
+			at.X = clampAxis(env.From.X+ampX*math.Sin(phase), env.CanvasW, env.From.BoundsW)
+			// the vertical throw is smaller and at double the rate, so the
+			// shake traces a figure eight instead of sliding along one diagonal
+			at.Y = clampAxis(env.From.Y+ampY*math.Sin(2*phase), env.CanvasH, env.From.BoundsH)
+		}
 		p.add(transformReq(env, at))
 	}
 	return nil
@@ -385,9 +435,18 @@ func addJitter(p *FXPlan, fx CamFX, env FXEnv) error {
 
 // clampAxis keeps a shaken box inside the canvas on one axis. A canvas
 // smaller than the box (a "big" preset against a tiny canvas) has nowhere
-// to clamp to, so it pins at the origin rather than going negative.
+// to clamp to, so it pins at the origin rather than going negative. With a
+// headroom-fitted amplitude this is a backstop rather than the mechanism.
 func clampAxis(v, canvas, box float64) float64 {
 	return min(max(v, 0), max(canvas-box, 0))
+}
+
+// headroom is how far a box at pos can travel on one axis and still land
+// back inside the canvas travelling the SAME distance the other way: the
+// smaller of the two margins, since a symmetric swing is bounded by the
+// tighter side.
+func headroom(pos, box, canvas float64) float64 {
+	return max(min(pos, canvas-(pos+box)), 0)
 }
 
 // addMove samples the eased path from the item's current pose to the
@@ -404,7 +463,7 @@ func addMove(p *FXPlan, fx CamFX, env FXEnv) error {
 	frames := max(int(math.Round(fx.Dur.Seconds()*fps)), 2)
 	samples := min(frames, FXMaxSamples)
 	sleep := max(frames/samples, 1)
-	to := CamTransform(env.CanvasW, env.CanvasH, fx.Preset)
+	to := CamTransform(env.CanvasW, env.CanvasH, fx.Preset, env.SourceW, env.SourceH)
 	p.add(enableReq(env, true))
 	for i := 1; i <= samples; i++ {
 		if i > 1 {

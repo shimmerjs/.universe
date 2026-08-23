@@ -1,6 +1,7 @@
 package reno
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -233,44 +234,201 @@ func TestBuildScenePlanEmptyRefused(t *testing.T) {
 	}
 }
 
-func TestItemTransformSlots(t *testing.T) {
-	// two slots split the canvas into columns
-	tf, ok := ItemTransform(1920, 1080, 1, 2, 3840, 2160, nil)
-	if !ok || tf.X != 960 || tf.BoundsW != 960 || tf.BoundsH != 1080 {
-		t.Errorf("slot 1/2 = %+v ok=%v", tf, ok)
+func near(a, b float64) bool { return a-b < 0.01 && b-a < 0.01 }
+
+func boxEq(t *testing.T, what string, got Transform, x, y, w, h float64) {
+	t.Helper()
+	if !near(got.X, x) || !near(got.Y, y) || !near(got.BoundsW, w) || !near(got.BoundsH, h) {
+		t.Errorf("%s = (%.1f,%.1f %.0fx%.0f), want (%.1f,%.1f %.0fx%.0f)",
+			what, got.X, got.Y, got.BoundsW, got.BoundsH, x, y, w, h)
 	}
-	// region converts to source crops
-	tf, ok = ItemTransform(1920, 1080, 0, 1, 3840, 2160, &Region{X: 100, Y: 200, W: 800, H: 600})
+}
+
+// The live pairing: a 3840x2160 dell over a 2560x720 edge on a 4K canvas.
+// Height binds, so the stack is ~2520 wide with bars each side, and it
+// fills the canvas vertically exactly -- rows plus the gutter between them.
+func TestStackBoxesDellOverEdge(t *testing.T) {
+	// the canvas StackCanvas derives for this pair, which is what the
+	// executor sizes OBS to before laying the rows out
+	cw, ch, ok := StackCanvas([][2]int{{3840, 2160}, {2560, 720}})
+	if !ok || cw != 2560 || ch != 2200 {
+		t.Fatalf("canvas = %vx%v ok=%v, want 2560x2200", cw, ch, ok)
+	}
+	got := StackBoxes(cw, ch, []float64{3840.0 / 2160, 2560.0 / 720})
+	if len(got) != 2 {
+		t.Fatalf("boxes = %+v", got)
+	}
+	gutter := math.Round(2560 * StackGutterFrac)
+	// full width, no side bars at all, and the edge at its native height
+	boxEq(t, "dell", got[0], 0, 0, 2560, 1440)
+	boxEq(t, "edge", got[1], 0, 1440+gutter, 2560, 720)
+	// every slot shares one width -- that is the whole point of rows
+	if got[0].BoundsW != got[1].BoundsW {
+		t.Errorf("widths differ: %v vs %v", got[0].BoundsW, got[1].BoundsW)
+	}
+	// stacking still beats the columns it replaced, which gave each 1920
+	if got[0].BoundsW <= 1920 {
+		t.Errorf("stack width %v must beat the old column width 1920", got[0].BoundsW)
+	}
+	// the narrowest source lands at 1:1 -- the whole reason the canvas is
+	// derived rather than inherited
+	if got[1].BoundsW != 2560 || got[1].BoundsH != 720 {
+		t.Errorf("edge must render at its native 2560x720, got %+v", got[1])
+	}
+	// gutter, not a seam: the rows are held apart, and the gap plus the
+	// rows still account for the whole canvas height
+	gap := got[1].Y - (got[0].Y + got[0].BoundsH)
+	if !near(gap, gutter) || gap <= 0 {
+		t.Errorf("gap between rows = %v, want %v", gap, gutter)
+	}
+	if bottom := got[1].Y + got[1].BoundsH; !near(bottom, ch) {
+		t.Errorf("stack bottom = %v, want the canvas height %v", bottom, ch)
+	}
+}
+
+func TestStackBoxesSingleSlot(t *testing.T) {
+	// one row has nothing to be held apart from, so it takes no gutter and
+	// a screen matching the canvas fills it exactly, no bars anywhere
+	boxEq(t, "dell alone", StackBoxes(3840, 2160, []float64{3840.0 / 2160})[0], 0, 0, 3840, 2160)
+	// a lone wide strip spans the width and centers vertically
+	boxEq(t, "edge alone", StackBoxes(3840, 2160, []float64{2560.0 / 720})[0], 0, 540, 3840, 1080)
+}
+
+func TestStackBoxesWidthBound(t *testing.T) {
+	// two tall slots: width binds instead of height, so the gutter costs
+	// nothing here and the block centers vertically rather than overflowing
+	got := StackBoxes(1000, 4000, []float64{1, 1})
+	gutter := math.Round(1000 * StackGutterFrac)
+	boxEq(t, "top", got[0], 0, (4000-2000-gutter)/2, 1000, 1000)
+	boxEq(t, "bottom", got[1], 0, (4000-2000-gutter)/2+1000+gutter, 1000, 1000)
+	if got[0].BoundsW != 1000 {
+		t.Errorf("width-bound stack must still use the full width: %+v", got[0])
+	}
+}
+
+func TestStackBoxesUnknownAspect(t *testing.T) {
+	// a source not reporting a size falls back to the canvas aspect rather
+	// than dividing by zero or collapsing the row
+	got := StackBoxes(1920, 1080, []float64{0, 0})
+	if len(got) != 2 || got[0].BoundsH <= 0 || got[0].BoundsH != got[1].BoundsH {
+		t.Fatalf("unknown aspects = %+v", got)
+	}
+	if got[0].BoundsW/got[0].BoundsH-1920.0/1080 > 0.01 {
+		t.Errorf("fallback row must be canvas-shaped: %+v", got[0])
+	}
+	if StackBoxes(1920, 1080, nil) != nil {
+		t.Error("no slots plans no boxes")
+	}
+}
+
+func TestEffectiveSize(t *testing.T) {
+	if w, h := EffectiveSize(3840, 2160, nil); w != 3840 || h != 2160 {
+		t.Errorf("uncropped = %dx%d", w, h)
+	}
+	// a crop is what the canvas sees, so it is what the aspect and the
+	// scale are both denominated in
+	if w, h := EffectiveSize(3840, 2160, &Region{X: 0, Y: 0, W: 1280, H: 720}); w != 1280 || h != 720 {
+		t.Errorf("cropped = %dx%d", w, h)
+	}
+	// out of bounds clamps rather than reporting more than exists
+	if w, h := EffectiveSize(1000, 1000, &Region{X: 900, Y: 900, W: 500, H: 500}); w != 100 || h != 100 {
+		t.Errorf("clamped = %dx%d", w, h)
+	}
+	// a source with no frames yet has no effective size to report
+	if w, h := EffectiveSize(0, 0, &Region{X: 1, Y: 1, W: 10, H: 10}); w != 0 || h != 0 {
+		t.Errorf("dead source = %dx%d", w, h)
+	}
+}
+
+func TestItemTransformCrops(t *testing.T) {
+	box := Transform{X: 640, Y: 1440, BoundsW: 2560, BoundsH: 720}
+	// no region: the box passes through untouched
+	tf, ok := ItemTransform(box, 3840, 2160, nil)
+	if !ok || tf != box {
+		t.Errorf("uncropped = %+v ok=%v", tf, ok)
+	}
+	// region converts to source crops, box preserved
+	tf, ok = ItemTransform(box, 3840, 2160, &Region{X: 100, Y: 200, W: 800, H: 600})
 	if !ok || tf.CropL != 100 || tf.CropT != 200 || tf.CropR != 3840-900 || tf.CropB != 2160-800 {
 		t.Errorf("crops = %+v", tf)
 	}
-	// zero source dims: transform stands, crop reports skipped
-	tf, ok = ItemTransform(1920, 1080, 0, 1, 0, 0, &Region{X: 1, Y: 1, W: 10, H: 10})
+	if tf.X != box.X || tf.BoundsW != box.BoundsW {
+		t.Errorf("crop must not move the box: %+v", tf)
+	}
+	// zero source dims: box stands, crop reports skipped
+	tf, ok = ItemTransform(box, 0, 0, &Region{X: 1, Y: 1, W: 10, H: 10})
 	if ok || tf.CropL != 0 {
 		t.Errorf("zero-dim crop must be skipped: %+v ok=%v", tf, ok)
 	}
 	// an out-of-bounds region clamps instead of going negative
-	tf, ok = ItemTransform(1920, 1080, 0, 1, 1000, 1000, &Region{X: 900, Y: 900, W: 500, H: 500})
+	tf, ok = ItemTransform(box, 1000, 1000, &Region{X: 900, Y: 900, W: 500, H: 500})
 	if !ok || tf.CropR != 0 || tf.CropB != 0 || tf.CropL != 900 {
 		t.Errorf("clamped crops = %+v", tf)
 	}
 }
 
 func TestCamTransformPresets(t *testing.T) {
-	br := CamTransform(1920, 1080, "br")
+	br := CamTransform(1920, 1080, "br", 1920, 1080)
 	if br.X <= 960 || br.Y <= 540 {
 		t.Errorf("br must sit bottom-right: %+v", br)
 	}
-	tl := CamTransform(1920, 1080, "tl")
+	tl := CamTransform(1920, 1080, "tl", 1920, 1080)
 	if tl.X != 24 || tl.Y != 24 {
 		t.Errorf("tl = %+v", tl)
 	}
-	big := CamTransform(1920, 1080, "big")
+	big := CamTransform(1920, 1080, "big", 1920, 1080)
 	// runtime float math, not exact constants: compare with tolerance
 	if diff := big.BoundsW - 1728; diff < -0.01 || diff > 0.01 {
 		t.Errorf("big bounds = %+v", big)
 	}
 	if diff := big.X - 96; diff < -0.01 || diff > 0.01 {
+		t.Errorf("big must center: %+v", big)
+	}
+}
+
+// A "+" corner is a QUARTER of the canvas area -- half of each side -- and
+// it stays pinned to its corner. It is the size between a PiP and big,
+// without big's move to the middle of the content.
+func TestCamTransformQuarterCorners(t *testing.T) {
+	pip, quarter := CamTransform(1920, 1080, "tl", 1920, 1080), CamTransform(1920, 1080, "tl+", 1920, 1080)
+	boxEq(t, "tl+", quarter, 24, 24, 960, 540)
+	if area := quarter.BoundsW * quarter.BoundsH; !near(area, 1920*1080/4) {
+		t.Errorf("a + corner must cover a quarter of the canvas, got %v", area)
+	}
+	// same size between the PiP and big, which is why it exists
+	big := CamTransform(1920, 1080, "big", 1920, 1080)
+	if !(pip.BoundsW < quarter.BoundsW && quarter.BoundsW < big.BoundsW) {
+		t.Errorf("quarter %v must fall between pip %v and big %v", quarter.BoundsW, pip.BoundsW, big.BoundsW)
+	}
+	// each + variant pins to ITS corner with the same pad as the small one
+	boxEq(t, "br+", CamTransform(1920, 1080, "br+", 1920, 1080), 1920-960-24, 1080-540-24, 960, 540)
+	boxEq(t, "tr+", CamTransform(1920, 1080, "tr+", 1920, 1080), 1920-960-24, 24, 960, 540)
+	boxEq(t, "bl+", CamTransform(1920, 1080, "bl+", 1920, 1080), 24, 1080-540-24, 960, 540)
+	// a + corner keeps the plain one's ANCHORED edges -- the two boxes are
+	// different sizes, so it is the pinned edge that has to match, not the
+	// origin
+	for _, c := range []string{"tl", "tr", "bl", "br"} {
+		small, grown := CamTransform(1920, 1080, c, 1920, 1080), CamTransform(1920, 1080, c+"+", 1920, 1080)
+		hSmall, hGrown := small.X, grown.X
+		if strings.HasSuffix(c, "r") {
+			hSmall, hGrown = 1920-(small.X+small.BoundsW), 1920-(grown.X+grown.BoundsW)
+		}
+		vSmall, vGrown := small.Y, grown.Y
+		if strings.HasPrefix(c, "b") {
+			vSmall, vGrown = 1080-(small.Y+small.BoundsH), 1080-(grown.Y+grown.BoundsH)
+		}
+		if !near(hSmall, hGrown) || !near(vSmall, vGrown) {
+			t.Errorf("%s+ left its corner: small %+v, grown %+v", c, small, grown)
+		}
+		if !near(hGrown, 24) || !near(vGrown, 24) {
+			t.Errorf("%s+ must keep the corner pad: inset %v,%v", c, hGrown, vGrown)
+		}
+		if err := CheckWebcam(c + "+"); err != nil {
+			t.Errorf("%s+ must be a legal preset: %v", c, err)
+		}
+	}
+	// big is still the only preset that centers
+	if !near(big.X, (1920-big.BoundsW)/2) {
 		t.Errorf("big must center: %+v", big)
 	}
 }
@@ -288,5 +446,31 @@ func TestRecordConfigSummary(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary %q lacks %q", got, want)
 		}
+	}
+}
+
+// A corner preset hugs its corner on ANY canvas. The box is shaped to the
+// CAMERA, not the frame: once the canvas started following the screens it
+// stopped being 16:9, and a canvas-proportional box left a 16:9 camera
+// floating hundreds of pixels clear of the edge it is named after.
+func TestCamTransformHugsTheCornerOnATallCanvas(t *testing.T) {
+	const cw, ch = 2560.0, 2200.0 // the derived dell+edge canvas
+	got := CamTransform(cw, ch, "br+", 1920, 1080)
+	// the box IS the picture: 16:9, so no dead band inside it to float in
+	if ar := got.BoundsW / got.BoundsH; !near(ar, 1920.0/1080) {
+		t.Errorf("box aspect = %v, want the camera's 16:9: %+v", ar, got)
+	}
+	if right, bottom := cw-(got.X+got.BoundsW), ch-(got.Y+got.BoundsH); !near(right, 24) || !near(bottom, 24) {
+		t.Errorf("br+ floats: %.1f from the right, %.1f from the bottom", right, bottom)
+	}
+	// and it still fits inside the requested fraction of the canvas
+	if got.BoundsW > cw*0.5+0.01 || got.BoundsH > ch*0.5+0.01 {
+		t.Errorf("box overran its share of the canvas: %+v", got)
+	}
+	// unknown source size falls back to canvas proportions rather than
+	// dividing by zero
+	fb := CamTransform(cw, ch, "br+", 0, 0)
+	if fb.BoundsW != cw*0.5 || fb.BoundsH != ch*0.5 {
+		t.Errorf("fallback box = %+v", fb)
 	}
 }
