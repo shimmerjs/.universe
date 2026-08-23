@@ -32,10 +32,11 @@ const (
 	FXPixelate = "pixelate"
 	FXPurple   = "purple"
 	FXJitter   = "jitter"
+	FXLava     = "lava"
 )
 
 // CamFXKinds is the vocabulary in error-message order.
-var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate, FXPurple, FXJitter}
+var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate, FXPurple, FXJitter, FXLava}
 
 // LevelFXKinds are the magnitude effects: one integer, 0 for off, walked
 // by a plus/minus pair on the pad instead of flipped by a toggle. Nothing
@@ -43,16 +44,28 @@ var CamFXKinds = []string{FXMove, FXJump, FXShow, FXHide, FXPixelate, FXPurple, 
 // but not which step of khudson's scale produced them, and a shake leaves
 // no trace at all -- so the level has to be state khudson holds, which is
 // exactly why a tile may show it.
-var LevelFXKinds = []string{FXPixelate, FXPurple, FXJitter}
+var LevelFXKinds = []string{FXPixelate, FXPurple, FXJitter, FXLava}
 
 // IsLevelFX reports whether kind is a magnitude effect.
 func IsLevelFX(kind string) bool { return slices.Contains(LevelFXKinds, kind) }
 
+// SustainFXKinds are the level effects that MOVE: they run for as long as
+// their level is up, so a level above zero is not a request, it is a state
+// somebody has to keep driving. What drives them is one long-lived verb per
+// effect (SustainSetup / SustainChunk / SustainHome), not a re-fired
+// one-shot -- see FXSustainChunk.
+var SustainFXKinds = []string{FXJitter, FXLava}
+
+// IsSustainFX reports whether kind has to be driven while it is up.
+func IsSustainFX(kind string) bool { return slices.Contains(SustainFXKinds, kind) }
+
 // IsFilterFX reports whether kind lands in a source filter, and so needs
-// the filter capability probe in front of it. Jitter is a level effect
-// that is pure motion, and probing filters for it would be a round trip
-// spent on nothing.
-func IsFilterFX(kind string) bool { return kind == FXPixelate || kind == FXPurple }
+// the filter capability probe in front of it. Jitter is the one level
+// effect that is pure motion, and probing filters for it would be a round
+// trip spent on nothing.
+func IsFilterFX(kind string) bool {
+	return kind == FXPixelate || kind == FXPurple || kind == FXLava
+}
 
 // FXEases names the interpolation curves a move may take.
 var FXEases = []string{"linear", "smooth", "bounce"}
@@ -87,21 +100,42 @@ const (
 	// the item's box width. A tenth of the box is plenty on a corner PiP
 	// and still inside the canvas.
 	FXJitterMaxFrac = 0.10
-	// FXJitterChunk is one sustained-shake batch's length, and
-	// FXJitterSamples the poses it spends. OBS runs one SERIAL_FRAME batch
-	// at a time, so a shake that outlives a batch has to be re-fired, and
-	// the chunk length is a straight trade: the driver cannot dial the next
-	// batch until this one returns, so a short chunk stutters between
-	// chunks, and a long one is how far behind a tap on "off" lands. 3s is
-	// 18 whole cycles at FXJitterHz -- whole cycles are load-bearing, see
-	// addJitter -- and 150 poses over it is about 8 per cycle, enough that
-	// the wobble reads as motion instead of stepping.
+	// FXLavaHz is how fast the lamp drifts through its colour. Two orders
+	// of magnitude under the shake, because the whole read of a lava lamp
+	// is that you cannot catch it moving: one full wander every eight
+	// seconds is slow enough to look like a light source and fast enough
+	// that a demo does not have to wait for it.
+	FXLavaHz = 0.125
+	// FXLavaMaxShift is the peak hue rotation at FXMaxLevel, in degrees.
+	// A quarter turn either way: past that the camera passes back through
+	// skin tones on the far side and the drift reads as a glitch rather
+	// than a light.
+	FXLavaMaxShift = 90.0
+	// FXLavaSat is the saturation the lamp holds while it is up. Above 1
+	// so the colour it drifts through is a colour and not a tint, and
+	// scaled by the level like everything else.
+	FXLavaSat = 1.6
+
+	// FXSustainChunk is one batch of a sustained effect. OBS runs one
+	// SERIAL_FRAME batch at a time, so an effect that outlives a batch is
+	// that batch again -- and the chunk length IS the off latency, because
+	// the driver only gets to notice the level dropped between chunks.
 	//
-	// Jitter gets its own sample budget rather than FXMaxSamples: that cap
-	// bounds a half-second one-shot, and spending it on a chunk this long
-	// would sample the shake below the rate its own frequency needs.
-	FXJitterChunk   = 3 * time.Second
-	FXJitterSamples = 150
+	// It is this short because the driver holds the socket open across
+	// chunks (SustainChunk, one long-lived verb) instead of spawning a
+	// process and dialling per chunk. That was the old cost that forced a
+	// 3s chunk and a 3s wait on every "off"; what is left between chunks
+	// now is one batch round trip on loopback.
+	FXSustainChunk = 250 * time.Millisecond
+	// FXSustainOneShot is what a sustained effect does when nobody is
+	// driving it: a bare `khudson reno obs cam jitter 8` with no bus to
+	// pick the shake up. Long enough to be an effect you can see rather
+	// than a blip, and it ends on the pose it started from.
+	FXSustainOneShot = 2 * time.Second
+	// FXSustainSamples caps the poses in one chunk. A guard rather than a
+	// budget: at a plausible frame rate a chunk is well under it, and the
+	// cap only bites if OBS reports something absurd.
+	FXSustainSamples = 60
 )
 
 // The stock filters the level effects drive, and the khudson-owned filter
@@ -122,6 +156,12 @@ const (
 
 	FXPurpleFilterKind = "color_filter_v2"
 	FXPurpleFilterName = "reno-purple"
+
+	// The lamp rides its own filter of the same stock kind rather than
+	// sharing purple's. They are independently levelled controls, and one
+	// filter driven from two tiles would have each of them silently
+	// overwrite the other's settings every time it was touched.
+	FXLavaFilterName = "reno-lava"
 )
 
 // FXPixelateBlocks is the width in pixels the pixelate chain downscales to
@@ -224,14 +264,14 @@ func ParseCamFX(args []string) (CamFX, error) {
 			}
 			fx.Dur = d
 		}
-	case FXPixelate, FXPurple, FXJitter:
+	case FXPixelate, FXPurple, FXJitter, FXLava:
 		if len(rest) != 1 {
 			return CamFX{}, fmt.Errorf("cam %s wants a level 0..%d (or on|off)", fx.Kind, FXMaxLevel)
 		}
-		if fx.Kind == FXJitter {
-			// one chunk's length, so the batch budget and the sampler agree
+		if IsSustainFX(fx.Kind) {
+			// the undriven span, so the batch budget and the sampler agree
 			// without a second constant on the wire
-			fx.Dur = FXJitterChunk
+			fx.Dur = FXSustainOneShot
 		}
 		switch rest[0] {
 		case "on":
@@ -269,7 +309,7 @@ func CheckCamFX(fx CamFX) error {
 		if !slices.Contains(FXEases, fx.Ease) {
 			return fmt.Errorf("cam move ease %q wants one of %s", fx.Ease, strings.Join(FXEases, "|"))
 		}
-	case FXPixelate, FXPurple, FXJitter:
+	case FXPixelate, FXPurple, FXJitter, FXLava:
 		if fx.Level < 0 || fx.Level > FXMaxLevel {
 			return fmt.Errorf("cam %s level %d wants 0..%d", fx.Kind, fx.Level, FXMaxLevel)
 		}
@@ -288,7 +328,7 @@ func (f CamFX) Args() []string {
 		return []string{FXMove, f.Preset, f.Dur.String(), f.Ease}
 	case FXJump:
 		return []string{FXJump, f.Preset}
-	case FXPixelate, FXPurple, FXJitter:
+	case FXPixelate, FXPurple, FXJitter, FXLava:
 		return []string{f.Kind, strconv.Itoa(f.Level)}
 	}
 	return []string{f.Kind}
@@ -361,75 +401,208 @@ func BuildCamFXPlan(fx CamFX, env FXEnv) (*FXPlan, error) {
 		if err := addLevel(p, fx, env); err != nil {
 			return nil, err
 		}
-	case FXJitter:
-		if err := addJitter(p, fx, env); err != nil {
+	case FXJitter, FXLava:
+		if err := addSustainOneShot(p, fx, env); err != nil {
 			return nil, err
 		}
 	}
 	return p, nil
 }
 
-// addJitter shakes the cam around the pose it is already in, for one chunk
-// of a shake that runs as long as its level is up. The level is the
-// amplitude, so walking the pair walks how hard it shakes; the module
-// re-fires chunks while the level is non-zero, and level 0 just stops the
-// re-firing.
+// A sustained effect is an oscillation nobody ever asked to stop at a
+// particular point: a shake, a colour drift. Three plans express one, and
+// the driver (internal/bus SustainFX) runs them in that order:
 //
-// Every chunk covers WHOLE oscillations, so it ends on the pose it started
-// from. That is what makes a sustained shake safe to run: each chunk hands
-// the next one the same base pose, and a jitter left up for a minute puts
-// the camera back exactly where it found it. A chunk that ended mid-swing
-// would walk the camera off its placement one chunk at a time.
-func addJitter(p *FXPlan, fx CamFX, env FXEnv) error {
-	if !fx.On() {
-		// the last chunk already ended on the base pose and the driver stops
-		// re-firing on its own, so there is nothing to undo here
-		p.Summary += " (shake stopped)"
-		return nil
+//	SustainSetup   once, before anything moves: whatever the effect needs
+//	               to exist -- the item enabled, the filter created.
+//	SustainChunk   over and over, each carrying the PHASE the last one
+//	               ended at, so the oscillation is continuous across a
+//	               boundary the viewer must never be able to see.
+//	SustainHome    once, on the way out: the state the effect found.
+//
+// The phase is the whole trick. The old shake re-fired batches of WHOLE
+// cycles, because each batch re-read the camera's pose and had to hand the
+// next one the pose it started from -- which forced a chunk long enough to
+// hold whole cycles, which was the 3s a tap on "off" had to wait out. A
+// driver that holds its own phase reads the pose ONCE, so a chunk can be as
+// short as the off latency wants it.
+
+// sustainAmp is an effect's magnitude at a level, as a fraction 0..1 of
+// its own top.
+func sustainAmp(level int) float64 { return float64(level) / float64(FXMaxLevel) }
+
+// sustainHz is an effect's frequency in whole oscillations per second.
+func sustainHz(kind string) float64 {
+	switch kind {
+	case FXJitter:
+		return FXJitterHz
+	case FXLava:
+		return FXLavaHz
 	}
-	if env.From.BoundsW <= 0 || env.From.BoundsH <= 0 {
-		return errors.New("reno-cam has no bounds box to shake -- set a webcam preset first (khudson reno config --webcam br)")
+	return 0
+}
+
+// sustainSampler is an effect reduced to one function: the request that
+// renders it at a given phase, measured in whole turns. Everything that
+// differs between a shake and a colour drift lives in here; the chunk
+// arithmetic above it does not know which one it is driving.
+func sustainSampler(fx CamFX, env FXEnv) (func(turns float64) FXRequest, error) {
+	switch fx.Kind {
+	case FXJitter:
+		if env.From.BoundsW <= 0 || env.From.BoundsH <= 0 {
+			return nil, errors.New("reno-cam has no bounds box to shake -- set a webcam preset first (khudson reno config --webcam br)")
+		}
+		amp := FXJitterMaxFrac * sustainAmp(fx.Level) * env.From.BoundsW
+		// Fit the throw to the room the box actually has, per axis, rather
+		// than clamping each pose as it is computed. Clamping flattens the
+		// half of the swing that runs out of canvas, and a shake with one
+		// side squared off does not read as a shake -- it reads as the
+		// camera being shoved into the corner and sliding back (glass: a br
+		// PiP at the top level has 24px of room to its right and swings 77px
+		// left, so it just lurches). A smaller symmetric shake is the honest
+		// rendering of a box with nowhere to go.
+		ampX := min(amp, headroom(env.From.X, env.From.BoundsW, env.CanvasW))
+		ampY := min(0.6*amp, headroom(env.From.Y, env.From.BoundsH, env.CanvasH))
+		return func(turns float64) FXRequest {
+			ph := 2 * math.Pi * turns
+			at := env.From
+			at.X = clampAxis(env.From.X+ampX*math.Sin(ph), env.CanvasW, env.From.BoundsW)
+			// the vertical throw is smaller and at double the rate, so the
+			// shake traces a figure eight instead of sliding along one diagonal
+			at.Y = clampAxis(env.From.Y+ampY*math.Sin(2*ph), env.CanvasH, env.From.BoundsH)
+			return transformReq(env, at)
+		}, nil
+	case FXLava:
+		return func(turns float64) FXRequest {
+			return FXRequest{Type: "SetSourceFilterSettings", Data: map[string]any{
+				"sourceName": env.Source, "filterName": FXLavaFilterName,
+				"filterSettings": lavaSettings(fx.Level, turns), "overlay": true,
+			}}
+		}, nil
+	}
+	return nil, fmt.Errorf("cam %s is not a sustained effect", fx.Kind)
+}
+
+// lavaSettings is the lamp at one instant: the hue swung either side of the
+// camera's own colour, with the saturation held up so the swing reads as
+// light rather than as a wash. Hue only oscillates -- it does not run all
+// the way round -- because a full rotation spends half its time with skin
+// the colour of a bruise, and stopping the effect from a hue on the far
+// side would snap rather than settle.
+func lavaSettings(level int, turns float64) map[string]any {
+	amp := sustainAmp(level)
+	return map[string]any{
+		"hue_shift":  FXLavaMaxShift * amp * math.Sin(2*math.Pi*turns),
+		"saturation": 1 + (FXLavaSat-1)*amp,
+	}
+}
+
+// SustainSetup is what an effect needs in place before it moves: the cam
+// item visible either way, plus the filter a colour effect drives. Filter
+// creation goes here rather than into the chunk because a chunk runs four
+// times a second and creating a filter is not something to re-decide at
+// that rate.
+func SustainSetup(fx CamFX, env FXEnv) (*FXPlan, error) {
+	if err := CheckCamFX(fx); err != nil {
+		return nil, err
+	}
+	if !IsSustainFX(fx.Kind) {
+		return nil, fmt.Errorf("cam %s is not a sustained effect", fx.Kind)
+	}
+	p := &FXPlan{Summary: fx.String() + " (setup)"}
+	p.add(enableReq(env, true))
+	if fx.Kind == FXLava {
+		if err := addLevel(p, fx, env); err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
+}
+
+// SustainChunk is one batch of a running effect: dur of oscillation
+// starting at phase, and the phase the next chunk picks up from. The phase
+// is returned rather than recomputed because that is what makes the seam
+// between two chunks invisible.
+func SustainChunk(fx CamFX, env FXEnv, phase float64, dur time.Duration) (*FXPlan, float64, error) {
+	at, err := sustainSampler(fx, env)
+	if err != nil {
+		return nil, phase, err
 	}
 	fps := env.FPS
 	if fps <= 0 {
 		fps = FXFallbackFPS
 	}
-	frames := max(int(math.Round(fx.Dur.Seconds()*fps)), 2)
-	samples := min(frames, FXJitterSamples)
+	frames := max(int(math.Round(dur.Seconds()*fps)), 2)
+	samples := min(frames, FXSustainSamples)
 	sleep := max(frames/samples, 1)
-	amp := FXJitterMaxFrac * float64(fx.Level) / float64(FXMaxLevel) * env.From.BoundsW
-	// Fit the throw to the room the box actually has, per axis, rather than
-	// clamping each pose as it is computed. Clamping flattens the half of
-	// the swing that runs out of canvas, and a shake with one side squared
-	// off does not read as a shake -- it reads as the camera being shoved
-	// into the corner and sliding back (glass: a br PiP at the top level has
-	// 24px of room to its right and swings 77px left, so it just lurches).
-	// A smaller symmetric shake is the honest rendering of a box with
-	// nowhere to go.
-	ampX := min(amp, headroom(env.From.X, env.From.BoundsW, env.CanvasW))
-	ampY := min(0.6*amp, headroom(env.From.Y, env.From.BoundsH, env.CanvasH))
-	cycles := FXJitterHz * fx.Dur.Seconds()
-	p.add(enableReq(env, true))
+	turns := sustainHz(fx.Kind) * dur.Seconds()
+	p := &FXPlan{Summary: fx.String()}
 	for i := 1; i <= samples; i++ {
 		if i > 1 {
 			p.add(sleepReq(sleep))
 		}
-		at := env.From
-		if i < samples {
-			// The last pose is the base pose ITSELF, not the base pose the
-			// arithmetic happens to land on. Whole cycles put sin() at zero
-			// there in exact math, but sin(2*pi*18) in float64 is 4e-15, not
-			// 0, and the chunks tile: every one would hand the next a pose a
-			// hair off the last, and the shake would creep across the canvas
-			// over a long take.
-			phase := 2 * math.Pi * cycles * float64(i) / float64(samples)
-			at.X = clampAxis(env.From.X+ampX*math.Sin(phase), env.CanvasW, env.From.BoundsW)
-			// the vertical throw is smaller and at double the rate, so the
-			// shake traces a figure eight instead of sliding along one diagonal
-			at.Y = clampAxis(env.From.Y+ampY*math.Sin(2*phase), env.CanvasH, env.From.BoundsH)
-		}
-		p.add(transformReq(env, at))
+		p.add(at(phase + turns*float64(i)/float64(samples)))
 	}
+	return p, phase + turns, nil
+}
+
+// SustainHome is the state the effect found, restored: the pose a shake
+// started from, the filter a lamp switched on. It is the only thing that
+// puts either back -- a chunk deliberately ends wherever the phase left it
+// -- so the driver owes this plan on every exit path it has.
+//
+// The pose comes from env.From, read ONCE before the first chunk. Reading
+// it now would capture the camera mid-swing and enshrine that as home.
+func SustainHome(fx CamFX, env FXEnv) (*FXPlan, error) {
+	p := &FXPlan{Summary: fx.String() + " (home)"}
+	switch fx.Kind {
+	case FXJitter:
+		if env.From.BoundsW <= 0 || env.From.BoundsH <= 0 {
+			return nil, errors.New("no base pose to put the camera back to")
+		}
+		p.add(transformReq(env, env.From))
+	case FXLava:
+		p.add(filterEnabledReq(env, FXLavaFilterName, false))
+	default:
+		return nil, fmt.Errorf("cam %s is not a sustained effect", fx.Kind)
+	}
+	return p, nil
+}
+
+// addSustainOneShot is a sustained effect with nobody driving it: setup,
+// one visible span of oscillation, and home. This is what a bare CLI call
+// or a script step gets, and it ends where it started because there is no
+// driver left afterwards to put anything back.
+func addSustainOneShot(p *FXPlan, fx CamFX, env FXEnv) error {
+	if !fx.On() {
+		// the driver restores home on its way out and a one-shot already
+		// ended there, so there is nothing here to undo. Lava is the
+		// exception: its filter is state, and switching it off is real work
+		if fx.Kind == FXLava {
+			return addLevel(p, fx, env)
+		}
+		p.Summary += " (stopped)"
+		return nil
+	}
+	setup, err := SustainSetup(fx, env)
+	if err != nil {
+		return err
+	}
+	dur := fx.Dur
+	if dur <= 0 {
+		dur = FXSustainOneShot
+	}
+	span, _, err := SustainChunk(fx, env, 0, dur)
+	if err != nil {
+		return err
+	}
+	home, err := SustainHome(fx, env)
+	if err != nil {
+		return err
+	}
+	p.add(setup.Requests...)
+	p.add(span.Requests...)
+	p.add(home.Requests...)
 	return nil
 }
 
@@ -490,9 +663,21 @@ func levelStages(fx CamFX, env FXEnv) []levelStage {
 	case FXPixelate:
 		return pixelateStages(fx, env)
 	case FXPurple:
+		// Multiply and not hue_shift: a hue rotation moves every colour in
+		// the frame and the result depends on what was in it, where a tint
+		// is the same wash on any source, which is what a level is supposed
+		// to promise. The lamp below is the effect that WANTS the dependence.
 		return []levelStage{{
 			Name: FXPurpleFilterName, Kind: FXPurpleFilterKind,
 			Settings: map[string]any{"color_multiply": FXPurpleTint(fx.Level)},
+		}}
+	case FXLava:
+		// phase zero: the lamp is created sitting on the camera's own hue,
+		// so switching it on is not itself a visible jump. Every instant
+		// after this one comes from the driver.
+		return []levelStage{{
+			Name: FXLavaFilterName, Kind: FXPurpleFilterKind,
+			Settings: lavaSettings(fx.Level, 0),
 		}}
 	}
 	return nil
@@ -506,6 +691,8 @@ func levelStageNames(kind string) []string {
 		return []string{FXPixelateDownName, FXPixelateUpName}
 	case FXPurple:
 		return []string{FXPurpleFilterName}
+	case FXLava:
+		return []string{FXLavaFilterName}
 	}
 	return nil
 }
@@ -652,14 +839,6 @@ func pixelateStages(fx CamFX, env FXEnv) []levelStage {
 			},
 		},
 	}
-}
-
-// purpleSettings multiplies the camera by a violet. Multiply and not
-// hue_shift: a hue rotation moves every colour in the frame and the
-// result depends on what was in it, where a tint is the same wash on any
-// source, which is what a level is supposed to promise.
-func purpleSettings(fx CamFX, _ FXEnv) map[string]any {
-	return map[string]any{"color_multiply": FXPurpleTint(fx.Level)}
 }
 
 func enableReq(env FXEnv, on bool) FXRequest {

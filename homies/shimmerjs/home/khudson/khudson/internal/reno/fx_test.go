@@ -400,21 +400,17 @@ func TestPurplePlan(t *testing.T) {
 	}
 }
 
-// A jitter shakes around the pose it starts in and LANDS on it. Anywhere
-// else and repeated taps would walk the camera off its placement.
+// An undriven jitter -- a bare CLI call, a script step -- shakes around the
+// pose it starts in and LANDS on it. Nothing is left afterwards to put the
+// camera back, so the span has to do it itself.
 func TestJitterPlan(t *testing.T) {
 	env := fxTestEnv()
 	fx, err := ParseCamFX([]string{"jitter", "4"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fx.Dur != FXJitterChunk {
+	if fx.Dur != FXSustainOneShot {
 		t.Errorf("jitter dur = %s", fx.Dur)
-	}
-	// whole cycles per chunk is what lets a sustained shake tile chunk after
-	// chunk without walking the camera off its placement
-	if cycles := FXJitterHz * FXJitterChunk.Seconds(); cycles != math.Trunc(cycles) {
-		t.Errorf("a chunk must be whole cycles, got %v", cycles)
 	}
 	plan, err := BuildCamFXPlan(fx, env)
 	if err != nil {
@@ -485,14 +481,15 @@ func TestJitterPlan(t *testing.T) {
 		t.Errorf("shook off the canvas: min x %v", lo)
 	}
 
-	// level 0 sends nothing: the driver stops re-firing, and the chunk that
-	// already ran ended on the base pose, so there is nothing to undo
+	// level 0 sends nothing: stopping a shake is stopping its driver, and
+	// the driver restores the pose on its way out. A plan that also wrote a
+	// pose would be writing one read mid-swing.
 	off, _ := ParseCamFX([]string{"jitter", "0"})
 	plan, err = BuildCamFXPlan(off, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Requests) != 0 || !strings.Contains(plan.Summary, "shake stopped") {
+	if len(plan.Requests) != 0 || !strings.Contains(plan.Summary, "stopped") {
 		t.Errorf("jitter off = %+v %q", plan.Requests, plan.Summary)
 	}
 

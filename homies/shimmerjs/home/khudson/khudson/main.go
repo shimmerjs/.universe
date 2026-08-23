@@ -109,6 +109,12 @@ func usage() {
                       for scene/record script commands)
   reno obs quit       end the session: close the run, stop the take,
                       drop the hardware, and quit OBS gracefully
+  reno obs cam <fx>   webcam effect: move/jump <preset>, show, hide, or a
+                      level 0..20 for pixelate|purple|jitter|lava. The
+                      last two MOVE, so the bus drives them with a
+                      long-lived child (--sustain) for as long as their
+                      level is up; a bare call here is one visible span
+                      that ends where it started
   reno chrome-tab <match>
                       activate the first Chrome tab whose URL or title
                       contains match (AppleScript; needs the Automation

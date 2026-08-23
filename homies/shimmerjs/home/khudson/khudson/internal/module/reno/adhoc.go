@@ -245,13 +245,21 @@ func (m *Mod) saveConfigLocked() { m.writeState(configFile, m.desired) }
 // the scene collection holds, and a bus start must not reach out and
 // change a camera nobody asked it to touch. Unknown kinds are dropped, so
 // a level for an effect that no longer exists cannot resurrect a tile.
+//
+// SUSTAINED levels are dropped too, and for the opposite reason to the one
+// that keeps the others. A pixelate survives a bus restart because the
+// filter it set is still on the camera; a shake does not, because the
+// driver died with the bus and put the pose back on its way out. Recovering
+// that level would leave a tile reading "jitter 7" over a camera holding
+// perfectly still.
 func (m *Mod) recoverFXLevels() {
 	var levels map[string]int
 	if !m.readState(levelsFile, &levels) {
 		return
 	}
 	for kind, level := range levels {
-		if !renocore.IsLevelFX(kind) || level <= 0 || level > renocore.FXMaxLevel {
+		if !renocore.IsLevelFX(kind) || renocore.IsSustainFX(kind) ||
+			level <= 0 || level > renocore.FXMaxLevel {
 			continue
 		}
 		if m.fxLevels == nil {
@@ -262,8 +270,10 @@ func (m *Mod) recoverFXLevels() {
 }
 
 // bumpFXLevelLocked walks one level effect a step and returns the effect
-// to fire. At either end of the range it returns false: the tile is dim
-// there and has nothing to send. Caller holds mu.
+// to fire. It returns false where there is nothing to send: at either end
+// of the range, where the tile is dim, and for a sustained effect, where
+// the level change IS a driver started, restarted or stopped and no
+// one-shot goes out at all. Caller holds mu.
 func (m *Mod) bumpFXLevelLocked(kind string, up bool) (renocore.CamFX, bool) {
 	if !renocore.IsLevelFX(kind) {
 		return renocore.CamFX{}, false
@@ -280,10 +290,13 @@ func (m *Mod) bumpFXLevelLocked(kind string, up bool) (renocore.CamFX, bool) {
 	}
 	m.fxLevels[kind] = next
 	m.writeState(levelsFile, m.fxLevels)
-	// a jitter is not a one-shot: raising it off zero is what starts the
-	// shake running, and dropping it to zero is what stops it
-	if kind == renocore.FXJitter {
-		m.touchJitterLocked()
+	if renocore.IsSustainFX(kind) {
+		// a shake and a lamp are not one-shots: raising one off zero is what
+		// starts its driver, and dropping it to zero is what stops it. The
+		// driver owns the whole effect, home included, so an effect fired
+		// alongside it would be a second author of the same camera.
+		m.touchSustainLocked(kind)
+		return renocore.CamFX{}, false
 	}
 	return renocore.CamFX{Kind: kind, Level: next}, true
 }
@@ -468,6 +481,9 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 		} else {
 			m.desired.Webcam = argv[1]
 		}
+		// the camera going away takes its effects with it, and a camera
+		// coming back brings the ones still levelled up
+		m.touchEverySustainLocked()
 	case actCfgScreen:
 		m.toggleScreenLocked(argv[1])
 	default:
@@ -690,12 +706,12 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 	if err != nil || !renocore.IsLevelFX(fx.Kind) {
 		return
 	}
-	// A sustained jitter notes every chunk it fires, and those notes are
-	// echoes of a level this module already owns, not news from outside it.
-	// Adopting them loses the race against turning the shake off: the tap
-	// sets 0, an in-flight chunk fired at the old level lands afterwards,
-	// and the level it carries would put the shake straight back up.
-	if fx.Kind == renocore.FXJitter && m.jitterWatch {
+	// A driver notes the level it came up at, and that note is an echo of a
+	// level this module already owns, not news from outside it. Adopting it
+	// loses the race against turning the effect off: the tap sets 0 and
+	// stops the driver, the driver's own note lands afterwards, and the
+	// level it carries would put the effect straight back up.
+	if m.sustain[fx.Kind] != nil {
 		return
 	}
 	if m.fxLevels == nil {
@@ -706,10 +722,9 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 	}
 	m.fxLevels[fx.Kind] = fx.Level
 	m.writeState(levelsFile, m.fxLevels)
-	// a hand-run `khudson reno obs cam jitter 5` starts the shake too
-	if fx.Kind == renocore.FXJitter {
-		m.touchJitterLocked()
-	}
+	// a hand-run `khudson reno obs cam jitter 5` is a one-shot span, but it
+	// is also someone asking for the effect: pick it up and drive it
+	m.touchSustainLocked(fx.Kind)
 }
 
 // beginApplyLocked hands the apply verb the config to drive OBS to. The

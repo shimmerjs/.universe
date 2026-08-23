@@ -122,9 +122,11 @@ type Mod struct {
 	// itself; armWatch says a watchdog goroutine is already counting down.
 	armDeadline time.Time
 	armWatch    bool
-	// jitterWatch says a driver goroutine is already re-firing the shake;
-	// the level it shakes at lives in fxLevels like every other level FX.
-	jitterWatch bool
+	// sustain holds the running driver for each sustained effect, keyed by
+	// FX kind (internal/module/reno/sustain.go). A key present means a
+	// child is out there driving that effect right now; the level it drives
+	// at lives in fxLevels like every other level FX.
+	sustain map[string]*sustainDriver
 
 	// winState is OBS's own window: "" unknown, "shown", "hidden". Unlike
 	// an OBS filter this reads back (kAXHidden), so the tile is allowed to

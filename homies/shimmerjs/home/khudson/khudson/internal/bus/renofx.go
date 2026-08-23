@@ -106,6 +106,125 @@ func fxEnv(obs ObsTransport, fx renocore.CamFX) (renocore.FXEnv, error) {
 	return env, nil
 }
 
+// sustainSlack bounds one chunk's exchange. A chunk is short by
+// construction, so almost all of this is connect-free round trip on
+// loopback -- it is a wedge detector, not a budget.
+const sustainSlack = 5 * time.Second
+
+// sustainLifetime caps a driver even if nothing ever stops it. The module
+// that starts one also kills it, but a bus killed outright (kickstart -k)
+// reaps nothing, and an orphan shaking a camera forever is worse than an
+// effect that quietly stops. The module notices a dead driver and starts
+// another, so the visible cost of the cap is one skipped frame every
+// half hour.
+const sustainLifetime = 30 * time.Minute
+
+// SustainFX drives one sustained effect for as long as it is wanted: the
+// shake and the lamp, the two level effects that are motion rather than a
+// setting. It is a long-lived verb -- one process, one socket, one phase --
+// and stopping it is closing stop.
+//
+// One process rather than a re-fired one-shot is the whole design. A
+// one-shot per chunk pays a process spawn and a websocket handshake between
+// every batch, which is why the chunk had to be 3 seconds long, which is
+// why turning a shake off used to take 3 seconds. Holding the socket makes
+// a chunk cheap, so FXSustainChunk is a quarter second and that is now the
+// worst an "off" can cost.
+//
+// Home is owed on every exit path. A chunk ends wherever its phase left it,
+// so the pose the camera started in and the filter the lamp switched on
+// only ever come back here.
+func (v *RenoVerbs) SustainFX(fx renocore.CamFX, dial func() (ObsTransport, error), ctl CtlCall, corr RenoCorr, stop <-chan struct{}) error {
+	target := fx.String() + " sustained"
+	fail := func(err error) error {
+		if ctl != nil {
+			if _, nerr := ctl([]string{"fx-note", "error", err.Error()}); nerr != nil {
+				err = errors.Join(err, nerr)
+			}
+		}
+		return v.Act(corr, "cam", target, "error", err.Error(), err)
+	}
+	if !renocore.IsSustainFX(fx.Kind) {
+		err := fmt.Errorf("cam %s does not sustain", fx.Kind)
+		return v.Act(corr, "cam", target, "error", err.Error(), err)
+	}
+	if !fx.On() {
+		// level 0 is the driver not existing, so there is nothing to run.
+		// Refusing beats starting a process that immediately restores home
+		// over whatever the real driver is in the middle of doing.
+		err := fmt.Errorf("cam %s 0 is the driver stopping, not a driver to start", fx.Kind)
+		return v.Act(corr, "cam", target, "error", err.Error(), err)
+	}
+	obs, err := dial()
+	if err != nil {
+		return fail(err)
+	}
+	defer obs.Close()
+	// read ONCE, before anything moves: env.From is what home means, and a
+	// re-read mid-effect would enshrine the camera's shaken pose as its place
+	env, err := fxEnv(obs, fx)
+	if err != nil {
+		return fail(err)
+	}
+	setup, err := renocore.SustainSetup(fx, env)
+	if err != nil {
+		return fail(err)
+	}
+	if err := obs.RunFrameBatch(fxBatchID(corr)+"-setup", setup.Requests, sustainSlack); err != nil {
+		return fail(err)
+	}
+	if ctl != nil {
+		// the tile lights on the setup landing rather than on the first
+		// chunk: by then the effect IS on, and a readout that waited for a
+		// chunk would blink off every time a driver restarted
+		if _, err := ctl([]string{"fx-note", "ok", fx.String()}); err != nil {
+			return v.Act(corr, "cam", target, "unconfirmed",
+				"driver up but the note failed: "+err.Error(), err)
+		}
+	}
+
+	phase, chunks := 0.0, 0
+	deadline := time.Now().Add(sustainLifetime)
+	var runErr error
+	for !sustainStopped(stop) && time.Now().Before(deadline) {
+		var plan *renocore.FXPlan
+		plan, phase, runErr = renocore.SustainChunk(fx, env, phase, renocore.FXSustainChunk)
+		if runErr != nil {
+			break
+		}
+		if runErr = obs.RunFrameBatch(fxBatchID(corr), plan.Requests, sustainSlack); runErr != nil {
+			break
+		}
+		chunks++
+	}
+
+	// home before the outcome, and regardless of it: a driver that died
+	// mid-chunk is exactly when the camera is somewhere nobody put it
+	detail := fmt.Sprintf("%s ran %d chunks", fx.String(), chunks)
+	if home, herr := renocore.SustainHome(fx, env); herr != nil {
+		runErr = errors.Join(runErr, herr)
+	} else if herr := obs.RunFrameBatch(fxBatchID(corr)+"-home", home.Requests, sustainSlack); herr != nil {
+		runErr = errors.Join(runErr, herr)
+	}
+	if runErr != nil {
+		return fail(fmt.Errorf("%s: %w", detail, runErr))
+	}
+	fmt.Println(detail)
+	return v.Act(corr, "cam", target, "ok", detail, nil)
+}
+
+// sustainStopped reads the stop signal without blocking. A nil channel is
+// never stopped, which is what a caller with no supervisor wants: the
+// lifetime cap is then the only thing that ends the run.
+func sustainStopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
 // fxBatchID correlates the batch with the run in an OBS log; a bare verb
 // has no run, so it falls back to the verb name.
 func fxBatchID(corr RenoCorr) string {

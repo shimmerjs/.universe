@@ -10,12 +10,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -207,6 +209,7 @@ func cmdReno(args []string) error {
 		run := fs.String("run", "", "run id (correlation)")
 		step := fs.Int("step", -1, "step ordinal (correlation)")
 		act := fs.Int("act", -1, "action index (correlation)")
+		sustain := fs.Bool("sustain", false, "drive a sustained cam effect until stdin closes (jitter, lava)")
 		if err := fs.Parse(rest[flagsAt:]); err != nil {
 			return err
 		}
@@ -286,6 +289,13 @@ func cmdReno(args []string) error {
 			if err != nil {
 				return err
 			}
+			if *sustain {
+				// NO watchdog: this one is meant to outlive every other verb,
+				// and its own lifetime cap is what bounds it. The supervisor
+				// stops it by closing stdin, so an orphaned driver dies with
+				// the pipe rather than shaking a camera nobody is watching.
+				return v.SustainFX(fx, dial, renoCtlData, corr, sustainStop())
+			}
 			// an eased move PLAYS inside the batch, so the bound is the FX
 			// budget on top of the ordinary verb deadline
 			defer renoWatchdogFor(renocore.FXMaxDur + renoVerbDeadline)()
@@ -298,6 +308,34 @@ func cmdReno(args []string) error {
 		return v.ObsOp(op, arg, dial, renoCtlData, corr)
 	}
 	return fmt.Errorf("reno: unknown verb %q", verb)
+}
+
+// sustainStop closes when the driver should put its effect back and go:
+// stdin reaching EOF, or a signal.
+//
+// Stdin is the load-bearing one. The bus module supervising a driver stops
+// it by closing the pipe, which is a stop that survives the supervisor
+// itself dying -- a SIGKILLed bus (kickstart -k) reaps nothing and sends
+// nothing, but its end of every pipe closes anyway. Signals are for the
+// hand-run case, where the driver is a foreground process and ctrl-C has
+// to leave the camera where it found it.
+func sustainStop() <-chan struct{} {
+	stop := make(chan struct{})
+	var once sync.Once
+	done := func() { once.Do(func() { close(stop) }) }
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		done()
+	}()
+	go func() {
+		// the read never returns data anybody wants: EOF is the message
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		done()
+	}()
+	return stop
 }
 
 // ensureDial is the launching dial: seed the websocket config and boot
