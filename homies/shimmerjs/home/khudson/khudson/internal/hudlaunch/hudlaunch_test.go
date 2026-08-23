@@ -130,12 +130,12 @@ func TestRunChildRefusesLiveHudSocket(t *testing.T) {
 	defer ln.Close()
 
 	opts := Options{
-		KittyBin: "/nonexistent/kitty",
-		Socket:   sock,
-		Poll:     time.Minute,
-		Logf:     t.Logf,
+		KittyBin:   "/nonexistent/kitty",
+		Socket:     sock,
+		RetryDelay: time.Minute,
+		Logf:       t.Logf,
 	}
-	if got := runChild(context.Background(), opts, 0, 0); got != childExited {
+	if got := runChild(context.Background(), opts, nil, 0, 0); got != childExited {
 		t.Fatalf("outcome = %v, want childExited", got)
 	}
 	conn, err := net.Dial("unix", sock)
@@ -161,12 +161,12 @@ func TestRunChildRemovesStaleHudSocket(t *testing.T) {
 	corpse.Close()
 
 	opts := Options{
-		KittyBin: "/nonexistent/kitty",
-		Socket:   sock,
-		Poll:     time.Minute,
-		Logf:     t.Logf,
+		KittyBin:   "/nonexistent/kitty",
+		Socket:     sock,
+		RetryDelay: time.Minute,
+		Logf:       t.Logf,
 	}
-	if got := runChild(context.Background(), opts, 0, 0); got != childExited {
+	if got := runChild(context.Background(), opts, nil, 0, 0); got != childExited {
 		t.Fatalf("outcome = %v, want childExited", got)
 	}
 	if _, err := os.Stat(sock); !errors.Is(err, fs.ErrNotExist) {
@@ -176,17 +176,14 @@ func TestRunChildRemovesStaleHudSocket(t *testing.T) {
 
 func TestNormalizeDefaults(t *testing.T) {
 	opts := normalize(Options{})
-	if opts.Poll != 15*time.Second || opts.HealthyPoll != time.Minute {
-		t.Fatalf("defaults = %s/%s, want 15s/1m", opts.Poll, opts.HealthyPoll)
+	if opts.RetryDelay != 15*time.Second {
+		t.Fatalf("RetryDelay = %s, want 15s", opts.RetryDelay)
 	}
-	if opts.Query == nil || opts.Logf == nil {
-		t.Fatal("query/logf defaults missing")
+	if opts.Query == nil || opts.Watch == nil || opts.Logf == nil {
+		t.Fatal("query/watch/logf defaults missing")
 	}
-	if opts = normalize(Options{Poll: 5 * time.Second}); opts.HealthyPoll != 20*time.Second {
-		t.Fatalf("HealthyPoll = %s, want 4x Poll", opts.HealthyPoll)
-	}
-	if opts = normalize(Options{Poll: time.Second, HealthyPoll: time.Hour}); opts.HealthyPoll != time.Hour {
-		t.Fatal("explicit HealthyPoll overridden")
+	if opts = normalize(Options{RetryDelay: time.Hour}); opts.RetryDelay != time.Hour {
+		t.Fatal("explicit RetryDelay overridden")
 	}
 }
 
@@ -201,30 +198,87 @@ func fakeChild(t *testing.T, body string) string {
 	return p
 }
 
-// The healthy tick rides HealthyPoll, never the waiting Poll: with a hot
-// waiting poll and a cold healthy poll the display query must not run while
-// the child lives.
-func TestRunChildHealthyTickCadence(t *testing.T) {
+// A live HUD on an unchanging arrangement must not query at all: Query execs
+// osascript, which macOS books as a full app launch, so any residual cadence
+// here is a per-day idle cost. A change channel that never fires stands for a
+// stable arrangement.
+func TestRunChildQueriesOnlyOnChange(t *testing.T) {
 	sock := hudSockPath(t)
-	queries := 0
+	var queries atomic.Int32
 	opts := Options{
-		KittyBin:    fakeChild(t, "sleep 0.2"),
+		KittyBin:    fakeChild(t, "sleep 0.3"),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        5 * time.Millisecond,
-		HealthyPoll: time.Hour,
+		RetryDelay:  time.Millisecond,
 		Query: func(context.Context) ([]Screen, error) {
-			queries++
+			queries.Add(1)
 			return liveScreens, nil
 		},
 		Logf: t.Logf,
 	}
-	if got := runChild(context.Background(), opts, 0, 0); got != childExited {
+	if got := runChild(context.Background(), opts, nil, 0, 0); got != childExited {
 		t.Fatalf("outcome = %v, want childExited", got)
 	}
-	if queries != 0 {
-		t.Fatalf("display query ran %d times on the waiting cadence; healthy ticks must ride HealthyPoll", queries)
+	if n := queries.Load(); n != 0 {
+		t.Fatalf("display query ran %d times on a stable arrangement; a healthy HUD must cost zero queries", n)
 	}
+}
+
+// The converse of the above: a change signal is what makes runChild re-read.
+func TestRunChildQueriesOnChange(t *testing.T) {
+	sock := hudSockPath(t)
+	var queries atomic.Int32
+	opts := Options{
+		KittyBin:    fakeChild(t, "sleep 0.3"),
+		Socket:      sock,
+		DisplayName: "XENEON EDGE",
+		RetryDelay:  time.Hour,
+		Query: func(context.Context) ([]Screen, error) {
+			queries.Add(1)
+			return liveScreens, nil
+		},
+		Logf: t.Logf,
+	}
+	// placed where liveScreens actually puts the Edge, so the re-reads the
+	// pulses drive find no move and the child runs to its own exit
+	if got := runChild(context.Background(), opts, changePulse(t, 20*time.Millisecond), 342, 2160); got != childExited {
+		t.Fatalf("outcome = %v, want childExited", got)
+	}
+	if queries.Load() == 0 {
+		t.Fatal("a display change must trigger a re-read")
+	}
+}
+
+// stubWatch is the WatchFunc a Run test installs in place of the CoreGraphics
+// watcher. A nil channel never fires, standing for a stable arrangement.
+func stubWatch(ch <-chan struct{}) WatchFunc {
+	return func(context.Context) (<-chan struct{}, error) { return ch, nil }
+}
+
+// changePulse stands in for the watcher on a machine whose displays are not
+// moving: it signals every d until the test ends, so a test can drive as many
+// re-reads as it needs. Coalescing matches the real watcher's depth-1 buffer.
+func changePulse(t *testing.T, d time.Duration) <-chan struct{} {
+	t.Helper()
+	ch := make(chan struct{}, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go func() {
+		tk := time.NewTicker(d)
+		defer tk.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tk.C:
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	return ch
 }
 
 // devOverride: a fresh marker naming a real binary is honored; a stale
@@ -303,8 +357,8 @@ func TestRunDisplayGatedLaunch(t *testing.T) {
 		KittyBin:    fakeChild(t, `echo x >> "$HUDLAUNCH_TEST_MARK"; sleep 0.1`),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        10 * time.Millisecond,
-		HealthyPoll: time.Hour,
+		RetryDelay:  time.Hour,
+		Watch:       stubWatch(changePulse(t, 10*time.Millisecond)),
 		Query: func(context.Context) ([]Screen, error) {
 			queried.Add(1)
 			if present.Load() {
@@ -349,8 +403,8 @@ func TestRunRelaunchesAfterExit(t *testing.T) {
 		KittyBin:    fakeChild(t, `echo x >> "$HUDLAUNCH_TEST_MARK"`),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        10 * time.Millisecond,
-		HealthyPoll: time.Hour,
+		RetryDelay:  time.Hour,
+		Watch:       stubWatch(nil),
 		Query:       func(context.Context) ([]Screen, error) { return liveScreens, nil },
 		Logf:        t.Logf,
 	}
@@ -387,8 +441,8 @@ func TestRunHonorsPersistedBackoff(t *testing.T) {
 		KittyBin:    fakeChild(t, `echo x >> "$HUDLAUNCH_TEST_MARK"`),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        10 * time.Millisecond,
-		HealthyPoll: time.Hour,
+		RetryDelay:  time.Hour,
+		Watch:       stubWatch(nil),
 		Query:       func(context.Context) ([]Screen, error) { return liveScreens, nil },
 		Logf:        t.Logf,
 	}
@@ -411,14 +465,13 @@ func TestRunChildDisplayLost(t *testing.T) {
 		KittyBin:    fakeChild(t, "sleep 30"),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        time.Hour,
-		HealthyPoll: 20 * time.Millisecond,
+		RetryDelay:  time.Hour,
 		Query: func(context.Context) ([]Screen, error) {
 			return nil, nil // no screens: the display is gone
 		},
 		Logf: t.Logf,
 	}
-	if got := runChild(context.Background(), opts, 0, 0); got != childDisplayLost {
+	if got := runChild(context.Background(), opts, changePulse(t, 20*time.Millisecond), 0, 0); got != childDisplayLost {
 		t.Fatalf("outcome = %v, want childDisplayLost", got)
 	}
 }
@@ -438,14 +491,13 @@ func TestRunChildTargetMoved(t *testing.T) {
 		KittyBin:    fakeChild(t, "sleep 30"),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        time.Hour,
-		HealthyPoll: 20 * time.Millisecond,
+		RetryDelay:  time.Hour,
 		Query:       func(context.Context) ([]Screen, error) { return laptopOnly, nil },
 		Logf:        t.Logf,
 	}
 	// launched under the Dell arrangement (342x2160); the Edge now sits at
 	// -2560x1017
-	if got := runChild(context.Background(), opts, 342, 2160); got != childMoved {
+	if got := runChild(context.Background(), opts, changePulse(t, 20*time.Millisecond), 342, 2160); got != childMoved {
 		t.Fatalf("outcome = %v, want childMoved", got)
 	}
 }
@@ -463,12 +515,11 @@ func TestRunChildStaysPutWhenArrangementHolds(t *testing.T) {
 		KittyBin:    fakeChild(t, "sleep 0.3"),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        time.Hour,
-		HealthyPoll: 20 * time.Millisecond,
+		RetryDelay:  time.Hour,
 		Query:       func(context.Context) ([]Screen, error) { return liveScreens, nil },
 		Logf:        t.Logf,
 	}
-	if got := runChild(context.Background(), opts, x, y); got != childExited {
+	if got := runChild(context.Background(), opts, changePulse(t, 20*time.Millisecond), x, y); got != childExited {
 		t.Fatalf("outcome = %v, want childExited (steady arrangement must not relaunch)", got)
 	}
 }
@@ -482,12 +533,11 @@ func TestRunChildKeepsChildWhenPositionUnresolvable(t *testing.T) {
 		KittyBin:    fakeChild(t, "sleep 0.3"),
 		Socket:      sock,
 		DisplayName: "XENEON EDGE",
-		Poll:        time.Hour,
-		HealthyPoll: 20 * time.Millisecond,
+		RetryDelay:  time.Hour,
 		Query:       func(context.Context) ([]Screen, error) { return floating, nil },
 		Logf:        t.Logf,
 	}
-	if got := runChild(context.Background(), opts, 342, 2160); got != childExited {
+	if got := runChild(context.Background(), opts, changePulse(t, 20*time.Millisecond), 342, 2160); got != childExited {
 		t.Fatalf("outcome = %v, want childExited (no primary must not tear the HUD down)", got)
 	}
 }

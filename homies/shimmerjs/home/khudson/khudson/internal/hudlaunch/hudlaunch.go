@@ -9,8 +9,15 @@
 // point, and every plug/unplug of ANY display re-lays out that space. A child
 // launched under one arrangement holds a position that names a different
 // display -- or nothing -- under the next, and macOS drags its fullscreen
-// window along. So the healthy tick tracks the target's frame, not just its
-// name, and relaunches when the position it was launched at goes stale.
+// window along. So the launcher tracks the target's frame, not just its name,
+// and relaunches when the position it was launched at goes stale.
+//
+// That tracking is event-driven: a CoreGraphics reconfiguration callback
+// (Watch) reports WHEN the arrangement changed, and only then does Query read
+// what it changed to. A stable arrangement costs nothing, which is the point
+// -- Query execs osascript, and macOS books each exec as a full app launch,
+// with the loginwindow check-in, WindowServer focus-chain re-evaluation and
+// TCC authorization that implies.
 package hudlaunch
 
 import (
@@ -28,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
 	"github.com/shimmerjs/khudson/khudson/internal/sockclaim"
 )
 
@@ -40,9 +48,9 @@ type Options struct {
 	DisplayName string        // NSScreen localizedName the HUD pins to
 	Socket      string        // RC socket path, passed via --listen-on (verbatim)
 	StateDir    string        // lock/pidfile/backoff state ("" = dir of Socket)
-	Poll        time.Duration // presence poll while waiting for the display
-	HealthyPoll time.Duration // presence poll while the HUD runs (0 = 4x Poll)
+	RetryDelay  time.Duration // wait before retrying a FAILED query (error path only)
 	Query       QueryFunc     // nil = osascript-backed default
+	Watch       WatchFunc     // nil = CoreGraphics-backed default
 	Logf        func(format string, args ...any)
 }
 
@@ -55,6 +63,12 @@ func stateDirOf(opts Options) string {
 
 // QueryFunc returns the currently connected displays.
 type QueryFunc func(ctx context.Context) ([]Screen, error)
+
+// WatchFunc starts a display-arrangement watcher and returns the channel it
+// signals on until ctx ends. A receive means "the arrangement changed,
+// re-query it" -- sends carry nothing and are coalesced, so one receive may
+// stand for several changes.
+type WatchFunc func(ctx context.Context) (<-chan struct{}, error)
 
 // Screen is one connected display in Cocoa global coordinates (origin at the
 // primary display's bottom-left corner, y increasing upward).
@@ -75,20 +89,19 @@ const (
 	killGrace = 5 * time.Second
 )
 
-// normalize fills the Options defaults. The healthy-tick cadence defaults
-// to 4x the waiting poll: every tick execs osascript (the JXA screens
-// query), and while the HUD is healthy that exec is the loop's only cost --
-// the same cadence-cache seam as the modules, paid for with
-// disconnect-teardown latency up to the healthy cadence.
+// normalize fills the Options defaults. RetryDelay is deliberately NOT a
+// cadence: nothing reschedules a query that succeeded, so it only paces
+// re-attempts after a query fails or returns an arrangement no position can
+// be resolved from.
 func normalize(opts Options) Options {
-	if opts.Poll <= 0 {
-		opts.Poll = 15 * time.Second
-	}
-	if opts.HealthyPoll <= 0 {
-		opts.HealthyPoll = 4 * opts.Poll
+	if opts.RetryDelay <= 0 {
+		opts.RetryDelay = 15 * time.Second
 	}
 	if opts.Query == nil {
 		opts.Query = queryScreens
+	}
+	if opts.Watch == nil {
+		opts.Watch = cgdisplay.Watch
 	}
 	if opts.Logf == nil {
 		opts.Logf = log.Printf
@@ -124,6 +137,16 @@ func Run(ctx context.Context, opts Options) error {
 			return nil
 		}
 	}
+	// Registered before the first query, so a display arriving between that
+	// query and the wait below cannot slip through the gap.
+	changed, err := opts.Watch(ctx)
+	if err != nil {
+		// Without the watcher the launcher is blind to hotplug: fail loudly
+		// and let launchd respawn rather than supervise a HUD it can never
+		// re-place.
+		opts.Logf("hud-launcher: display watch: %v", err)
+		return err
+	}
 	waitingLogged := false
 	for {
 		if ctx.Err() != nil {
@@ -132,7 +155,7 @@ func Run(ctx context.Context, opts Options) error {
 		screens, err := opts.Query(ctx)
 		if err != nil {
 			opts.Logf("hud-launcher: display query: %v", err)
-			if !sleepCtx(ctx, opts.Poll) {
+			if !waitChange(ctx, changed, opts.RetryDelay) {
 				return nil
 			}
 			continue
@@ -143,7 +166,9 @@ func Run(ctx context.Context, opts Options) error {
 				opts.Logf("hud-launcher: display %q not connected; waiting", opts.DisplayName)
 				waitingLogged = true
 			}
-			if !sleepCtx(ctx, opts.Poll) {
+			// No timer: an absent display cannot return without a
+			// reconfiguration, which is precisely what changed reports.
+			if !waitChange(ctx, changed, 0) {
 				return nil
 			}
 			continue
@@ -151,8 +176,11 @@ func Run(ctx context.Context, opts Options) error {
 		waitingLogged = false
 		x, y, err := LaunchPos(target, screens)
 		if err != nil {
+			// Mid-reconfiguration there may be no display at the Cocoa
+			// origin. The settling change can already have fired, so retry on
+			// a timer rather than block on an event that has been and gone.
 			opts.Logf("hud-launcher: %v", err)
-			if !sleepCtx(ctx, opts.Poll) {
+			if !waitChange(ctx, changed, opts.RetryDelay) {
 				return nil
 			}
 			continue
@@ -166,7 +194,7 @@ func Run(ctx context.Context, opts Options) error {
 		if dev := devOverride(sd, opts.Logf); dev != "" {
 			launch.KhudsonBin = dev
 		}
-		outcome := runChild(ctx, launch, x, y)
+		outcome := runChild(ctx, launch, changed, x, y)
 		switch {
 		case ctx.Err() != nil:
 			return nil
@@ -176,8 +204,8 @@ func Run(ctx context.Context, opts Options) error {
 			continue
 		case outcome == childMoved:
 			// not a crash either: re-place at the new position immediately.
-			// Converges -- the relaunch records the position the next tick
-			// compares against.
+			// Converges -- the relaunch records the position the next change
+			// is compared against.
 			continue
 		case outcome == childSignaled:
 			// a signaled child (jetsam, OOM killer, manual kill) is system
@@ -246,8 +274,10 @@ const (
 )
 
 // runChild launches one HUD kitty and blocks until it exits, the display
-// disappears (child torn down), or ctx is done (child torn down).
-func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
+// disappears (child torn down), or ctx is done (child torn down). It re-reads
+// the arrangement only when changed fires, so a healthy HUD on a stable
+// arrangement costs nothing.
+func runChild(ctx context.Context, opts Options, changed <-chan struct{}, x, y int) childOutcome {
 	// a stale socket file from a previous instance would shadow the new
 	// bind, but a LIVE one belongs to a running HUD: refuse to touch it and
 	// let Run's crash backoff pace the retry. No bind here -- kitty owns the
@@ -275,8 +305,6 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	tick := time.NewTicker(opts.HealthyPoll)
-	defer tick.Stop()
 	for {
 		select {
 		case err := <-done:
@@ -290,7 +318,7 @@ func runChild(ctx context.Context, opts Options, x, y int) childOutcome {
 		case <-ctx.Done():
 			terminate(cmd, done, opts.Logf)
 			return childExited
-		case <-tick.C:
+		case <-changed:
 			screens, err := opts.Query(ctx)
 			if err != nil {
 				// a transient query failure must not kill a healthy HUD
@@ -579,6 +607,31 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-ctx.Done():
 		return false
 	case <-time.After(d):
+		return true
+	}
+}
+
+// waitChange blocks until the display arrangement changes or ctx ends,
+// reporting false only for ctx. A nonzero retry adds a deadline, for the
+// callers whose reason to re-query is a failure of their own rather than a
+// change they are owed notice of; retry <= 0 waits for the change alone.
+func waitChange(ctx context.Context, changed <-chan struct{}, retry time.Duration) bool {
+	if retry <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+			return true
+		}
+	}
+	t := time.NewTimer(retry)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-changed:
+		return true
+	case <-t.C:
 		return true
 	}
 }
