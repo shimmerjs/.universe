@@ -215,11 +215,11 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 			area := rect{x, y, w, tileH}
 			key := id + ":pad:" + t.Key
 			border, label := m.padTones(t)
-			if t.Kind == module.RowStepper {
-				// a stepper's ends light independently, so the tile as a
-				// whole never takes the press treatment
-				cells = append(cells, m.stepperTile(id, t, w, tileH, border, label))
-				m.registerStepperHits(id, t, area)
+			if t.Kind == module.RowStepper || t.Kind == module.RowDpad {
+				// a composite element's ends light independently, so the tile
+				// as a whole never takes the press treatment
+				cells = append(cells, m.endsTile(id, t, w, tileH, border, label))
+				m.registerEndsHits(id, t, area)
 				x += w
 				drawn++
 				continue
@@ -265,15 +265,42 @@ func stepperEnds(inner int) (end, mid int, ok bool) {
 	return stepperEndW, mid, true
 }
 
-// stepperTile draws a label and readout with a press welded to each end.
-// The ends are separated by rules rather than whitespace: two targets in
-// one frame have to LOOK like two targets, or the whole element reads as a
-// single button that does something different depending on where you hit
-// it -- which is exactly what it is, and exactly what has to be obvious.
-func (m *model) stepperTile(id string, t module.Row, w, h int, border, label lipgloss.Style) []string {
+// isPadKind reports whether a row belongs in the button grid rather than
+// the readout header. The split is the recorder pad's contract: anything
+// you can press is a tile, anything you can only read is a header line.
+func isPadKind(kind string) bool {
+	return kind == module.RowPad || endsWanted(kind) > 0
+}
+
+// endsWanted is how many press targets a composite element has, and 0 for
+// a kind that is not one.
+func endsWanted(kind string) int {
+	switch kind {
+	case module.RowStepper:
+		return 2
+	case module.RowDpad:
+		return 4
+	}
+	return 0
+}
+
+// endsTile draws a label and readout with presses welded to the ends: a
+// stepper's minus and plus, or a d-pad's four corners stacked two to a
+// side. The ends are separated from the middle by rules rather than
+// whitespace, because several targets in one frame have to LOOK like
+// several targets -- or the element reads as a single button that does
+// something different depending on where you hit it, which is exactly what
+// it is, and exactly what has to be obvious.
+//
+// A d-pad's corners are where they point, which is the whole reason the
+// element exists: the top-left press is drawn in the top left. That is also
+// why its ends need two interior lines to be a d-pad at all, and why the
+// tile falls back to a plain button rather than drawing half of one.
+func (m *model) endsTile(id string, t module.Row, w, h int, border, label lipgloss.Style) []string {
 	inner, interior := w-2, h-2
 	endW, midInner, ok := stepperEnds(inner)
-	if !ok || len(t.Ends) != 2 {
+	want := endsWanted(t.Kind)
+	if !ok || want == 0 || len(t.Ends) != want || (t.Kind == module.RowDpad && interior < 2) {
 		return padTile(t, w, h, border, label)
 	}
 	ss := m.rowStyles()
@@ -290,39 +317,19 @@ func (m *model) stepperTile(id string, t module.Row, w, h int, border, label lip
 		return st.Render(centerCell(e.Label, endW))
 	}
 	rule := chromeDim.Render(padRule)
-	// The middle carries the name and the reading -- ONE reading, where two
-	// plain buttons each had to repeat it. On a tile with a single interior
-	// line they share it, the same fold padTile does: a value that silently
-	// never renders is a readout lying by omission, and the reading is the
-	// whole reason a magnitude is on the pad at all.
-	text := t.Text
-	var midLines []string
-	switch {
-	case t.Value == "":
-		midLines = []string{label.Bold(true).Render(centerCell(text, midInner))}
-	case interior > 1:
-		midLines = []string{
-			label.Bold(true).Render(centerCell(text, midInner)),
-			chromeDim.Render(centerCell(t.Value, midInner)),
-		}
-	default:
-		if keep := midInner - 1 - lipgloss.Width(t.Value); keep >= 1 {
-			lab := fitCell(text, keep)
-			gap := midInner - lipgloss.Width(lab) - lipgloss.Width(t.Value)
-			midLines = []string{label.Bold(true).Render(lab) +
-				strings.Repeat(" ", gap) + chromeDim.Render(t.Value)}
-		} else {
-			midLines = []string{chromeDim.Render(centerCell(t.Value, midInner))}
-		}
-	}
+	midLines := endsMiddle(t, midInner, interior, label)
 	body := make([]string, 0, interior)
 	for j := range interior {
-		// the caps ride the same line as the name, so the element reads as
-		// one horizontal control rather than a stack
-		capLine := strings.Repeat(" ", endW)
-		lc, rc := capLine, capLine
-		if j == 0 {
+		// A stepper's pair rides the name's line, so the element reads as one
+		// horizontal control rather than a stack. A d-pad's pairs ride the
+		// first interior line and the last, so they read as corners.
+		blank := strings.Repeat(" ", endW)
+		lc, rc := blank, blank
+		switch {
+		case j == 0:
 			lc, rc = cap(t.Ends[0]), cap(t.Ends[1])
+		case want == 4 && j == interior-1:
+			lc, rc = cap(t.Ends[2]), cap(t.Ends[3])
 		}
 		mid := strings.Repeat(" ", midInner)
 		if j < len(midLines) {
@@ -339,19 +346,58 @@ func (m *model) stepperTile(id string, t module.Row, w, h int, border, label lip
 		"\n")
 }
 
-// registerStepperHits makes each end of a stepper live on its own. The
-// middle is inert: it names the control and reports its value, and a tap
-// that landed on the label would otherwise have to guess a direction.
-func (m *model) registerStepperHits(id string, t module.Row, area rect) {
+// endsMiddle is the text between an element's ends: the name and the
+// reading -- ONE reading, where several plain buttons each had to repeat
+// it. On a tile with a single interior line they share it, the same fold
+// padTile does: a value that silently never renders is a readout lying by
+// omission, and the reading is the whole reason the element is on the pad.
+func endsMiddle(t module.Row, midInner, interior int, label lipgloss.Style) []string {
+	switch {
+	case t.Value == "":
+		return []string{label.Bold(true).Render(centerCell(t.Text, midInner))}
+	case interior > 1:
+		return []string{
+			label.Bold(true).Render(centerCell(t.Text, midInner)),
+			chromeDim.Render(centerCell(t.Value, midInner)),
+		}
+	}
+	if keep := midInner - 1 - lipgloss.Width(t.Value); keep >= 1 {
+		lab := fitCell(t.Text, keep)
+		gap := midInner - lipgloss.Width(lab) - lipgloss.Width(t.Value)
+		return []string{label.Bold(true).Render(lab) +
+			strings.Repeat(" ", gap) + chromeDim.Render(t.Value)}
+	}
+	return []string{chromeDim.Render(centerCell(t.Value, midInner))}
+}
+
+// registerEndsHits makes each end of a composite element live on its own.
+// The middle is inert: it names the control and reports its value, and a
+// tap that landed on the label would otherwise have to guess a direction.
+//
+// The regions are the drawing: a stepper's ends own their full height,
+// where a d-pad's split at the tile's waist so the corner you press is the
+// corner you were aiming at.
+func (m *model) registerEndsHits(id string, t module.Row, area rect) {
 	endW, _, ok := stepperEnds(area.w - 2)
-	if !ok || len(t.Ends) != 2 {
+	want := endsWanted(t.Kind)
+	if !ok || want == 0 || len(t.Ends) != want || (t.Kind == module.RowDpad && area.h < 4) {
 		m.registerPadHit(id, t, area, id+":pad:"+t.Key)
 		return
 	}
 	// x+1 clears the frame; the ends sit at the interior's two extremes
+	left, right := area.x+1, area.x+area.w-1-endW
 	spans := []rect{
-		{area.x + 1, area.y, endW, area.h},
-		{area.x + area.w - 1 - endW, area.y, endW, area.h},
+		{left, area.y, endW, area.h},
+		{right, area.y, endW, area.h},
+	}
+	if t.Kind == module.RowDpad {
+		top := area.h / 2
+		spans = []rect{
+			{left, area.y, endW, top},
+			{right, area.y, endW, top},
+			{left, area.y + top, endW, area.h - top},
+			{right, area.y + top, endW, area.h - top},
+		}
 	}
 	for i, e := range t.Ends {
 		if e.Dim || len(e.Argv) == 0 {

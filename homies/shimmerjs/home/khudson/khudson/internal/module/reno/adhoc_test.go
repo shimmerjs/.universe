@@ -912,22 +912,86 @@ func headText(rows []module.Row) string {
 	return b.String()
 }
 
-// The FX band draws the same placements as an eased path, lit off the
-// same selection: a move that landed IS the current placement.
+// The four corner slides are ONE element with its presses where they
+// point, in the order the renderer draws them: top-left, top-right,
+// bottom-left, bottom-right. Nine buttons in a row became a d-pad, a size
+// pair, and the one placement that is not a corner.
 func TestRecorderFXBand(t *testing.T) {
 	m, _ := testMod(t)
 	freshInv(t, m)
-	m.HandleActEffects([]string{actCfgWebcam, "big"})
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
 	rows := m.recorderData().Rows
 
-	for _, p := range renocore.FXPlacements() {
-		tile := padTile(rows, KeyFXMove+":"+p)
-		if tile == nil || tile.Section != secFX {
-			t.Fatalf("no fx tile for %q", p)
+	pad := padTile(rows, KeyFXMove)
+	if pad == nil || pad.Kind != module.RowDpad || pad.Section != secFX {
+		t.Fatalf("no slide d-pad: %+v", pad)
+	}
+	if len(pad.Ends) != len(renocore.CamCorners) {
+		t.Fatalf("d-pad has %d ends, want one per corner", len(pad.Ends))
+	}
+	for i, c := range renocore.CamCorners {
+		e := pad.Ends[i]
+		if e.Label != c {
+			t.Errorf("end %d is %q, want %q -- the renderer draws them in this order", i, e.Label, c)
 		}
-		if lit := tile.Style == module.StyleAccent; lit != (p == "big") {
-			t.Errorf("%s lit=%v", p, lit)
+		// the corner the camera is already in moves nothing, so it is dim
+		// rather than a live-looking button that does not budge
+		if want := c == "br"; e.Dim != want {
+			t.Errorf("end %s dim=%v, want %v", c, e.Dim, want)
 		}
+		if e.Dim {
+			continue
+		}
+		if got := strings.Join(e.Argv, " "); got != actFXMove+" "+c {
+			t.Errorf("end %s argv = %q", c, got)
+		}
+	}
+	if pad.Value != "br" {
+		t.Errorf("d-pad reads %q, want the current placement", pad.Value)
+	}
+
+	// the size pair grows and shrinks whichever corner it is in, keeping
+	// the corner -- the d-pad moves, this resizes, neither does the other's
+	// job
+	size := padTile(rows, KeyFXSize)
+	if size == nil || size.Kind != module.RowStepper || len(size.Ends) != 2 {
+		t.Fatalf("no size stepper: %+v", size)
+	}
+	if size.Value != "small" {
+		t.Errorf("size reads %q over br, want small", size.Value)
+	}
+	if !size.Ends[0].Dim {
+		t.Error("already small: the shrink end must be dim")
+	}
+	if got := strings.Join(size.Ends[1].Argv, " "); got != actFXMove+" br+" {
+		t.Errorf("grow argv = %q, want the same corner grown", got)
+	}
+
+	// and the d-pad slides at the size the camera already has
+	m.HandleActEffects([]string{actCfgWebcam, "br+"})
+	pad = padTile(m.recorderData().Rows, KeyFXMove)
+	for _, e := range pad.Ends {
+		if e.Dim {
+			continue
+		}
+		if got := strings.Join(e.Argv, " "); !strings.HasSuffix(got, "+") {
+			t.Errorf("slide from a grown corner = %q, want it kept grown", got)
+		}
+	}
+
+	// off a corner there is nothing to resize, and the pair says so rather
+	// than offering a press that would do nothing
+	m.HandleActEffects([]string{actCfgWebcam, renocore.CamBig})
+	rows = m.recorderData().Rows
+	size = padTile(rows, KeyFXSize)
+	if !size.Ends[0].Dim || !size.Ends[1].Dim || size.Value != "--" {
+		t.Errorf("size over big = %+v, want both ends dim", size)
+	}
+	// big is not a corner, so it keeps a button of its own, lit like any
+	// other choice
+	big := padTile(rows, KeyFXMove+":"+renocore.CamBig)
+	if big == nil || big.Style != module.StyleAccent {
+		t.Errorf("big tile = %+v, want it lit", big)
 	}
 	if padTile(rows, KeyFXHide) == nil {
 		t.Error("fx band needs a hide button")

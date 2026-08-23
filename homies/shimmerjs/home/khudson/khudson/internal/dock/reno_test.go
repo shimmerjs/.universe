@@ -660,3 +660,101 @@ func TestRenoPadStepperDimEndDoesNotFire(t *testing.T) {
 		t.Errorf("the dim end vanished:\n%s", body)
 	}
 }
+
+// A d-pad's presses are where they point, and that is the whole reason it
+// beats four buttons in a row: the top-left target has to be in the top
+// left. Four regions inside one frame, none overlapping, split at the
+// tile's waist.
+func TestRenoPadDpadCornersLandWhereTheyPoint(t *testing.T) {
+	d := module.Data{Title: "reno rec", Rows: []module.Row{
+		{Kind: module.RowDpad, Section: "fx", Key: "fx:move", MinHeight: 4,
+			Text: "slide", Value: "br",
+			Ends: []module.End{
+				{Label: "tl", Key: "fx:move:tl", Argv: []string{"act", "move", "tl"}},
+				{Label: "tr", Key: "fx:move:tr", Argv: []string{"act", "move", "tr"}},
+				{Label: "bl", Key: "fx:move:bl", Argv: []string{"act", "move", "bl"}},
+				{Label: "br", Key: "fx:move:br", Dim: true, Argv: []string{"act", "move", "br"}},
+			}},
+	}}
+	m := renoModel(196, 24)
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = d
+	m.invalidateHome("reno-presenter")
+	body := ansi.Strip(m.View().Content)
+
+	spans := map[string]rect{}
+	for _, h := range m.hits {
+		if key, ok := strings.CutPrefix(h.pressKey, "reno-presenter:pad:"); ok {
+			spans[key] = h.area
+		}
+	}
+	tl, okTL := spans["fx:move:tl"]
+	tr, okTR := spans["fx:move:tr"]
+	bl, okBL := spans["fx:move:bl"]
+	if !okTL || !okTR || !okBL {
+		t.Fatalf("every live corner must be pressable, got %v", spans)
+	}
+	// the corner the camera is already in fires nothing, and must not have
+	// handed its region to a neighbour
+	if _, ok := spans["fx:move:br"]; ok {
+		t.Error("a dim corner must not register a press")
+	}
+	if tl.x >= tr.x {
+		t.Errorf("top-left is not left of top-right: %+v %+v", tl, tr)
+	}
+	if tl.y+tl.h > bl.y {
+		t.Errorf("top-left overlaps bottom-left: %+v %+v", tl, bl)
+	}
+	if tl.x != bl.x || tl.w != bl.w {
+		t.Errorf("the left corners are not in one column: %+v %+v", tl, bl)
+	}
+	for _, s := range []rect{tl, tr, bl} {
+		if s.w <= 0 || s.h <= 0 {
+			t.Errorf("a corner with no area is not a button: %+v", s)
+		}
+	}
+	// one name and ONE reading for all four, which is what four separate
+	// buttons could never do
+	if n := strings.Count(body, "slide"); n != 1 {
+		t.Errorf("name appears %d times, want once:\n%s", n, body)
+	}
+	// dim, not gone: a corner that vanished would leave a hole where a
+	// corner ought to be
+	if !strings.Contains(body, "br") {
+		t.Errorf("the dim corner vanished:\n%s", body)
+	}
+}
+
+// A d-pad needs two interior lines to BE a d-pad. Given a tile that cannot
+// hold them it falls back to a plain button rather than drawing corners
+// stacked on one line, which would be four targets in the same place.
+func TestRenoPadDpadTooShortFallsBackToAButton(t *testing.T) {
+	ends := []module.End{
+		{Label: "tl", Key: "fx:move:tl", Argv: []string{"act", "move", "tl"}},
+		{Label: "tr", Key: "fx:move:tr", Argv: []string{"act", "move", "tr"}},
+		{Label: "bl", Key: "fx:move:bl", Argv: []string{"act", "move", "bl"}},
+		{Label: "br", Key: "fx:move:br", Argv: []string{"act", "move", "br"}},
+	}
+	row := module.Row{Kind: module.RowDpad, Section: "fx", Key: "fx:move",
+		Text: "slide", Value: "br", Ends: ends}
+	m := renoModel(196, 24)
+	plain := lipgloss.NewStyle()
+	// padTileFloorH is one interior line: not enough for corners
+	lines := m.endsTile("w", row, padTileMaxW, padTileFloorH, plain, plain)
+	body := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(body, "slide") {
+		t.Errorf("the fallback lost the label:\n%s", body)
+	}
+	if strings.Contains(body, "tl") {
+		t.Errorf("a one-line d-pad drew corners it has no room for:\n%s", body)
+	}
+	// and the hits fall back with it: one region for the whole tile, never
+	// four stacked on the same cells
+	before := len(m.hits)
+	m.registerEndsHits("w", row, rect{0, 0, padTileMaxW, padTileFloorH})
+	for _, h := range m.hits[before:] {
+		if strings.HasSuffix(h.pressKey, ":tl") || strings.HasSuffix(h.pressKey, ":br") {
+			t.Errorf("a corner registered on a tile too short to place it: %+v", h.area)
+		}
+	}
+}

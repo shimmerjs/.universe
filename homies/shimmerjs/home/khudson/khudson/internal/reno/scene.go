@@ -125,6 +125,44 @@ func ParseScreenSel(s string) (ScreenSel, error) {
 // preset can be turned off without forgetting the device).
 var WebcamPresets = []string{"off", "br", "tr", "bl", "tl", "br+", "tr+", "bl+", "tl+", "big"}
 
+// A placement is a CORNER and a SIZE, and the pad drives them separately:
+// four presses arranged where they point, and one pair that grows or
+// shrinks whichever corner the camera is in. The preset string is still
+// the single name they compose to, because that is what the scene, the
+// script and the config all speak.
+const (
+	// CamBig is the placement that is not a corner: full canvas, so
+	// neither the d-pad nor the size pair has anything to say about it.
+	CamBig = "big"
+	// CamGrown is the suffix marking a corner at quarter-canvas size.
+	CamGrown = "+"
+)
+
+// CamCorners is the corner vocabulary in D-PAD ORDER -- top-left,
+// top-right, bottom-left, bottom-right -- which is reading order and also
+// where each one sits on glass. Nothing may reorder this: the renderer
+// puts Ends[0] in the top left.
+var CamCorners = []string{"tl", "tr", "bl", "br"}
+
+// SplitPlacement takes a preset apart into its corner and whether it is
+// grown. A placement that is not a corner (off, big, unset) reports no
+// corner, which is what dims the size pair -- there is nothing to resize.
+func SplitPlacement(preset string) (corner string, grown bool) {
+	corner, grown = strings.TrimSuffix(preset, CamGrown), strings.HasSuffix(preset, CamGrown)
+	if !slices.Contains(CamCorners, corner) {
+		return "", false
+	}
+	return corner, grown
+}
+
+// Placement composes a corner and a size back into a preset name.
+func Placement(corner string, grown bool) string {
+	if grown {
+		return corner + CamGrown
+	}
+	return corner
+}
+
 // CheckWebcam vets a webcam preset.
 func CheckWebcam(p string) error {
 	if !slices.Contains(WebcamPresets, p) {

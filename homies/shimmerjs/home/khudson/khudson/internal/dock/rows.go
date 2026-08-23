@@ -112,13 +112,11 @@ func renderRows(d module.Data, cols int, ss rowStyles) (lines []string, acts [][
 			if cols > 0 {
 				line = fitCell(line, cols)
 			}
-		case module.RowPad:
-			// no grid here (couch clients, side columns, the classic
-			// panel): a pad tile still reads as a labeled control line
-			line = ss.styleFor(r.Style).Render(" "+r.Text) + ss.dim.Render("  "+r.Value)
-		case module.RowStepper:
-			// off the grid a stepper has no ends to aim at, so it degrades to
-			// the same labeled control line its value always was
+		case module.RowPad, module.RowStepper, module.RowDpad:
+			// no grid here (couch clients, side columns, the classic panel),
+			// so nothing to aim at: a stepper has no ends and a d-pad has no
+			// corners, and both degrade to the labeled control line a plain
+			// pad tile has always been off the grid
 			line = ss.styleFor(r.Style).Render(" "+r.Text) + ss.dim.Render("  "+r.Value)
 		case module.RowResource:
 			// one renderer for every resource cluster (heat is

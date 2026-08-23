@@ -33,6 +33,7 @@ const (
 	KeyCfgAudio    = "cfg:audio"
 	KeyCfgWebcam   = "cfg:webcam"
 	KeyFXMove      = "fx:move"
+	KeyFXSize      = "fx:size"
 	KeyFXHide      = "fx:hide"
 	KeyFXLevel     = "fx:level"
 	KeyCfgScript   = "cfg:script"
@@ -428,15 +429,14 @@ func (m *Mod) recorderTiles() []module.Row {
 	}
 
 	// The FX band is the same placements arrived at by an eased path
-	// instead of a jump cut, so its tiles light off the same selection --
-	// a move that landed IS the current placement.
-	for _, p := range renocore.FXPlacements() {
-		tiles = append(tiles, m.choiceTile(secFX, KeyFXMove+":"+p, "slide "+p,
-			glyphCam, actFXMove, p, m.desired.Webcam == p))
-	}
-	tiles = append(tiles, module.Row{Kind: module.RowPad, Section: secFX,
-		Key: KeyFXHide, Glyph: glyphCamOff, Text: "hide",
-		Act: []string{actFXHide}})
+	// instead of a jump cut, so it reads off the same selection -- a move
+	// that landed IS the current placement.
+	tiles = append(tiles, m.slidePad(), m.sizeStepper(),
+		m.choiceTile(secFX, KeyFXMove+":"+renocore.CamBig, "slide big",
+			glyphCam, actFXMove, renocore.CamBig, m.desired.Webcam == renocore.CamBig),
+		module.Row{Kind: module.RowPad, Section: secFX,
+			Key: KeyFXHide, Glyph: glyphCamOff, Text: "hide",
+			Act: []string{actFXHide}})
 
 	// The level effects each get ONE remote: the name and its reading, with
 	// a minus and a plus welded either side. They are allowed on the pad
@@ -447,6 +447,77 @@ func (m *Mod) recorderTiles() []module.Row {
 		tiles = append(tiles, m.levelStepper(kind))
 	}
 	return tiles
+}
+
+// slidePad is the four corner placements arranged where they point. It
+// replaced four buttons in a row whose labels were the only thing saying
+// which corner was which -- put them in the corners and there is nothing
+// left to read. Each press is an eased slide, so the element is one control
+// with four destinations rather than four controls.
+//
+// The corner the camera is already in is dim: an end that would move
+// nothing must not look like one that would, and dropping it would leave a
+// hole where a corner ought to be. Caller holds mu.
+func (m *Mod) slidePad() module.Row {
+	at, grown := renocore.SplitPlacement(m.desired.Webcam)
+	t := module.Row{Kind: module.RowDpad, Section: secFX,
+		Key: KeyFXMove, Glyph: glyphCam, MinHeight: 4,
+		Text: "slide", Value: placementValue(m.desired.Webcam)}
+	for _, c := range renocore.CamCorners {
+		// the slide keeps the size the camera already has, so the d-pad
+		// moves it and the pair beside it resizes it, and neither surprises
+		// you by doing the other's job
+		preset := renocore.Placement(c, grown)
+		t.Ends = append(t.Ends, module.End{
+			Label: c, Key: KeyFXMove + ":" + preset, Dim: c == at,
+			Argv: []string{actFXMove, preset},
+		})
+	}
+	if at != "" {
+		t.Style = module.StyleAccent
+	}
+	return t
+}
+
+// sizeStepper grows and shrinks whichever corner the camera is in. Both
+// ends dim when it is in none -- off, big, or never placed -- because
+// there is genuinely nothing to resize, and a live-looking button that
+// silently does nothing is the thing this pad refuses to have. Caller
+// holds mu.
+func (m *Mod) sizeStepper() module.Row {
+	at, grown := renocore.SplitPlacement(m.desired.Webcam)
+	value := "--"
+	switch {
+	case at == "":
+	case grown:
+		value = "large"
+	default:
+		value = "small"
+	}
+	end := func(label string, want bool) module.End {
+		e := module.End{Label: label, Key: KeyFXSize + ":" + label,
+			Dim: at == "" || grown == want}
+		if !e.Dim {
+			e.Argv = []string{actFXMove, renocore.Placement(at, want)}
+		}
+		return e
+	}
+	return module.Row{Kind: module.RowStepper, Section: secFX,
+		Key: KeyFXSize, Glyph: glyphCam, MinHeight: 4,
+		Text: "size", Value: value,
+		Ends: []module.End{end("-", false), end("+", true)}}
+}
+
+// placementValue is the slide pad's readout: where the camera is, in the
+// vocabulary the rest of the surface uses.
+func placementValue(preset string) string {
+	switch preset {
+	case "":
+		return "unset"
+	case "off":
+		return "hidden"
+	}
+	return preset
 }
 
 // levelStepper is one level effect's remote. Each end dims at its stop: an

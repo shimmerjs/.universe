@@ -64,6 +64,16 @@ const (
 	// as two controls that happened to agree. One element with two ends is
 	// what it always was.
 	RowStepper = "stepper"
+	// RowDpad is the stepper's other shape: FOUR presses in one tile,
+	// arranged where they point -- top-left, top-right, bottom-left,
+	// bottom-right, in that order -- with the name and the current reading
+	// between them. It occupies a pad band exactly like a RowPad tile does.
+	//
+	// It exists for a set of choices whose LAYOUT is the information. Four
+	// corner placements published as four buttons in a row said nothing
+	// about which corner was which; you read the labels. Put them in the
+	// corners and there is nothing to read.
+	RowDpad = "dpad"
 )
 
 // Row styles (dock palette names, not colors: modules stay theme-blind).
@@ -147,9 +157,10 @@ type Row struct {
 	// preset -- is its own button, and the section is what says which set
 	// it belongs to.
 	Section string `json:"section,omitempty"`
-	// Ends are a stepper's press targets (RowStepper only), left to right.
-	// Act is unused there: the whole point of the element is that one tile
-	// answers more than one press.
+	// Ends are a composite element's press targets: a stepper's two, left
+	// to right, or a d-pad's four, in reading order (top-left, top-right,
+	// bottom-left, bottom-right). Act is unused on those kinds -- the whole
+	// point of the element is that one tile answers more than one press.
 	Ends []End `json:"ends,omitempty"`
 }
 

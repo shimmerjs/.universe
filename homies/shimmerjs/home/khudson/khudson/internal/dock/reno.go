@@ -50,7 +50,7 @@ func (m *model) renderRenoRecorder(id string, d module.Data, rr rect) string {
 	var head module.Data
 	var tiles []module.Row
 	for _, r := range d.Rows {
-		if r.Kind == module.RowPad || r.Kind == module.RowStepper {
+		if isPadKind(r.Kind) {
 			tiles = append(tiles, r)
 			continue
 		}
