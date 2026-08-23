@@ -140,7 +140,7 @@ func (moonModule) Run(ctx context.Context, env Env) error {
 		loggedFail = false
 		fmt.Println("moonlander open (shared), pairing init sent")
 
-		err = readLoop(ctx, dev, func(t int64, raw []byte) {
+		err = readLoop(ctx, dev, env.InputSource("moonlander"), func(t int64, raw []byte) {
 			if ev, ok := parseMoonReport(t, raw); ok {
 				env.Publish(ev)
 			}

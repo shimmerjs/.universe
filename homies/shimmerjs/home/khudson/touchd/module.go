@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sstallion/go-hid"
 )
@@ -26,6 +27,16 @@ type Env struct {
 	publishRetained func(key string, v any)
 	recordTap       func(t int64, raw []byte)
 	scan            *scanner
+	rate            *inputRate
+}
+
+// InputSource returns the report counter a module's read loop bumps, or nil
+// when the daemon runs without the liveness record (spike, tests).
+func (e Env) InputSource(name string) *atomic.Int64 {
+	if e.rate == nil {
+		return nil
+	}
+	return e.rate.source(name)
 }
 
 // Publish queues one ndjson line on the module's socket.

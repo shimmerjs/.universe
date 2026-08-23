@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/sstallion/go-hid"
@@ -94,6 +95,7 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 		{mod: moonModule{}, socket: opts.keysSocket},
 		{mod: &logiretchModule{cfg: lc}, socket: opts.logiSocket},
 	}
+	rate := newInputRate()
 	var entries []moduleEntry
 	for _, s := range specs {
 		if !enabled[s.mod.Name()] {
@@ -107,11 +109,12 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 			continue
 		}
 		defer b.close()
-		entries = append(entries, moduleEntry{mod: s.mod, env: Env{publish: b.publishJSON, publishRetained: b.publishRetainedJSON, recordTap: s.tap, scan: sc}})
+		entries = append(entries, moduleEntry{mod: s.mod, env: Env{publish: b.publishJSON, publishRetained: b.publishRetainedJSON, recordTap: s.tap, scan: sc, rate: rate}})
 	}
 	if len(entries) == 0 {
 		return errors.New("no modules running")
 	}
+	go rate.run(ctx, inputRateEvery)
 	return runModules(ctx, sc, entries)
 }
 
@@ -142,7 +145,7 @@ func runStream(ctx context.Context, rec *recorder, mouse, noMode bool) error {
 	defer dev.Close()
 
 	fmt.Println("streaming reports -- touch the glass (ctrl-c to quit)")
-	err = readLoop(ctx, dev, func(t int64, raw []byte) {
+	err = readLoop(ctx, dev, nil, func(t int64, raw []byte) {
 		if rec != nil {
 			rec.write(t, raw)
 		}
@@ -165,7 +168,7 @@ func runStream(ctx context.Context, rec *recorder, mouse, noMode bool) error {
 // readLoop pumps raw input reports into emit until ctx is canceled or the
 // device disappears. hidapi surfaces timeouts as ErrTimeout; any other read
 // error is treated as device loss.
-func readLoop(ctx context.Context, dev *hid.Device, emit func(t int64, raw []byte)) error {
+func readLoop(ctx context.Context, dev *hid.Device, seen *atomic.Int64, emit func(t int64, raw []byte)) error {
 	buf := make([]byte, 64)
 	for {
 		select {
@@ -182,6 +185,9 @@ func readLoop(ctx context.Context, dev *hid.Device, emit func(t int64, raw []byt
 		}
 		if n <= 0 {
 			continue
+		}
+		if seen != nil {
+			seen.Add(1)
 		}
 		raw := make([]byte, n)
 		copy(raw, buf[:n])

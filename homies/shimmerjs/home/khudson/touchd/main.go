@@ -129,6 +129,15 @@ func run(ctx context.Context, opts options) error {
 		return errors.New("no mode selected: use -daemon (service), -spike (dev frame stream; -mouse implies it), -list, -replay <file>, or the logiretch-probe/logiretch-capture subcommands")
 	}
 
+	// Date the log before anything can write to it. A failure here costs
+	// forensics, not function, so it is loud rather than fatal.
+	if opts.daemon {
+		if err := stampOutput(); err != nil {
+			fmt.Fprintln(os.Stderr, "log timestamps unavailable:", err)
+		}
+		logStart()
+	}
+
 	// resolve the module set first: a config problem must exit nonzero
 	// before any socket binds or HID work
 	var enabled map[string]bool

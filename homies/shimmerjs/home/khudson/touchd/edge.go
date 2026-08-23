@@ -115,7 +115,9 @@ func (m *edgeModule) collectionLoop(ctx context.Context, env Env, mouse bool, em
 		fmt.Printf("%s open (mode asserted: %v)\n", name, asserted)
 
 		m.open.Add(1)
-		err = readLoop(ctx, dev, emit)
+		// "edge-" qualified because the liveness line is read on its own,
+		// where a bare "mouse" would look like the Logitech
+		err = readLoop(ctx, dev, env.InputSource("edge-"+name), emit)
 		m.open.Add(-1)
 		if ctx.Err() != nil {
 			if asserted {
