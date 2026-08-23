@@ -374,11 +374,33 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 	if len(cfg.Screens) > 0 && env.ScreenKind == "" {
 		return nil, errors.New("no screen capture input kind available (screen_capture/display_capture)")
 	}
-	for i, sel := range cfg.Screens {
+	// Resolve first, THEN slot, because two selectors can name one display:
+	// a config written half from the CLI (`--screen XENEON`, a name
+	// substring) and half from the pad (a UUID) held the Edge twice, and the
+	// plan built two full-size captures of it -- a doubled canvas, two SCK
+	// sessions on one display, and an arm that refused because one of them
+	// never produced a frame. The same display CROPPED two ways is a real
+	// composition, so the region is part of the identity.
+	type slot struct {
+		it  PropertyItem
+		sel ScreenSel
+	}
+	var slots []slot
+	seen := map[string]bool{}
+	for _, sel := range cfg.Screens {
 		it, err := ResolveItem(env.Displays, sel.Display, "display")
 		if err != nil {
 			return nil, err
 		}
+		key := it.Value + "|" + regionKey(sel.Region)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		slots = append(slots, slot{it: it, sel: sel})
+	}
+	for i, sl := range slots {
+		it, sel := sl.it, sl.sel
 		var val any = it.Value
 		if env.DisplayNumeric {
 			n, err := strconv.Atoi(it.Value)
@@ -393,7 +415,7 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 			Settings: map[string]any{env.DisplayProp: val, "show_cursor": true},
 			Enabled:  true,
 			Slot:     i,
-			Slots:    len(cfg.Screens),
+			Slots:    len(slots),
 			Region:   sel.Region,
 			Monitor:  monitorByName(env.Monitors, it.Name),
 		})
@@ -513,6 +535,14 @@ func addLemmings(p *Plan, cfg RecordConfig, env ObsEnv) error {
 	})
 	p.Stack = append(p.Stack, LemmingsInput)
 	return nil
+}
+
+// regionKey identifies a crop for dedup; the whole display is the empty one.
+func regionKey(r *Region) string {
+	if r == nil {
+		return ""
+	}
+	return r.String()
 }
 
 func monitorByName(ms []Monitor, name string) *Monitor {

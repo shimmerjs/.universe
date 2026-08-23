@@ -3,7 +3,6 @@ package reno
 import (
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/shimmerjs/khudson/khudson/internal/module"
@@ -374,7 +373,9 @@ func (m *Mod) recorderTiles() []module.Row {
 			Key: KeyCfgScreens + ":" + it.Value, Glyph: glyphScreen, Text: it.Name,
 			Act: []string{actCfgScreen, it.Value}}
 		for _, s := range m.desired.Screens {
-			if s.Display == it.Value {
+			// same resolver as the plan, so a display selected by name lights
+			// its own tile instead of looking unselected next to a stray one
+			if resolvesTo(inv.Screens, s.Display, it.Value) {
 				t.Style = module.StyleAccent
 				if s.Region != nil {
 					t.Value = s.Region.String()
@@ -392,9 +393,12 @@ func (m *Mod) recorderTiles() []module.Row {
 	// the old enumeration-age warning was reaching for and missing: not
 	// "the list is old" but "what you asked to record is not there".
 	for _, s := range m.desired.Screens {
-		if slices.ContainsFunc(inv.Screens, func(it renocore.PropertyItem) bool {
-			return it.Value == s.Display
-		}) {
+		// Resolvable is the test, NOT exact-value equality. The plan resolves
+		// a selector by value, name, index or unique name substring, so a
+		// config written from the CLI (`--screen XENEON`) is perfectly good
+		// and used to render here as "not attached" beside the very display
+		// it selects.
+		if _, err := renocore.ResolveItem(inv.Screens, s.Display, "display"); err == nil {
 			continue
 		}
 		tiles = append(tiles, module.Row{Kind: module.RowPad, Section: secScreens,
@@ -580,6 +584,13 @@ func levelValue(level int) string {
 		return "off"
 	}
 	return fmt.Sprintf("%d/%d", level, renocore.FXMaxLevel)
+}
+
+// resolvesTo reports whether selector picks out the display with this
+// value, through the same resolution the plan uses.
+func resolvesTo(items []renocore.PropertyItem, selector, value string) bool {
+	it, err := renocore.ResolveItem(items, selector, "display")
+	return err == nil && it.Value == value
 }
 
 // shortSel labels a display selector that has no name left to show: the

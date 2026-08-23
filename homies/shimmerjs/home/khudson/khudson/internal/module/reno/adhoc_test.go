@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -775,6 +776,121 @@ func TestFXHideTap(t *testing.T) {
 	}
 }
 
+// fxArgv is one level one-shot's argv, the thing park and unpark emit.
+func fxArgv(m *Mod, kind string, level int) []string {
+	return append([]string{m.exe, "reno", "obs", "cam"},
+		renocore.CamFX{Kind: kind, Level: level}.Args()...)
+}
+
+// moveFX is the effect a placement tap builds.
+func moveFX(preset string) renocore.CamFX {
+	return renocore.CamFX{Kind: renocore.FXMove, Preset: preset,
+		Dur: renocore.FXDefaultDur, Ease: renocore.FXDefaultEase}
+}
+
+// The camera going away takes the level effects with it, filters included.
+// A driver put its own pose back on the way out, but a filter is state:
+// hiding the camera used to leave the tint sitting on a source nobody was
+// driving, invisible only because the item was disabled.
+func TestHidingTheCameraParksTheEffects(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+	ctl(t, m, "apply-note", "ok", "applied")
+	m.fxLevels = map[string]int{renocore.FXPixelate: 4, renocore.FXPurple: 3}
+
+	_, effects := m.HandleActEffects([]string{actFXHide})
+	var got [][]string
+	for _, e := range effects {
+		got = append(got, e.Argv)
+	}
+	want := [][]string{
+		fxArgv(m, renocore.FXPixelate, 0),
+		fxArgv(m, renocore.FXPurple, 0),
+		append([]string{m.exe, "reno", "obs", "cam"}, renocore.CamFX{Kind: renocore.FXHide}.Args()...),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hide effects = %v,\nwant the filters off first, then the hide %v", got, want)
+	}
+	// and the tiles read off, because there is no tint on a camera that is
+	// not there
+	for _, kind := range []string{renocore.FXPixelate, renocore.FXPurple} {
+		if lvl := m.fxLevels[kind]; lvl != 0 {
+			t.Errorf("%s still reads %d over a hidden camera", kind, lvl)
+		}
+	}
+
+	// the camera comes back and brings them with it, on the far side of the
+	// placement that stages it
+	_, effects = m.HandleActEffects([]string{actFXMove, "br"})
+	got = nil
+	for _, e := range effects {
+		got = append(got, e.Argv)
+	}
+	want = [][]string{
+		append([]string{m.exe, "reno", "obs", "cam"}, moveFX("br").Args()...),
+		fxArgv(m, renocore.FXPixelate, 4),
+		fxArgv(m, renocore.FXPurple, 3),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("return effects = %v,\nwant the placement first, then the levels %v", got, want)
+	}
+	if m.fxLevels[renocore.FXPixelate] != 4 || m.fxLevels[renocore.FXPurple] != 3 {
+		t.Errorf("levels did not come back: %+v", m.fxLevels)
+	}
+}
+
+// Selecting no camera at all parks them too, and the return rides the
+// apply's note -- an effect fired at a camera the apply has not staged yet
+// has nothing to land on.
+func TestUnsettingTheCameraParksUntilTheApplyLands(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgScreen, "uuid-d"})
+	ctl(t, m, "apply-note", "ok", "applied")
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+	ctl(t, m, "apply-note", "ok", "applied")
+	m.fxLevels = map[string]int{renocore.FXPixelate: 4}
+
+	_, effects := m.HandleActEffects([]string{actCfgWebcam, cfgDefault})
+	if len(effects) != 2 || !slices.Equal(effects[0].Argv, fxArgv(m, renocore.FXPixelate, 0)) {
+		t.Fatalf("effects = %+v, want the filter off before the apply", effects)
+	}
+	if !slices.Equal(effects[1].Argv, applyArgv(m)) {
+		t.Fatalf("effects = %+v, want the apply second", effects)
+	}
+	// the apply landing on a camera-less config asserts nothing
+	if _, done := ctl(t, m, "apply-note", "ok", "applied"); len(done) != 0 {
+		t.Errorf("apply-note with no camera emitted %+v", done)
+	}
+
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+	_, done := ctl(t, m, "apply-note", "ok", "applied")
+	if len(done) != 1 || !slices.Equal(done[0].Argv, fxArgv(m, renocore.FXPixelate, 4)) {
+		t.Fatalf("apply-note = %+v, want the level back", done)
+	}
+	if m.fxLevels[renocore.FXPixelate] != 4 {
+		t.Errorf("level did not come back: %+v", m.fxLevels)
+	}
+}
+
+// A level tapped while the camera was away is the newer intent: it outranks
+// whatever was parked, and the return must not overwrite it.
+func TestATapWhileParkedOutranksTheParkedLevel(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	m.HandleActEffects([]string{actCfgWebcam, "br"})
+	ctl(t, m, "apply-note", "ok", "applied")
+	m.fxLevels = map[string]int{renocore.FXPixelate: 4}
+	m.HandleActEffects([]string{actFXHide})
+
+	m.HandleActEffects([]string{actFXLevel, renocore.FXPixelate, levelUp})
+	m.HandleActEffects([]string{actFXMove, "br"})
+	if lvl := m.fxLevels[renocore.FXPixelate]; lvl != 1 {
+		t.Errorf("level = %d, want the 1 that was tapped, not the parked 4", lvl)
+	}
+}
+
 // A level effect is a remote, not a toggle: each plus walks the level one
 // step and fires that level, and the tiles carry it back to glass.
 func TestFXLevelPairWalksTheLevel(t *testing.T) {
@@ -1037,7 +1153,7 @@ func TestTransportCyclesArmRecStop(t *testing.T) {
 	}
 
 	// armed: the face becomes REC and means it
-	if err := m.noteArmLocked([]string{"ok", "obs 32.2.0, screen built-in"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"ok", "obs 32.2.0, screen built-in"}); err != nil {
 		t.Fatal(err)
 	}
 	got := padTile(m.recorderData().Rows, KeyActRecord)
@@ -1058,7 +1174,7 @@ func TestTransportCyclesArmRecStop(t *testing.T) {
 	}
 
 	// a failed arm reports the reason and stays on ARM
-	if err := m.noteArmLocked([]string{"error", "obs did not answer"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"error", "obs did not answer"}); err != nil {
 		t.Fatal(err)
 	}
 	got = padTile(m.recorderData().Rows, KeyActRecord)
@@ -1072,7 +1188,7 @@ func TestTransportCyclesArmRecStop(t *testing.T) {
 // camera light still on.
 func TestEndRunReleasesTheRig(t *testing.T) {
 	m, _ := testMod(t)
-	if err := m.noteArmLocked([]string{"ok", "obs 32.2.0"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"ok", "obs 32.2.0"}); err != nil {
 		t.Fatal(err)
 	}
 	m.HandleActEffects([]string{actRecord}) // opens an ad hoc run
@@ -1090,7 +1206,7 @@ func TestEndRunReleasesTheRig(t *testing.T) {
 		t.Fatalf("END RUN must release the rig: %+v", effects)
 	}
 	// and the verb's note unarms, so the transport falls back to ARM
-	if err := m.noteArmLocked([]string{"released", "2 sources released"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"released", "2 sources released"}); err != nil {
 		t.Fatal(err)
 	}
 	if m.armed() {
@@ -1256,5 +1372,33 @@ func TestRecorderLemmingsTile(t *testing.T) {
 	m.HandleActEffects(tile.Act)
 	if m.desired.Lemmings {
 		t.Error("the tile must toggle")
+	}
+}
+
+// The pad resolves a selector the way the PLAN does, not by exact value.
+// A config written from the CLI (`--screen XENEON`) is perfectly good, and
+// used to render as a warn "not attached" tile beside the very display it
+// selects -- while its own tile sat unlit.
+func TestScreensBandResolvesSelectorsLikeThePlan(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+	// the inventory names are "Built-in" and "DELL"; select by substring
+	m.desired.Screens = []renocore.ScreenSel{{Display: "DELL"}}
+	rows := m.recorderData().Rows
+
+	if tile := padTile(rows, KeyCfgScreens+":uuid-d"); tile == nil ||
+		tile.Style != module.StyleAccent {
+		t.Errorf("a display selected by name must light its own tile: %+v", tile)
+	}
+	if tile := padTile(rows, KeyCfgScreens+":DELL"); tile != nil {
+		t.Errorf("a resolvable selector must not also read as not attached: %+v", tile)
+	}
+
+	// a selector that resolves to NOTHING is still the loud alarm it was
+	m.desired.Screens = []renocore.ScreenSel{{Display: "uuid-gone"}}
+	rows = m.recorderData().Rows
+	tile := padTile(rows, KeyCfgScreens+":uuid-gone")
+	if tile == nil || tile.Value != "not attached" || tile.Style != module.StyleWarn {
+		t.Errorf("an unresolvable selector must stay the alarm: %+v", tile)
 	}
 }

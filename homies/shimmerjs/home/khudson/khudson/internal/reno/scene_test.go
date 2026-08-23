@@ -474,3 +474,62 @@ func TestCamTransformHugsTheCornerOnATallCanvas(t *testing.T) {
 		t.Errorf("fallback box = %+v", fb)
 	}
 }
+
+// Two selectors can name ONE display: a config written half from the CLI
+// (`--screen XENEON`, a name substring) and half from the pad (a UUID) held
+// the Edge twice. The plan built two full-size captures of it -- a doubled
+// canvas, two ScreenCaptureKit sessions on one display, and an arm that
+// refused because one of them never produced a frame.
+func TestPlanDedupesOneDisplaySelectedTwice(t *testing.T) {
+	env := ObsEnv{
+		CanvasW: 2560, CanvasH: 720,
+		ScreenKind: "screen_capture", DisplayProp: "display_uuid",
+		Scenes: []string{SceneName}, Inputs: map[string]string{},
+		Displays: []PropertyItem{
+			{Name: "DELL U3223QE(0)", Value: "F8AF13FA"},
+			{Name: "XENEON EDGE(1)", Value: "79CF2857"},
+		},
+	}
+	p, err := BuildScenePlan(RecordConfig{Screens: []ScreenSel{
+		{Display: "XENEON"},   // name substring, the CLI form
+		{Display: "79CF2857"}, // the same display's uuid, the pad form
+	}}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var screens []PlanInput
+	for _, in := range p.Inputs {
+		if IsScreenInput(in.Name) {
+			screens = append(screens, in)
+		}
+	}
+	if len(screens) != 1 {
+		t.Fatalf("one display selected twice built %d captures: %+v", len(screens), screens)
+	}
+	if screens[0].Slots != 1 {
+		t.Errorf("Slots = %d, want 1 -- the canvas is derived from this", screens[0].Slots)
+	}
+	if screens[0].Name != ScreenInputName(0) {
+		t.Errorf("slot numbering left a hole: %s", screens[0].Name)
+	}
+
+	// but the same display CROPPED two ways is a real composition
+	r1, _ := ParseRegion("0,0,1280x720")
+	r2, _ := ParseRegion("1280,0,1280x720")
+	p, err = BuildScenePlan(RecordConfig{Screens: []ScreenSel{
+		{Display: "XENEON", Region: r1},
+		{Display: "79CF2857", Region: r2},
+	}}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screens = nil
+	for _, in := range p.Inputs {
+		if IsScreenInput(in.Name) {
+			screens = append(screens, in)
+		}
+	}
+	if len(screens) != 2 {
+		t.Errorf("two crops of one display built %d captures, want 2", len(screens))
+	}
+}
