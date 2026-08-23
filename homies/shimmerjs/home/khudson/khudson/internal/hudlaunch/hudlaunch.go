@@ -12,12 +12,21 @@
 // window along. So the launcher tracks the target's frame, not just its name,
 // and relaunches when the position it was launched at goes stale.
 //
-// That tracking is event-driven: a CoreGraphics reconfiguration callback
-// (Watch) reports WHEN the arrangement changed, and only then does Query read
-// what it changed to. A stable arrangement costs nothing, which is the point
-// -- Query execs osascript, and macOS books each exec as a full app launch,
-// with the loginwindow check-in, WindowServer focus-chain re-evaluation and
-// TCC authorization that implies.
+// So the tracking has two tiers, and the split exists to make a stable
+// arrangement cost nothing: Query execs osascript, and macOS books each exec
+// as a full app launch, with the loginwindow check-in, WindowServer
+// focus-chain re-evaluation and TCC authorization that implies. Watch is the
+// cheap tier -- an IN-PROCESS CoreGraphics enumeration, no exec, no TCC --
+// polled often, and Query only runs when Watch says the display set moved.
+//
+// Watch is a POLL and not a callback, which it was for one morning.
+// CGDisplayRegisterReconfigurationCallback registered fine from a locked
+// thread parked on its own run loop and then never fired once: measured
+// 2026-08-23 against a real unplug and replug, which the enumeration beside
+// it saw and the callback did not. A HUD that never comes back when you plug
+// the display in is a worse failure than an enumeration every few seconds,
+// and the enumeration is cheap enough that the event tier bought nothing
+// worth that risk.
 package hudlaunch
 
 import (
@@ -49,6 +58,7 @@ type Options struct {
 	Socket      string        // RC socket path, passed via --listen-on (verbatim)
 	StateDir    string        // lock/pidfile/backoff state ("" = dir of Socket)
 	RetryDelay  time.Duration // wait before retrying a FAILED query (error path only)
+	Scan        time.Duration // cadence of the cheap CoreGraphics presence scan
 	Query       QueryFunc     // nil = osascript-backed default
 	Watch       WatchFunc     // nil = CoreGraphics-backed default
 	Logf        func(format string, args ...any)
@@ -69,6 +79,46 @@ type QueryFunc func(ctx context.Context) ([]Screen, error)
 // re-query it" -- sends carry nothing and are coalesced, so one receive may
 // stand for several changes.
 type WatchFunc func(ctx context.Context) (<-chan struct{}, error)
+
+// scanDisplays fingerprints the attached displays cheaply enough to run on a
+// timer: CoreGraphics in-process, no subprocess and no TCC. Identity and
+// geometry both ride it, because the launcher relaunches on a MOVE as well as
+// a plug -- a display that only changed origin still invalidates the position
+// the child was launched at.
+var scanDisplays = func() string {
+	var b strings.Builder
+	for _, d := range cgdisplay.Active() {
+		fmt.Fprintf(&b, "%s:%d,%d,%dx%d;", d.UUID, d.X, d.Y, d.W, d.H)
+	}
+	return b.String()
+}
+
+// watchByScan is the default WatchFunc: signal whenever the fingerprint
+// moves. Depth-1 and coalesced, the same contract a callback would have had,
+// so nothing downstream knows which tier it is on.
+func watchByScan(ctx context.Context, every time.Duration) (<-chan struct{}, error) {
+	ch := make(chan struct{}, 1)
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		last := scanDisplays()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			if now := scanDisplays(); now != last {
+				last = now
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	return ch, nil
+}
 
 // Screen is one connected display in Cocoa global coordinates (origin at the
 // primary display's bottom-left corner, y increasing upward).
@@ -97,11 +147,17 @@ func normalize(opts Options) Options {
 	if opts.RetryDelay <= 0 {
 		opts.RetryDelay = 15 * time.Second
 	}
+	if opts.Scan <= 0 {
+		opts.Scan = 2 * time.Second
+	}
 	if opts.Query == nil {
 		opts.Query = queryScreens
 	}
 	if opts.Watch == nil {
-		opts.Watch = cgdisplay.Watch
+		scan := opts.Scan
+		opts.Watch = func(ctx context.Context) (<-chan struct{}, error) {
+			return watchByScan(ctx, scan)
+		}
 	}
 	if opts.Logf == nil {
 		opts.Logf = log.Printf
@@ -166,9 +222,11 @@ func Run(ctx context.Context, opts Options) error {
 				opts.Logf("hud-launcher: display %q not connected; waiting", opts.DisplayName)
 				waitingLogged = true
 			}
-			// No timer: an absent display cannot return without a
-			// reconfiguration, which is precisely what changed reports.
-			if !waitChange(ctx, changed, 0) {
+			// The scan is what wakes this, but it waits on a timer too:
+			// this branch used to block on the event alone, and the one
+			// morning the event tier was a callback that never fired, that
+			// turned a missed signal into a HUD that never came back.
+			if !waitChange(ctx, changed, opts.RetryDelay) {
 				return nil
 			}
 			continue
