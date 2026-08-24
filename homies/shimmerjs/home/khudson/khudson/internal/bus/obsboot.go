@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -136,9 +137,15 @@ func (b *ObsBoot) Ensure(deadline time.Duration) (ObsTransport, error) {
 		return nil, err
 	}
 	if b.running() {
+		if b.safeModeWaiting() {
+			return nil, fmt.Errorf("OBS is running but its websocket at %s did not answer (%v); its log says it detected an unclean shutdown and never got past the safe-mode dialog -- answer the dialog, or quit OBS and re-run (the launch path clears the crash sentinel)", b.Host, dialErr)
+		}
 		// the seeded config binds at launch; a live OBS with the socket
 		// down keeps its dead posture until relaunched
 		return nil, fmt.Errorf("OBS is running but its websocket at %s did not answer (%v); the seeded config binds at launch -- quit OBS and re-run", b.Host, dialErr)
+	}
+	if n := b.clearCrashSentinel(); n > 0 {
+		fmt.Fprintf(os.Stderr, "khudson obs: OBS's last run ended uncleanly (%d stale sentinel(s) cleared) -- safe mode DECLINED on your behalf so the websocket binds; if a plugin is what killed it, that choice is where to look\n", n)
 	}
 	if err := b.launch(b.AppPath); err != nil {
 		return nil, fmt.Errorf("launch %s: %w", b.AppPath, err)
@@ -154,6 +161,72 @@ func (b *ObsBoot) Ensure(deadline time.Duration) (ObsTransport, error) {
 		last = err
 	}
 	return nil, fmt.Errorf("obs launched but its websocket never came up within %s (a first-launch Gatekeeper or permission dialog may be waiting): %w", deadline, last)
+}
+
+// clearCrashSentinel removes OBS's leftover run markers and reports how
+// many went. OBS drops a `.sentinel/run_<uuid>` file for every live
+// instance and deletes it on a clean exit, so a marker with no OBS running
+// is a dead instance's -- and the next launch answers it with the
+// safe-mode dialog instead of the main window. The dialog never binds the
+// websocket, so Ensure would spend its whole deadline dialling a modal.
+//
+// This DECLINES OBS's safe-mode offer on khudson's behalf, which is the
+// trade an unattended rig wants: every reno verb rides that socket, and
+// the plugin set here is OBS's own. Only the launch path calls it, and
+// only after running() has said no instance is up -- a hand-started OBS
+// still gets the offer.
+func (b *ObsBoot) clearCrashSentinel() int {
+	dir := filepath.Join(b.ConfigDir, ".sentinel")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), "run_") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// safeModeWaiting reports whether OBS's newest log says it detected an
+// unclean shutdown and has not yet logged which safe-mode choice was made
+// -- i.e. the dialog is still up, holding the socket down. Both lines land
+// within the first few lines of a launch, so only the head is read.
+//
+// Verified against this machine's logs (OBS 32.2): "Crash or unclean
+// shutdown detected" on the launch after a crash, then "[Safe Mode] Normal
+// launch selected, ..." the moment the dialog is answered.
+func (b *ObsBoot) safeModeWaiting() bool {
+	dir := filepath.Join(b.ConfigDir, "logs")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	newest := ""
+	for _, e := range ents {
+		// names are "YYYY-MM-DD HH-MM-SS.txt", so lexical is chronological
+		if !e.IsDir() && e.Name() > newest {
+			newest = e.Name()
+		}
+	}
+	if newest == "" {
+		return false
+	}
+	f, err := os.Open(filepath.Join(dir, newest))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 64<<10)
+	n, _ := io.ReadFull(f, head)
+	text := string(head[:n])
+	return strings.Contains(text, "Crash or unclean shutdown detected") &&
+		!strings.Contains(text, "[Safe Mode]")
 }
 
 // Seed writes the obs-websocket config (enabled, port, generated

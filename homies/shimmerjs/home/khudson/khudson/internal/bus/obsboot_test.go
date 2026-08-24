@@ -193,6 +193,139 @@ func TestEnsureDeadline(t *testing.T) {
 	}
 }
 
+func writeSentinel(t *testing.T, b *ObsBoot, names ...string) {
+	t.Helper()
+	dir := filepath.Join(b.ConfigDir, ".sentinel")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writeObsLog(t *testing.T, b *ObsBoot, name, body string) {
+	t.Helper()
+	dir := filepath.Join(b.ConfigDir, "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The launch path clears a dead instance's run markers -- otherwise the
+// launch it is about to do comes up on the safe-mode dialog and the socket
+// never binds. Non-run_ entries are OBS's and are left alone.
+func TestEnsureClearsCrashSentinelBeforeLaunch(t *testing.T) {
+	b := testBoot(t)
+	writeSentinel(t, b, "run_abc", "run_def", "keepme")
+	sentinelAtLaunch := -1
+	b.launch = func(string) error {
+		ents, _ := os.ReadDir(filepath.Join(b.ConfigDir, ".sentinel"))
+		sentinelAtLaunch = 0
+		for _, e := range ents {
+			if strings.HasPrefix(e.Name(), "run_") {
+				sentinelAtLaunch++
+			}
+		}
+		return nil
+	}
+	clock := time.Now()
+	b.now = func() time.Time { return clock }
+	b.sleep = func(d time.Duration) { clock = clock.Add(d) }
+	if _, err := b.Ensure(time.Second); err == nil {
+		t.Fatal("dial never lands; want the deadline error")
+	}
+	if sentinelAtLaunch != 0 {
+		t.Errorf("run markers at launch = %d, want 0", sentinelAtLaunch)
+	}
+	if _, err := os.Stat(filepath.Join(b.ConfigDir, ".sentinel", "keepme")); err != nil {
+		t.Errorf("cleared a file that is not a run marker: %v", err)
+	}
+}
+
+// A live OBS keeps its own marker: the short-circuit dial never reaches
+// the clearing, and neither does the running-but-dead-socket refusal.
+func TestEnsureLeavesLiveSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		dialOK  bool
+		running bool
+	}{
+		{"socket up", true, true},
+		{"running, socket down", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := testBoot(t)
+			writeSentinel(t, b, "run_live")
+			b.running = func() bool { return tc.running }
+			if tc.dialOK {
+				b.dial = func(string, string) (ObsTransport, error) { return &fakeObs{}, nil }
+			}
+			obs, err := b.Ensure(time.Second)
+			if obs != nil {
+				obs.Close()
+			}
+			if tc.dialOK != (err == nil) {
+				t.Fatalf("err = %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(b.ConfigDir, ".sentinel", "run_live")); err != nil {
+				t.Errorf("cleared a live instance's marker: %v", err)
+			}
+		})
+	}
+}
+
+// A running OBS with a dead socket names the safe-mode dialog when its own
+// log says that is what it is sitting on, and does not otherwise.
+func TestEnsureNamesSafeModeDialog(t *testing.T) {
+	const crashed = "15:25:19.624: Crash or unclean shutdown detected\n"
+	for _, tc := range []struct {
+		name string
+		logs map[string]string
+		want string
+	}{
+		{
+			name: "dialog up",
+			logs: map[string]string{"2026-08-23 15-25-19.txt": crashed},
+			want: "safe-mode dialog",
+		},
+		{
+			name: "dialog answered",
+			logs: map[string]string{"2026-08-23 15-25-19.txt": crashed + "15:25:21.872: [Safe Mode] Normal launch selected\n"},
+			want: "binds at launch",
+		},
+		{
+			name: "older log crashed, newest clean",
+			logs: map[string]string{
+				"2026-08-23 15-25-19.txt": crashed,
+				"2026-08-23 17-21-18.txt": "17:21:18.000: OBS 32.2.0\n",
+			},
+			want: "binds at launch",
+		},
+		{
+			name: "no logs at all",
+			want: "binds at launch",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := testBoot(t)
+			b.running = func() bool { return true }
+			for name, body := range tc.logs {
+				writeObsLog(t, b, name, body)
+			}
+			_, err := b.Ensure(time.Second)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // Remote hosts are dial-only: nothing to seed or launch.
 func TestEnsureRemoteHostNeverLaunches(t *testing.T) {
 	b := testBoot(t)
