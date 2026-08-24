@@ -28,6 +28,7 @@ const (
 	actCfgAudio  = "reno:cfg-audio"  // + device value | none | default
 	actCfgScreen = "reno:cfg-screen" // + display value (toggles membership)
 	actCfgWebcam = "reno:cfg-webcam" // + preset | default
+	actCfgCamera = "reno:cfg-camera" // + device value | default
 	actProbe     = "reno:probe"
 	actArm       = "reno:arm"
 	actWindow    = "reno:obs-window"
@@ -491,6 +492,12 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 			m.desired.Audio = ""
 		} else {
 			m.desired.Audio = argv[1]
+		}
+	case actCfgCamera:
+		if argv[1] == cfgDefault {
+			m.desired.Camera = ""
+		} else {
+			m.desired.Camera = argv[1]
 		}
 	case actCfgWebcam:
 		if argv[1] == cfgDefault {

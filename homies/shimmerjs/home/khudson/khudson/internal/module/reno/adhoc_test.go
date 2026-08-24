@@ -1402,3 +1402,51 @@ func TestScreensBandResolvesSelectorsLikeThePlan(t *testing.T) {
 		t.Errorf("an unresolvable selector must stay the alarm: %+v", tile)
 	}
 }
+
+// WHICH camera is a choice, so it is a band of buttons like the mics.
+// khudson used to answer it by taking the first device OBS enumerated and
+// rewriting it on every apply, so unplugging a USB webcam silently promoted
+// the built-in one -- on a clamshell laptop, a camera aimed at a closed lid,
+// with the pad reporting the placement of a black rectangle.
+func TestRecorderCameraBand(t *testing.T) {
+	m, _ := testMod(t)
+	freshInv(t, m)
+
+	rows := m.recorderData().Rows
+	asIs := padTile(rows, KeyCfgCamera+":default")
+	if asIs == nil || asIs.Section != secCamera {
+		t.Fatalf("no obs-as-is camera tile: %+v", asIs)
+	}
+	if asIs.Style != module.StyleAccent {
+		t.Error("with no camera chosen, obs-as-is is the live selection")
+	}
+	cam := padTile(rows, KeyCfgCamera+":uid-cam")
+	if cam == nil || cam.Section != secCamera {
+		t.Fatalf("no tile for the enumerated camera: %+v", cam)
+	}
+	if cam.Style == module.StyleAccent {
+		t.Error("an unchosen camera must not read as selected")
+	}
+
+	handled, _ := m.HandleActEffects(cam.Act)
+	if !handled || m.desired.Camera != "uid-cam" {
+		t.Fatalf("camera tap: handled=%v desired=%q", handled, m.desired.Camera)
+	}
+	rows = m.recorderData().Rows
+	if tile := padTile(rows, KeyCfgCamera+":uid-cam"); tile.Style != module.StyleAccent {
+		t.Error("the chosen camera must light")
+	}
+	if tile := padTile(rows, KeyCfgCamera+":default"); tile.Style == module.StyleAccent {
+		t.Error("obs-as-is must go dark once a camera is chosen")
+	}
+	// and the choice reaches the posture the arm journals
+	if !strings.Contains(m.desired.Summary(), "camera uid-cam") {
+		t.Errorf("summary = %q", m.desired.Summary())
+	}
+
+	// back to leaving OBS alone
+	m.HandleActEffects([]string{actCfgCamera, cfgDefault})
+	if m.desired.Camera != "" {
+		t.Errorf("obs-as-is must clear the knob: %q", m.desired.Camera)
+	}
+}

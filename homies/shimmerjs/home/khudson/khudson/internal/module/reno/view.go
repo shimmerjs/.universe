@@ -31,6 +31,7 @@ const (
 	KeyCfgScreens  = "cfg:screens"
 	KeyCfgAudio    = "cfg:audio"
 	KeyCfgWebcam   = "cfg:webcam"
+	KeyCfgCamera   = "cfg:camera"
 	KeyFXMove      = "fx:move"
 	KeyFXSize      = "fx:size"
 	KeyFXHide      = "fx:hide"
@@ -325,6 +326,7 @@ const (
 	secTransport = "transport"
 	secScreens   = "screens"
 	secMic       = "mic"
+	secCamera    = "camera"
 	secCam       = "cam"
 	secFX        = "fx"
 )
@@ -421,6 +423,20 @@ func (m *Mod) recorderTiles() []module.Row {
 	for _, it := range inv.Mics {
 		tiles = append(tiles, m.choiceTile(secMic, KeyCfgAudio+":"+it.Value, deviceLabel(it.Name),
 			glyphMic, actCfgAudio, it.Value, m.desired.Audio == it.Value))
+	}
+
+	// WHICH camera, before where it sits. khudson used to answer this by
+	// taking the first device OBS enumerated and rewriting it on every
+	// apply, so unplugging a USB webcam silently promoted the built-in one
+	// -- and on a clamshell laptop that is a camera aimed at a closed lid,
+	// with the pad cheerfully reporting the placement of a black rectangle.
+	// It is a choice, so it is a band of buttons, exactly like the mics.
+	tiles = append(tiles, m.choiceTile(secCamera, KeyCfgCamera+":default", "obs as-is",
+		glyphCam, actCfgCamera, cfgDefault, m.desired.Camera == ""))
+	for _, it := range inv.Cams {
+		tiles = append(tiles, m.choiceTile(secCamera, KeyCfgCamera+":"+it.Value,
+			deviceLabel(it.Name), glyphCam, actCfgCamera, it.Value,
+			m.desired.Camera != "" && resolvesTo(inv.Cams, m.desired.Camera, it.Value)))
 	}
 
 	// The cam band has NO as-is tile. Unset and "off" both end with a

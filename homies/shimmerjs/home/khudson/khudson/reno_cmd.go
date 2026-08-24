@@ -118,13 +118,14 @@ func cmdReno(args []string) error {
 		fs.Var(&screens, "screen", "display selector, optionally :x,y,WxH (repeatable)")
 		audio := fs.String("audio", "", "audio input device query, or 'none' to mute all")
 		webcam := fs.String("webcam", "", "webcam preset: off|br|tr|bl|tl (+ for the grown corner) |big")
+		camera := fs.String("camera", "", "capture device query (UID or unique name substring); unset leaves OBS's own selection alone")
 		lemmings := fs.Bool("lemmings", false, "hang the html overlay on the webcam's box")
 		clear := fs.Bool("clear", false, "reset to 'obs as-is'")
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}
 		if *clear {
-			if len(screens) > 0 || *audio != "" || *webcam != "" || *lemmings {
+			if len(screens) > 0 || *audio != "" || *webcam != "" || *camera != "" || *lemmings {
 				return fmt.Errorf("reno config: --clear takes no other flags")
 			}
 			return renoCtlCall([]string{"record-config", "--clear"})
@@ -144,9 +145,10 @@ func cmdReno(args []string) error {
 			}
 			cfg.Webcam = *webcam
 		}
+		cfg.Camera = *camera
 		cfg.Lemmings = *lemmings
 		if cfg.Empty() {
-			return fmt.Errorf("reno config: nothing set (want --screen/--audio/--webcam/--lemmings, or --clear)")
+			return fmt.Errorf("reno config: nothing set (want --screen/--audio/--webcam/--camera/--lemmings, or --clear)")
 		}
 		raw, err := json.Marshal(cfg)
 		if err != nil {

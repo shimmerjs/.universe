@@ -27,6 +27,11 @@ type RecordConfig struct {
 	// Webcam is a placement preset from WebcamPresets; "" means no
 	// webcam item.
 	Webcam string `json:"webcam,omitempty"`
+	// Camera is the capture device query, resolved against the enumerated
+	// cameras exactly like Audio is. "" leaves OBS's own device selection
+	// alone -- khudson does NOT pick hardware for you, which it used to do
+	// on every apply by taking whichever camera OBS enumerated first.
+	Camera string `json:"camera,omitempty"`
 	// Lemmings hangs the html overlay on the webcam's box. It rides in the
 	// config rather than being an FX one-shot because it is scene state --
 	// a source that stays where the reconciler put it -- and because it
@@ -40,7 +45,8 @@ const AudioNone = "none"
 
 // Empty reports the zero config: record OBS exactly as it stands.
 func (c RecordConfig) Empty() bool {
-	return len(c.Screens) == 0 && c.Audio == "" && c.Webcam == "" && !c.Lemmings
+	return len(c.Screens) == 0 && c.Audio == "" && c.Webcam == "" &&
+		c.Camera == "" && !c.Lemmings
 }
 
 // Summary is the one-line human form for status rows and events.
@@ -57,6 +63,9 @@ func (c RecordConfig) Summary() string {
 	}
 	if c.Webcam != "" {
 		parts = append(parts, "webcam "+c.Webcam)
+	}
+	if c.Camera != "" {
+		parts = append(parts, "camera "+c.Camera)
 	}
 	if c.Lemmings {
 		parts = append(parts, "lemmings")
@@ -473,9 +482,18 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 			Enabled: cfg.Webcam != "off",
 			Preset:  cfg.Webcam,
 		}
-		if len(env.Cams) > 0 {
-			// default device: first enumerated; a query knob can come later
-			in.Settings = map[string]any{env.CamProp: env.Cams[0].Value}
+		// Only a CHOSEN camera is written. This used to set the device to
+		// whichever camera OBS enumerated first, on every apply, with no way
+		// to say otherwise -- so unplugging a USB webcam silently promoted
+		// the built-in one, and on a clamshell laptop that is a camera
+		// pointed at a closed lid. Picking hardware for someone and then
+		// re-picking it behind their back is not a default, it is a bug.
+		if cfg.Camera != "" {
+			it, err := ResolveItem(env.Cams, cfg.Camera, "camera")
+			if err != nil {
+				return nil, err
+			}
+			in.Settings = map[string]any{env.CamProp: it.Value}
 		}
 		p.Inputs = append(p.Inputs, in)
 		if in.Enabled {

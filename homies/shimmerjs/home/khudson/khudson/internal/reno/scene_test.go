@@ -176,13 +176,33 @@ func TestBuildScenePlanAudio(t *testing.T) {
 }
 
 func TestBuildScenePlanWebcam(t *testing.T) {
+	// A placement writes NO device. khudson used to set the camera to
+	// whichever one OBS enumerated first on every apply, so unplugging a USB
+	// webcam silently promoted the built-in one -- a camera aimed at a closed
+	// lid on a clamshell laptop, with the pad reporting the placement of a
+	// black rectangle. Choosing hardware is the Camera knob's job now.
 	p, err := BuildScenePlan(RecordConfig{Webcam: "br"}, sckEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(p.Inputs) != 1 || p.Inputs[0].Name != CamInput || !p.Inputs[0].Enabled ||
-		p.Inputs[0].Preset != "br" || p.Inputs[0].Settings["device"] != "uid-FaceTime HD Camera" {
+		p.Inputs[0].Preset != "br" {
 		t.Errorf("cam = %+v", p.Inputs)
+	}
+	if _, ok := p.Inputs[0].Settings["device"]; ok {
+		t.Errorf("a placement picked a camera on its own: %+v", p.Inputs[0].Settings)
+	}
+
+	// a CHOSEN camera is written, resolved like every other device query
+	p, err = BuildScenePlan(RecordConfig{Webcam: "br", Camera: "FaceTime"}, sckEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Inputs[0].Settings["device"]; got != "uid-FaceTime HD Camera" {
+		t.Errorf("chosen camera = %v", got)
+	}
+	if _, err := BuildScenePlan(RecordConfig{Webcam: "br", Camera: "no-such-cam"}, sckEnv()); err == nil {
+		t.Error("an unknown camera must fail the plan, not fall back to a guess")
 	}
 	p, err = BuildScenePlan(RecordConfig{Webcam: "off"}, sckEnv())
 	if err != nil {
