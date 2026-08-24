@@ -36,6 +36,18 @@ func (v *RenoVerbs) CamFX(fx renocore.CamFX, dial func() (ObsTransport, error), 
 		}
 		return v.Act(corr, "cam", target, "error", err.Error(), err)
 	}
+	// A sustained effect fired as a SCRIPT STEP is about to be driven: the
+	// bus that scheduled this argv adopts the level off the note below and
+	// starts a driver for it. Running the two-second span here as well makes
+	// the effect start twice, with a driver spawn's worth of stillness in the
+	// seam. The note is the whole verb in that case -- correlation is the
+	// signal, because only the bus's own executor issues one.
+	if renocore.IsSustainFX(fx.Kind) && fx.On() && corr.Run != "" && ctl != nil {
+		if _, err := ctl([]string{"fx-note", "ok", fx.String()}); err != nil {
+			return fail(err)
+		}
+		return v.Act(corr, "cam", target, "ok", fx.String()+" (driven by the bus)", nil)
+	}
 	obs, err := dial()
 	if err != nil {
 		return fail(err)

@@ -2,9 +2,11 @@ package reno
 
 import (
 	"os/exec"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
@@ -215,6 +217,22 @@ func TestDriverNoteDoesNotRevivePriorLevel(t *testing.T) {
 	}
 }
 
+// A note at the level already showing still revives a dead driver. The
+// scripted step is exactly this case: it runs no span of its own on the
+// strength of being driven from here, so a note that changed no number and
+// started nothing would be a step that did nothing at all.
+func TestNoteAtTheSameLevelRevivesADeadDriver(t *testing.T) {
+	m := sustainMod(t, "br")
+	m.fxLevels[renocore.FXJitter] = 8
+	under(m, func() { m.adoptFXLevelLocked("jitter 8") })
+	if driver(m, renocore.FXJitter) == nil {
+		t.Error("a level with no driver must get one, level change or not")
+	}
+	if lvl := level(m, renocore.FXJitter); lvl != 8 {
+		t.Errorf("level = %d, want 8", lvl)
+	}
+}
+
 // A sustained level does NOT survive a bus restart, and for the opposite
 // reason to the ones that do. A pixelate comes back because its filter is
 // still on the camera; a shake does not, because the driver died with the
@@ -237,6 +255,77 @@ func TestSustainLevelsDoNotRecover(t *testing.T) {
 		if lvl := next.fxLevels[kind]; lvl != 0 {
 			t.Errorf("%s came back at %d with nothing driving it", kind, lvl)
 		}
+	}
+}
+
+// A good arm re-asserts the levels khudson holds. The filter effects go out
+// as one-shots -- OBS's copy of them left with the scene collection -- and a
+// sustained one gets a driver only where nothing is already driving it.
+func TestArmReassertsLevels(t *testing.T) {
+	m := sustainMod(t, "br")
+	m.fxLevels = map[string]int{
+		renocore.FXPixelate: 4,
+		renocore.FXPurple:   0,
+		renocore.FXLava:     6,
+	}
+	var effects []module.Effect
+	under(m, func() {
+		var err error
+		effects, err = m.noteArmLocked([]string{"ok", "obs 32.2.0"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := [][]string{{m.exe, "reno", "obs", "cam", "pixelate", "4"}}
+	var got [][]string
+	for _, e := range effects {
+		got = append(got, e.Argv)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("arm effects = %v, want %v", got, want)
+	}
+	if driver(m, renocore.FXLava) == nil {
+		t.Error("a lamp at 6 with no driver must get one on arm")
+	}
+	if driver(m, renocore.FXJitter) != nil {
+		t.Error("a shake at 0 must not be started")
+	}
+
+	// the running lamp is left alone: a second arm must not restart a driver
+	// that is already the authority on that camera
+	d := driver(m, renocore.FXLava)
+	under(m, func() {
+		if _, err := m.noteArmLocked([]string{"ok", "obs 32.2.0"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if driver(m, renocore.FXLava) != d {
+		t.Error("re-arming restarted a healthy driver")
+	}
+}
+
+// A failed or released arm asserts nothing: there is no OBS to assert into,
+// and a driver started against one would die on its first chunk.
+func TestFailedArmAssertsNothing(t *testing.T) {
+	for _, outcome := range []string{"error", "released"} {
+		t.Run(outcome, func(t *testing.T) {
+			m := sustainMod(t, "br")
+			m.fxLevels = map[string]int{renocore.FXPixelate: 4, renocore.FXLava: 6}
+			var effects []module.Effect
+			under(m, func() {
+				var err error
+				effects, err = m.noteArmLocked([]string{outcome, "obs cold"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+			if len(effects) != 0 {
+				t.Errorf("effects = %+v, want none", effects)
+			}
+			if driver(m, renocore.FXLava) != nil {
+				t.Error("started a driver off a failed arm")
+			}
+		})
 	}
 }
 

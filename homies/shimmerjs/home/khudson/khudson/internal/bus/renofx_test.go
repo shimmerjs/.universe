@@ -27,6 +27,64 @@ func fxCtl(notes *[][]string) CtlCall {
 	}
 }
 
+// A sustained effect fired as a script step runs no span of its own: the
+// bus that scheduled it adopts the level off the note and drives it. Doing
+// both starts the effect twice with a driver spawn's stillness in the seam.
+func TestScriptedSustainLeavesItToTheDriver(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	obs := fxFake()
+	var notes [][]string
+	fx, err := renocore.ParseCamFX([]string{"jitter", "8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.CamFX(fx, obsDial(obs), fxCtl(&notes), RenoCorr{Run: "r1", Step: 2, Act: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.batches) != 0 || len(obs.ops) != 0 {
+		t.Errorf("the verb touched OBS: batches=%v ops=%v", obs.batches, obs.ops)
+	}
+	if len(notes) != 1 || notes[0][1] != "ok" || notes[0][2] != "jitter 8" {
+		t.Fatalf("notes = %v, want one ok the supervisor can adopt", notes)
+	}
+}
+
+// Off is not driven: level 0 stops a driver, and the work of putting the
+// filter back has to happen here.
+func TestScriptedSustainOffStillRuns(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	obs := fxFake()
+	var notes [][]string
+	fx, err := renocore.ParseCamFX([]string{"lava", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.CamFX(fx, obsDial(obs), fxCtl(&notes), RenoCorr{Run: "r1", Step: 2, Act: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.ops) == 0 {
+		t.Error("switching the lamp off is real work and must reach OBS")
+	}
+}
+
+// A hand-run one is still a visible span: no run correlation means no bus
+// scheduled it, so there is nothing to hand the effect off to.
+func TestHandRunSustainStillRunsItsSpan(t *testing.T) {
+	v, _ := renoTestVerbs(t)
+	obs := fxFake()
+	var notes [][]string
+	fx, err := renocore.ParseCamFX([]string{"jitter", "8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.CamFX(fx, obsDial(obs), fxCtl(&notes), RenoCorr{Step: -1, Act: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.batches) != 1 {
+		t.Fatalf("%d batches, want the one-shot span", len(obs.batches))
+	}
+}
+
 func TestCamFXVerbShipsOneBatch(t *testing.T) {
 	v, _ := renoTestVerbs(t)
 	obs := fxFake()

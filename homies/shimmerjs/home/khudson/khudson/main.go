@@ -95,12 +95,12 @@ func usage() {
                       vet + stage a demo script on the bus
   reno start|stop|status|next|prev
                       drive the staged demo run (goto <step-id> jumps)
-  reno obs standby    phase one: boot OBS and match the scene to the
+  reno obs arm        phase one: boot OBS and match the scene to the
                       configured posture, then stop. The slow half, so
                       running it early makes the record tap instant
   reno record         phase two: roll. Starts frames immediately when
-                      standby already happened, and runs standby itself
-                      when it did not -- record always ends up rolling
+                      arm already happened, and arms itself when it did
+                      not -- record always ends up rolling
   reno obs window show|hide|toggle
                       OBS's own window (AX, not obs-websocket -- the
                       protocol cannot touch it)
@@ -129,7 +129,7 @@ func usage() {
                       re-encodes for frame-accurate cuts)
   reno focus-session <handle> | launch-session <handle> [--cwd <dir>]
                       [--keep-focus] [-- <argv>...] | open-url <url> |
-                      focus-app <bundle-id>
+                      open-clip <file> | focus-app <bundle-id>
                       demo machine actions (exec'd as step effects; also
                       hand-runnable); all take --run/--step/--act
                       correlation flags for the events journal

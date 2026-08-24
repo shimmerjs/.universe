@@ -500,9 +500,11 @@ func (m *Mod) handleCfgActLocked(argv []string) (bool, []module.Effect) {
 		} else {
 			m.desired.Webcam = argv[1]
 		}
-		// the camera going away takes its effects with it, and a camera
-		// coming back brings the ones still levelled up
-		m.touchEverySustainLocked()
+		// the camera going away takes its effects with it. They come back
+		// with it too, but on the far side of the apply -- an effect fired
+		// at a camera the apply has not staged yet has nothing to land on.
+		park := m.parkFXLocked()
+		return true, append(park, m.applyEffectsLocked()...)
 	case actCfgScreen:
 		m.toggleScreenLocked(argv[1])
 	default:
@@ -559,25 +561,129 @@ func (m *Mod) armEffectsLocked() []module.Effect {
 	}}
 }
 
-// noteArmLocked closes a standby with its outcome. Caller holds mu.
-func (m *Mod) noteArmLocked(args []string) error {
+// noteArmLocked closes a standby with its outcome, and on a good one
+// re-asserts the level effects. Caller holds mu.
+func (m *Mod) noteArmLocked(args []string) ([]module.Effect, error) {
 	if len(args) == 0 {
-		return errors.New("reno standby-note: need ok|error [detail]")
+		return nil, errors.New("reno standby-note: need ok|error [detail]")
 	}
 	detail := strings.Join(args[1:], " ")
+	var effects []module.Effect
 	switch args[0] {
 	case "ok":
 		m.armNote, m.armFail = detail, false
+		effects = m.reassertFXLocked()
 	case "released":
 		// the rig is down: unarmed, and the transport falls back to ARM
 		m.armNote, m.armFail = "", false
 	case "error":
 		m.armNote, m.armFail = detail, true
 	default:
-		return fmt.Errorf("reno standby-note: unknown outcome %q", args[0])
+		return nil, fmt.Errorf("reno standby-note: unknown outcome %q", args[0])
 	}
 	m.armLive = false
-	return nil
+	return effects, nil
+}
+
+// reassertFXLocked pushes every level khudson holds back into the OBS the
+// arm just converged, and reconciles the drivers with it.
+//
+// The two halves of a level live in different places: khudson owns the
+// magnitude, OBS owns the filter or the pose it produced. Nothing keeps
+// them married. A scene collection swapped under a running bus takes every
+// filter with it and leaves the tiles reading levels the camera no longer
+// has; a driver whose item went away dies against it and is not restarted.
+// Arm is where the config converges, so it is where the levels converge
+// too -- and unlike a bus start, an arm IS someone asking khudson to make
+// OBS match what the pad says.
+//
+// A sustained kind gets no one-shot: its driver owns the camera while it
+// runs, and touchEverySustainLocked starts one only where the level is up
+// and nothing is driving it. Caller holds mu.
+// camGone reports that no camera is configured, so nothing on this pad has
+// anything to run an effect on.
+func (m *Mod) camGone() bool { return m.desired.Webcam == "" || m.desired.Webcam == "off" }
+
+// parkFXLocked sets the level effects aside when the camera goes away, and
+// takes the filters they left on it off.
+//
+// The driver half already handled itself -- a stopped shake put the pose
+// back -- but a filter is state, and switching one off is real work nobody
+// was doing: turning the webcam off used to leave the lamp's tint sitting on
+// a source with no driver, invisible only because the item was disabled.
+//
+// The levels go to zero with it, which is what the tiles should read: there
+// is no tint on a camera that is not there. fxParked is what brings them
+// back, once the apply has staged the camera again.
+//
+// A no-op when a camera is still configured. Caller holds mu.
+func (m *Mod) parkFXLocked() []module.Effect {
+	if !m.camGone() {
+		return nil
+	}
+	var effects []module.Effect
+	for _, kind := range renocore.LevelFXKinds {
+		level := m.fxLevels[kind]
+		if level <= 0 {
+			continue
+		}
+		if m.fxParked == nil {
+			m.fxParked = map[string]int{}
+		}
+		m.fxParked[kind] = level
+		m.fxLevels[kind] = 0
+		if !renocore.IsFilterFX(kind) {
+			continue // a shake leaves nothing behind to switch off
+		}
+		// ahead of the apply, deliberately: with the camera set to unset the
+		// apply REMOVES the input, and a filter request against an input that
+		// is gone is an error note over a camera nobody is looking at
+		m.fxGen++
+		effects = append(effects, module.Effect{
+			Key:  fmt.Sprintf("reno/fx/%d", m.fxGen),
+			Argv: append([]string{m.exe, "reno", "obs", "cam"}, renocore.CamFX{Kind: kind, Level: 0}.Args()...),
+		})
+	}
+	m.writeState(levelsFile, m.fxLevels)
+	m.touchEverySustainLocked()
+	return effects
+}
+
+// unparkFXLocked puts the parked levels back now that a camera is staged
+// again, and returns the effects that re-apply them. Caller holds mu.
+func (m *Mod) unparkFXLocked() []module.Effect {
+	if len(m.fxParked) == 0 || m.camGone() {
+		return nil
+	}
+	for kind, level := range m.fxParked {
+		if m.fxLevels == nil {
+			m.fxLevels = map[string]int{}
+		}
+		// a level tapped while the camera was away is the newer intent and
+		// outranks whatever was parked
+		if m.fxLevels[kind] == 0 {
+			m.fxLevels[kind] = level
+		}
+	}
+	m.fxParked = nil
+	m.writeState(levelsFile, m.fxLevels)
+	return m.reassertFXLocked()
+}
+
+func (m *Mod) reassertFXLocked() []module.Effect {
+	var effects []module.Effect
+	for _, kind := range renocore.LevelFXKinds {
+		if renocore.IsSustainFX(kind) || m.fxLevels[kind] <= 0 {
+			continue
+		}
+		m.fxGen++
+		effects = append(effects, module.Effect{
+			Key:  fmt.Sprintf("reno/fx/%d", m.fxGen),
+			Argv: append([]string{m.exe, "reno", "obs", "cam"}, renocore.CamFX{Kind: kind, Level: m.fxLevels[kind]}.Args()...),
+		})
+	}
+	m.touchEverySustainLocked()
+	return effects
 }
 
 // windowEffectsLocked toggles OBS's own window. Caller holds mu.
@@ -667,27 +773,36 @@ func (m *Mod) noteVCamLocked(args []string) error {
 //
 // Caller holds mu.
 func (m *Mod) fxEffectsLocked(fx renocore.CamFX) []module.Effect {
+	// a hide takes the camera away and a placement brings it back, so both
+	// carry the level effects with them -- the parking either side of the
+	// one-shot, because a filter is switched off before the item goes and
+	// back on after it returns
+	var park, unpark []module.Effect
 	switch fx.Kind {
 	case renocore.FXMove, renocore.FXJump:
 		unconfigured := m.desired.Webcam == ""
 		m.desired.Webcam = fx.Preset
 		if unconfigured {
+			// nothing is staged yet, so the unpark rides the apply's note
 			return m.applyEffectsLocked()
 		}
+		unpark = m.unparkFXLocked()
 	case renocore.FXHide:
 		if m.desired.Webcam == "" {
 			return nil
 		}
 		m.desired.Webcam = "off"
+		park = m.parkFXLocked()
 	}
 	m.saveConfigLocked()
 	m.fxGen++
-	return []module.Effect{{
+	self := module.Effect{
 		// unique key per emission: repeated taps of the same effect are
 		// each a deliberate one-shot, never a debounce candidate
 		Key:  fmt.Sprintf("reno/fx/%d", m.fxGen),
 		Argv: append([]string{m.exe, "reno", "obs", "cam"}, fx.Args()...),
-	}}
+	}
+	return append(append(park, self), unpark...)
 }
 
 // noteFXLocked records the last FX one-shot's outcome for the pad
@@ -737,6 +852,11 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 		m.fxLevels = map[string]int{}
 	}
 	if m.fxLevels[fx.Kind] == fx.Level {
+		// the level did not move, but the driver may still be gone -- a
+		// scripted `cam jitter 8` at the level already showing is exactly the
+		// case, and it runs no span of its own on the strength of being
+		// driven from here
+		m.touchSustainLocked(fx.Kind)
 		return
 	}
 	m.fxLevels[fx.Kind] = fx.Level
@@ -771,10 +891,13 @@ func (m *Mod) noteApplyLocked(args []string) ([]module.Effect, error) {
 		return nil, fmt.Errorf("reno apply-note: unknown outcome %q", args[0])
 	}
 	m.applyLive = false
-	if !m.applyDirty {
-		return nil, nil
+	// the camera is staged as of THIS note, which is the first moment an
+	// effect aimed at it can land
+	effects := m.unparkFXLocked()
+	if m.applyDirty {
+		effects = append(effects, m.applyEffectsLocked()...)
 	}
-	return m.applyEffectsLocked(), nil
+	return effects, nil
 }
 
 // toggleScreenLocked flips one display's membership in the pending

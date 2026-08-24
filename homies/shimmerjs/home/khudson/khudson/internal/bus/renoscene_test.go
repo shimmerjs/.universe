@@ -538,6 +538,68 @@ func TestApplyHangsLemmingsOnTheCameraBox(t *testing.T) {
 	}
 }
 
+// The canvas is a profile-global setting reno writes to fit its own
+// composition, so the release puts back the one OBS had first -- and only
+// that one: every apply after the first is reno resizing its own frame.
+func TestCanvasGoesBackOnRelease(t *testing.T) {
+	fakeRenoState(t)
+	fakeDellAndEdge(t)
+	noSettleDelay(t)
+	obs := sceneFake()
+	obs.canvasW, obs.canvasH = 3840, 2160
+	obs.sizes = map[string][2]int{"reno-screen-0": {3840, 2160}}
+	cfg := renocore.RecordConfig{Screens: []renocore.ScreenSel{
+		{Display: "uuid-dell", Region: &renocore.Region{X: 0, Y: 0, W: 1920, H: 1080}},
+	}}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if obs.canvasW != 1920 {
+		t.Fatalf("canvas = %v, want reno's 1920", obs.canvasW)
+	}
+	// a second apply at another size must not re-stash: the frame it finds
+	// is the one reno itself left behind
+	cfg.Screens[0].Region = &renocore.Region{X: 0, Y: 0, W: 1280, H: 720}
+	if _, err := ApplyRecordConfig(obs, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := restoreCanvas(obs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.canvasW != 3840 || obs.canvasH != 2160 {
+		t.Errorf("canvas = %vx%v, want OBS's own 3840x2160 back", obs.canvasW, obs.canvasH)
+	}
+	if !strings.Contains(detail, "3840x2160") {
+		t.Errorf("detail = %q, want the restored size in it", detail)
+	}
+	// and it is forgotten: a second release must not put a stale frame back
+	// on top of whatever is there by then
+	obs.canvasW, obs.canvasH = 1280, 720
+	if detail, err := restoreCanvas(obs); err != nil || detail != "" {
+		t.Fatalf("second restore = %q, %v; want a no-op", detail, err)
+	}
+	if obs.canvasW != 1280 {
+		t.Errorf("a forgotten stash was applied again: %v", obs.canvasW)
+	}
+}
+
+// An OBS reno never resized has nothing to put back.
+func TestReleaseWithoutAResizeRestoresNothing(t *testing.T) {
+	fakeRenoState(t)
+	obs := sceneFake()
+	detail, err := restoreCanvas(obs)
+	if err != nil || detail != "" {
+		t.Fatalf("restore = %q, %v; want a no-op", detail, err)
+	}
+	for _, op := range obs.ops {
+		if strings.HasPrefix(op, "canvas:") {
+			t.Errorf("resized an OBS reno never touched: %v", obs.ops)
+		}
+	}
+}
+
 // fakeRenoState points the reno state dir at a temp dir, so the overlay
 // page is written there rather than into the state root of the machine
 // running the tests.

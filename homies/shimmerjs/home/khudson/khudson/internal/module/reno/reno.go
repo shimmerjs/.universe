@@ -108,6 +108,13 @@ type Mod struct {
 	// them, so this map IS the level, which is what earns the tile the
 	// right to show one.
 	fxLevels map[string]int
+	// fxParked holds the levels set aside while the camera is away. An
+	// effect with nothing to run on is off -- the filter is switched off and
+	// the tiles read off, because there is no tint on a camera that is not
+	// there -- and this is what puts them back when the camera returns.
+	// Deliberately not persisted: a bus that restarted while the camera was
+	// off comes back with the effects off, which is what the pad says.
+	fxParked map[string]int
 
 	// standby is phase one of recording: OBS up, scene matching. It gets
 	// its own latch and readout because the whole point of splitting the
@@ -534,7 +541,8 @@ func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 	case "fx-note":
 		return nil, nil, m.noteFXLocked(args[1:])
 	case "arm-note":
-		return nil, nil, m.noteArmLocked(args[1:])
+		effects, err := m.noteArmLocked(args[1:])
+		return nil, effects, err
 	case "window-note":
 		return nil, nil, m.noteWindowLocked(args[1:])
 	case "vcam-note":

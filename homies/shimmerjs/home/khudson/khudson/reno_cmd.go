@@ -35,7 +35,7 @@ const renoVerbDeadline = 30 * time.Second
 
 func cmdReno(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("reno: need a verb: vet | load | start | stop | status | next | prev | goto | record | config | notes | obs | trim | stitch | mute | dub | focus-session | launch-session | open-url | focus-app | chrome-tab | hide-app | show-app")
+		return fmt.Errorf("reno: need a verb: vet | load | start | stop | status | next | prev | goto | record | config | notes | obs | trim | stitch | mute | dub | focus-session | launch-session | open-url | open-clip | focus-app | chrome-tab | hide-app | show-app")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {

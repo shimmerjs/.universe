@@ -448,10 +448,9 @@ func (p placedItem) layoutSize() (int, int) {
 // every glyph edge to mush. Sizing the frame to the content is the only way
 // the legible thing lands on the pixel grid.
 //
-// This WRITES a profile-global OBS setting and does not put it back. That is
-// the documented cost of the khudson-owned scene: reno drives this OBS, and
-// a canvas that disagreed with the scene in it would be the lying readout
-// the whole design avoids. Only ever called for a non-empty config.
+// This WRITES a profile-global OBS setting, so the canvas OBS had first is
+// stashed before the first resize and put back on release. Only ever called
+// for a non-empty config.
 func fitCanvas(obs ObsTransport, items []placedItem, env *renocore.ObsEnv) error {
 	slots := 0
 	for _, it := range items {
@@ -479,6 +478,7 @@ func fitCanvas(obs ObsTransport, items []placedItem, env *renocore.ObsEnv) error
 	if w == env.CanvasW && h == env.CanvasH {
 		return nil
 	}
+	stashCanvas(env.CanvasW, env.CanvasH)
 	if err := obs.SetCanvas(int(w), int(h)); err != nil {
 		return fmt.Errorf("canvas %dx%d: %w", int(w), int(h), err)
 	}
@@ -499,6 +499,80 @@ func fitCanvas(obs ObsTransport, items []placedItem, env *renocore.ObsEnv) error
 	}
 	env.CanvasW, env.CanvasH, env.FPS = gotW, gotH, fps
 	return nil
+}
+
+// canvasFile holds the canvas OBS had before reno first resized it. It is a
+// FILE rather than memory because the two halves happen in different
+// processes: the apply verb resizes, and the release verb -- minutes and a
+// bus restart later -- is what puts it back.
+const canvasFile = "canvas.json"
+
+// stashedCanvas is one saved base resolution.
+type stashedCanvas struct {
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// stashCanvas records the canvas to go back to, once. Only the FIRST resize
+// writes it: every later apply is reno resizing its own canvas, and taking
+// that one would leave the restore putting back a frame reno itself chose.
+//
+// Best effort by construction -- a stash that could not be written costs the
+// restore, and an apply that failed over it would cost the recording.
+func stashCanvas(w, h float64) {
+	if w <= 0 || h <= 0 {
+		return // nothing honest to go back to
+	}
+	dir, err := renoStateDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, canvasFile)
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	body, err := json.Marshal(stashedCanvas{W: int(w), H: int(h)})
+	if err != nil {
+		return
+	}
+	if err := writeFileAtomic(path, body, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "khudson reno: canvas stash: %v\n", err)
+	}
+}
+
+// restoreCanvas puts the pre-reno canvas back and forgets it, reporting what
+// it did for the release summary ("" = there was nothing to restore).
+//
+// The forgetting is unconditional. A stash kept after a failed restore would
+// be a canvas from some older session waiting to be applied on top of a
+// later one, which is worse than the resize that is already visible.
+func restoreCanvas(obs ObsTransport) (string, error) {
+	dir, err := renoStateDir()
+	if err != nil {
+		return "", nil
+	}
+	path := filepath.Join(dir, canvasFile)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil // never resized, or already restored
+	}
+	var saved stashedCanvas
+	if err := json.Unmarshal(body, &saved); err != nil || saved.W <= 0 || saved.H <= 0 {
+		os.Remove(path)
+		return "", nil
+	}
+	os.Remove(path)
+	w, h, _, err := obs.Canvas()
+	if err != nil {
+		return "", fmt.Errorf("canvas readback: %w", err)
+	}
+	if int(w) == saved.W && int(h) == saved.H {
+		return "", nil
+	}
+	if err := obs.SetCanvas(saved.W, saved.H); err != nil {
+		return "", fmt.Errorf("restore canvas %dx%d: %w", saved.W, saved.H, err)
+	}
+	return fmt.Sprintf("canvas back to %dx%d", saved.W, saved.H), nil
 }
 
 // screenBoxes lays every screen slot out over the canvas as a stacked row.

@@ -459,6 +459,14 @@ func releaseHardware(obs ObsTransport, ctl CtlCall) (string, error) {
 	if n > 0 {
 		done = append(done, fmt.Sprintf("%d sources released", n))
 	}
+	// last, and after the items are down: the canvas is a profile-global
+	// setting reno wrote to fit its own composition, so a scene that is not
+	// reno's would otherwise render into a frame shaped for one.
+	if detail, err := restoreCanvas(obs); err != nil {
+		errs = append(errs, err)
+	} else if detail != "" {
+		done = append(done, detail)
+	}
 	if len(errs) > 0 {
 		return "", errors.Join(errs...)
 	}

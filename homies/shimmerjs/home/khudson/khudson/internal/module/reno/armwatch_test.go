@@ -13,7 +13,7 @@ func armedMod(t *testing.T, now time.Time) *Mod {
 	m.now = func() time.Time { return now }
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.noteArmLocked([]string{"ok", "obs 32.2.0, screen X, webcam bl"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"ok", "obs 32.2.0, screen X, webcam bl"}); err != nil {
 		t.Fatal(err)
 	}
 	m.armDeadline = now.Add(armIdleMax)
@@ -68,7 +68,7 @@ func TestArmCheckStopsWhenReleased(t *testing.T) {
 	m := armedMod(t, now)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.noteArmLocked([]string{"released", "3 sources released"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"released", "3 sources released"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.armCheckLocked(now.Add(armIdleMax + time.Hour)); got != armStop {
@@ -82,7 +82,7 @@ func TestArmCheckStopsOnFailedArm(t *testing.T) {
 	m := armedMod(t, now)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.noteArmLocked([]string{"error", "obs cold"}); err != nil {
+	if _, err := m.noteArmLocked([]string{"error", "obs cold"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.armCheckLocked(now.Add(armIdleMax + time.Hour)); got != armStop {
