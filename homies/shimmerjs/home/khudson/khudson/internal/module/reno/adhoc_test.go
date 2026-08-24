@@ -280,17 +280,20 @@ func TestRecorderPadChoiceButtons(t *testing.T) {
 		}
 	}
 
-	// cam band: the presets and NOTHING else. Unset and "off" both leave
-	// reno-cam disabled, so a separate as-is tile was a second button for
-	// an identical outcome.
-	if got := padTile(d.Rows, KeyCfgWebcam+":default"); got != nil {
-		t.Errorf("cam band must not carry an as-is tile: %+v", got)
-	}
+	// No placement band. Its ten buttons are covered by the FX band's d-pad,
+	// size pair, big and hide -- and the pad drops its LAST band when it runs
+	// out of rows, so the duplicate was pushing the FX band it duplicated off
+	// the bottom of the glass.
 	for _, p := range renocore.WebcamPresets {
-		tile := padTile(d.Rows, KeyCfgWebcam+":"+p)
-		if tile == nil || tile.Act[1] != p || tile.Section != secCam {
-			t.Errorf("webcam preset %q button = %+v", p, tile)
+		if got := padTile(d.Rows, KeyCfgWebcam+":"+p); got != nil {
+			t.Errorf("placement %q is still a button of its own: %+v", p, got)
 		}
+	}
+	// every one of them is still reachable
+	if padTile(d.Rows, KeyFXMove) == nil || padTile(d.Rows, KeyFXSize) == nil ||
+		padTile(d.Rows, KeyFXMove+":"+renocore.CamBig) == nil ||
+		padTile(d.Rows, KeyFXHide) == nil {
+		t.Error("the FX band must cover every placement the band used to")
 	}
 
 	// an old list keeps every button and reports its AGE, not an alarm: a
@@ -349,7 +352,7 @@ func TestRecorderConfigRowsScripted(t *testing.T) {
 	ctl(t, m, "load", path)
 
 	d := m.recorderData()
-	if padTile(d.Rows, KeyCfgAudio+":default") == nil || padTile(d.Rows, KeyCfgWebcam+":off") == nil {
+	if padTile(d.Rows, KeyCfgAudio+":default") == nil || padTile(d.Rows, KeyFXHide) == nil {
 		t.Errorf("staged-only view must show the ad hoc bands: %+v", d.Rows)
 	}
 	if tile := padTile(d.Rows, KeyCfgScript); tile != nil {

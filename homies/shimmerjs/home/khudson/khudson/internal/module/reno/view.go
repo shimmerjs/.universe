@@ -327,7 +327,6 @@ const (
 	secScreens   = "screens"
 	secMic       = "mic"
 	secCamera    = "camera"
-	secCam       = "cam"
 	secFX        = "fx"
 )
 
@@ -439,15 +438,13 @@ func (m *Mod) recorderTiles() []module.Row {
 			m.desired.Camera != "" && resolvesTo(inv.Cams, m.desired.Camera, it.Value)))
 	}
 
-	// The cam band has NO as-is tile. Unset and "off" both end with a
-	// disabled reno-cam -- the only difference is whether the device and
-	// transform were pre-set, which nothing on glass can show. One dead
-	// camera needs one button, and "off" is the one that leaves the cam
-	// staged so a later preset tap is instant.
-	for _, p := range renocore.WebcamPresets {
-		tiles = append(tiles, m.choiceTile(secCam, KeyCfgWebcam+":"+p, p,
-			glyphCam, actCfgWebcam, p, m.desired.Webcam == p))
-	}
+	// There is no band of placement presets any more. It was ten buttons --
+	// off, four corners, the same four grown, big -- and the FX band's d-pad
+	// plus its size pair plus big plus hide now cover every one of them, by
+	// an eased slide instead of a jump cut. Ten redundant tiles is two rows
+	// of a pad that drops its LAST band when it runs out of rows, and the
+	// last band is the FX band: the duplicate was pushing the thing it
+	// duplicated off the bottom of the glass.
 
 	// The FX band is the same placements arrived at by an eased path
 	// instead of a jump cut, so it reads off the same selection -- a move

@@ -150,6 +150,27 @@ const inventoryFile = "inventory.json"
 // selection mid-setup reads as the pad forgetting what you told it.
 const configFile = "config.json"
 
+// fxState is what the level effects persist. BOTH halves ride it: the
+// magnitudes, and the ones set aside while the camera is away.
+//
+// Parked has to be durable or parking is data loss. It used to live only in
+// memory while the park wrote the ZEROES it had just set into the levels
+// file, so any restart in between -- a darwin switch, which restarts the
+// bus, is the ordinary one -- came back to a record of nothing and no way to
+// tell it from an effect somebody genuinely turned off.
+type fxState struct {
+	Levels map[string]int `json:"levels,omitempty"`
+	Parked map[string]int `json:"parked,omitempty"`
+}
+
+// saveFXLocked persists both halves. Every path that moves a level goes
+// through here: several of them write the whole map, so a scheme that kept
+// the file truthful while memory held zeroes would only survive until the
+// next one. Caller holds mu.
+func (m *Mod) saveFXLocked() {
+	m.writeState(levelsFile, fxState{Levels: m.fxLevels, Parked: m.fxParked})
+}
+
 // levelsFile is where the level effects' magnitudes are cached. The
 // filters they drive live in OBS's own scene collection and survive a bus
 // restart; the level does not read back out of them, so khudson has to
@@ -255,20 +276,36 @@ func (m *Mod) saveConfigLocked() { m.writeState(configFile, m.desired) }
 // that level would leave a tile reading "jitter 7" over a camera holding
 // perfectly still.
 func (m *Mod) recoverFXLevels() {
-	var levels map[string]int
-	if !m.readState(levelsFile, &levels) {
+	var st fxState
+	if !m.readState(levelsFile, &st) {
 		return
 	}
-	for kind, level := range levels {
-		if !renocore.IsLevelFX(kind) || renocore.IsSustainFX(kind) ||
-			level <= 0 || level > renocore.FXMaxLevel {
-			continue
+	if st.Levels == nil && st.Parked == nil {
+		// the pre-fxState shape: a bare magnitude map. Tolerated rather than
+		// migrated, because a cache that refuses to load is a pad that comes
+		// back cold for no reason anyone can see.
+		var legacy map[string]int
+		if !m.readState(levelsFile, &legacy) {
+			return
 		}
-		if m.fxLevels == nil {
-			m.fxLevels = map[string]int{}
-		}
-		m.fxLevels[kind] = level
+		st.Levels = legacy
 	}
+	keep := func(dst *map[string]int, src map[string]int) {
+		for kind, level := range src {
+			if !renocore.IsLevelFX(kind) || renocore.IsSustainFX(kind) ||
+				level <= 0 || level > renocore.FXMaxLevel {
+				continue
+			}
+			if *dst == nil {
+				*dst = map[string]int{}
+			}
+			(*dst)[kind] = level
+		}
+	}
+	keep(&m.fxLevels, st.Levels)
+	// parked survives too, so a bus that restarted while the camera was away
+	// still has something to put back when one is staged again
+	keep(&m.fxParked, st.Parked)
 }
 
 // bumpFXLevelLocked walks one level effect a step and returns the effect
@@ -291,7 +328,7 @@ func (m *Mod) bumpFXLevelLocked(kind string, up bool) (renocore.CamFX, bool) {
 		m.fxLevels = map[string]int{}
 	}
 	m.fxLevels[kind] = next
-	m.writeState(levelsFile, m.fxLevels)
+	m.saveFXLocked()
 	if renocore.IsSustainFX(kind) {
 		// A shake and a lamp are not one-shots: raising one off zero starts
 		// its driver, walking it restarts one, and dropping it to zero stops
@@ -651,7 +688,7 @@ func (m *Mod) parkFXLocked() []module.Effect {
 			Argv: append([]string{m.exe, "reno", "obs", "cam"}, renocore.CamFX{Kind: kind, Level: 0}.Args()...),
 		})
 	}
-	m.writeState(levelsFile, m.fxLevels)
+	m.saveFXLocked()
 	m.touchEverySustainLocked()
 	return effects
 }
@@ -673,7 +710,7 @@ func (m *Mod) unparkFXLocked() []module.Effect {
 		}
 	}
 	m.fxParked = nil
-	m.writeState(levelsFile, m.fxLevels)
+	m.saveFXLocked()
 	return m.reassertFXLocked()
 }
 
@@ -867,7 +904,7 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 		return
 	}
 	m.fxLevels[fx.Kind] = fx.Level
-	m.writeState(levelsFile, m.fxLevels)
+	m.saveFXLocked()
 	// a hand-run `khudson reno obs cam jitter 5` is a one-shot span, but it
 	// is also someone asking for the effect: pick it up and drive it
 	m.touchSustainLocked(fx.Kind)

@@ -1,6 +1,7 @@
 package dock
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -756,5 +757,43 @@ func TestRenoPadDpadTooShortFallsBackToAButton(t *testing.T) {
 		if strings.HasSuffix(h.pressKey, ":tl") || strings.HasSuffix(h.pressKey, ":br") {
 			t.Errorf("a corner registered on a tile too short to place it: %+v", h.area)
 		}
+	}
+}
+
+// A pad one row too short drops its LAST band, which is the FX band. That
+// used to happen silently: the controls were published, rendered nowhere,
+// and the only report was the person looking at the glass asking where they
+// went. A dropped band costs at least three rows, so one of them names it.
+func TestRenoPadSaysWhenABandDidNotFit(t *testing.T) {
+	mk := func(sec, key string, mh int) module.Row {
+		return module.Row{Kind: module.RowPad, Section: sec, Key: key, Text: key, MinHeight: mh}
+	}
+	rows := []module.Row{mk("transport", "rec", 5)}
+	for i := range 6 {
+		rows = append(rows, mk("mic", fmt.Sprintf("m%d", i), 0))
+	}
+	for i := range 6 {
+		rows = append(rows, mk("fx", fmt.Sprintf("f%d", i), 4))
+	}
+	m := renoModel(60, 10) // deliberately too short to hold all three
+	m.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m.widgetData["reno-presenter"] = module.Data{Title: "reno rec", Rows: rows}
+	m.invalidateHome("reno-presenter")
+	body := ansi.Strip(m.View().Content)
+
+	if strings.Contains(body, "f0") {
+		t.Fatalf("this geometry was supposed to drop the fx band:\n%s", body)
+	}
+	if !strings.Contains(body, "no room for") || !strings.Contains(body, "fx") {
+		t.Errorf("a dropped band must name itself:\n%s", body)
+	}
+
+	// and with room, no notice at all
+	m2 := renoModel(196, 24)
+	m2.cfg.Widgets["reno-presenter"] = recorderWidget("reno-presenter")
+	m2.widgetData["reno-presenter"] = module.Data{Title: "reno rec", Rows: rows}
+	m2.invalidateHome("reno-presenter")
+	if body := ansi.Strip(m2.View().Content); strings.Contains(body, "no room for") {
+		t.Errorf("nothing was dropped, so nothing to say:\n%s", body)
 	}
 }

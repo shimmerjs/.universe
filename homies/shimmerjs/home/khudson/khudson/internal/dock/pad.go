@@ -160,15 +160,28 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 		rows[i] = (len(b.tiles) + perRow - 1) / perRow
 	}
 	// bands that cannot hold a frame are not buttons: drop the tail rather
-	// than draw rubble. With every band framed before any band is fattened
-	// this only bites on glass far shorter than the Edge's.
+	// than draw rubble.
+	//
+	// And SAY SO. This used to drop silently, so a pad one row too short
+	// simply had no FX band and no way to find out -- the controls were
+	// published, rendered nowhere, and reported as missing by the person
+	// looking at the glass. A dropped band costs at least three rows, so
+	// spending one of them naming what went is always affordable.
 	framed := 0
 	for _, r := range rows {
 		framed += r * padTileFloorH
 	}
-	for len(bands) > 0 && framed > gridH {
-		framed -= rows[len(rows)-1] * padTileFloorH
-		bands, rows = bands[:len(bands)-1], rows[:len(rows)-1]
+	var dropped []string
+	for len(bands) > 0 && framed > gridH-len(dropped) {
+		last := len(bands) - 1
+		framed -= rows[last] * padTileFloorH
+		if name := bands[last].label; name != "" {
+			dropped = append([]string{name}, dropped...)
+		}
+		bands, rows = bands[:last], rows[:last]
+	}
+	if len(dropped) > 0 {
+		gridH--
 	}
 	if len(bands) == 0 {
 		m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
@@ -243,6 +256,10 @@ func (m *model) renderPad(id string, header []string, tiles []module.Row, rr rec
 			lines = append(lines, "")
 			y++
 		}
+	}
+	if len(dropped) > 0 {
+		lines = append(lines, fitCellPad(chromeWarn.Render(
+			" no room for: "+strings.Join(dropped, ", ")), rr.w))
 	}
 	// the pad owns every cell it drew; taps in the remainder die here
 	m.hits = append(m.hits, hitRegion{area: rr, do: consumeTap})
