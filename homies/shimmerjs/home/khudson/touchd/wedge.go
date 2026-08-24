@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -40,11 +43,19 @@ const (
 	wedgeFresh = 2 * wedgePoll
 )
 
-// wedgeWatch reports input-delivery stalls. The clock and the idle probe are
-// injected so the policy tests without either.
+// secureInputPIDRE pulls the holder out of IORegistry's IOConsoleUsers
+// dictionary. macOS adds this key to the console session ONLY while some
+// process has secure event input enabled, so its presence is the fact and
+// its absence is the other fact.
+var secureInputPIDRE = regexp.MustCompile(`"kCGSSessionSecureInputPID"\s*=\s*(\d+)`)
+
+// wedgeWatch reports input-delivery stalls. The clock, the idle probe and
+// the console read are injected so the policy tests without any of them.
 type wedgeWatch struct {
 	rate *inputRate
 	idle func() time.Duration
+	// console reads the IOConsoleUsers dictionary; injected for tests.
+	console func() string
 
 	prev     int64     // last total seen, to spot new reports
 	lastSeen time.Time // last tick that saw the total move
@@ -52,7 +63,43 @@ type wedgeWatch struct {
 }
 
 func newWedgeWatch(rate *inputRate) *wedgeWatch {
-	return &wedgeWatch{rate: rate, idle: osIdle}
+	return &wedgeWatch{rate: rate, idle: osIdle, console: readConsoleUsers}
+}
+
+// readConsoleUsers returns the IOConsoleUsers dictionary, or "" if it
+// cannot be read. Shelling out is fine HERE and nowhere near the poll: this
+// runs once, at onset, on an event that happens a few times a month.
+func readConsoleUsers() string {
+	out, err := exec.Command("ioreg", "-l", "-w", "0", "-d", "1").Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// secureInput names the process holding secure event input, which is the
+// first thing to know about an input stall that followed a permission
+// prompt. Secure input is how a password field or an authorization dialog
+// takes the keyboard, and a holder that never gives it back is a documented
+// way to lose input system-wide while the hardware keeps sending -- exactly
+// this wedge's shape. macOS publishes the holder only while it is held, so
+// this has to be sampled AT onset; it cannot be recovered afterwards, which
+// is why every previous episode could not answer the question.
+func (w *wedgeWatch) secureInput() string {
+	if w.console == nil {
+		return "secure input: unknown"
+	}
+	m := secureInputPIDRE.FindStringSubmatch(w.console())
+	if m == nil {
+		return "secure input: not held"
+	}
+	name := "?"
+	if out, err := exec.Command("ps", "-o", "comm=", "-p", m[1]).Output(); err == nil {
+		if s := strings.TrimSpace(string(out)); s != "" {
+			name = s
+		}
+	}
+	return fmt.Sprintf("secure input HELD by pid %s (%s)", m[1], name)
 }
 
 // tick advances the watch one poll and returns the line to log, or "".
@@ -77,8 +124,8 @@ func (w *wedgeWatch) tick(now time.Time) string {
 	if w.onset.IsZero() {
 		if sending && idle >= wedgeIdle {
 			w.onset = now
-			return fmt.Sprintf("WEDGE: hid reports arriving but the event pipeline reports %s idle -- input delivery is stalled",
-				idle.Round(time.Second))
+			return fmt.Sprintf("WEDGE: hid reports arriving but the event pipeline reports %s idle -- input delivery is stalled; %s",
+				idle.Round(time.Second), w.secureInput())
 		}
 		return ""
 	}

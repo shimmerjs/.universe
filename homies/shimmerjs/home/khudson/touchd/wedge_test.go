@@ -17,7 +17,7 @@ type wedgeFixture struct {
 func newWedgeFixture() *wedgeFixture {
 	r := newInputRate()
 	f := &wedgeFixture{seen: r.source("moonlander"), now: time.Unix(1700000000, 0)}
-	f.w = &wedgeWatch{rate: r, idle: func() time.Duration { return f.idle }}
+	f.w = &wedgeWatch{rate: r, idle: func() time.Duration { return f.idle }, console: func() string { return "" }}
 	return f
 }
 
@@ -123,5 +123,38 @@ func TestWedgeSurvivesACounterDrain(t *testing.T) {
 	// register as new, or the watch goes blind for the rest of the minute
 	if line := f.step(2); !strings.Contains(line, "WEDGE:") {
 		t.Errorf("reports after a drain must still count: %q", line)
+	}
+}
+
+// Secure event input is how a password field or an authorization dialog
+// takes the keyboard, and a holder that never releases it loses input
+// system-wide while the hardware keeps sending. macOS publishes the holder
+// only WHILE it is held, so the onset line has to carry it -- it cannot be
+// recovered from the log afterwards, which is why no previous episode could
+// answer the question.
+func TestWedgeOnsetReportsSecureInputHolder(t *testing.T) {
+	held := `+-o Root  <class IORegistryEntry>
+    "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kCGSSessionSecureInputPID"=4242,"kCGSSessionUserNameKey"="shimmerjs"})`
+	free := `+-o Root  <class IORegistryEntry>
+    "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kCGSSessionUserNameKey"="shimmerjs"})`
+
+	f := newWedgeFixture()
+	f.w.console = func() string { return held }
+	f.idle = 0
+	f.step(3)
+	f.idle = 10 * time.Second
+	if line := f.step(3); !strings.Contains(line, "secure input HELD by pid 4242") {
+		t.Errorf("onset must name the secure-input holder: %q", line)
+	}
+
+	// and says so plainly when nobody holds it, so the absence is recorded
+	// as an observation rather than read as a missing field
+	g := newWedgeFixture()
+	g.w.console = func() string { return free }
+	g.idle = 0
+	g.step(3)
+	g.idle = 10 * time.Second
+	if line := g.step(3); !strings.Contains(line, "secure input: not held") {
+		t.Errorf("onset must record the absence: %q", line)
 	}
 }
