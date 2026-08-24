@@ -47,14 +47,17 @@ purple drank is a colour MULTIPLY, not a hue rotation. a rotation moves whatever
 
 the CLI seam and the tiles run one core, so a hand-run `khudson reno obs cam purple 4` is adopted from its own note and lights the pad.
 
-## queued, in order
+## queued -- everything left is a USER CALL
 
-1. **the OBS crash-recovery wedge.** a crashed OBS comes back sitting on the safe-mode dialog, so obs-websocket never binds, and `reno obs ensure` burns its full two minutes and then blames "a first-launch Gatekeeper or permission dialog may be waiting". the actual unwedge is deleting `~/Library/Application Support/obs-studio/.sentinel/run_*` before launching -- OBS leaves the sentinel behind on an unclean exit and prompts on the next start. hit live this session: OBS died once, unreproducibly, five minutes after a take, and the same filter requests that were in flight then ran clean twice afterwards. at minimum ensure should name the crash dialog it is actually blocked on. clearing the sentinel on the launch path is the part worth arguing about, because it silently declines OBS's own safe-mode offer.
-2. **the levels are never re-asserted.** khudson remembers each level across a bus restart and OBS holds the filters, but nothing reconciles the two. recovery deliberately does not push (a bus start must not reach out and change a camera nobody asked it to touch), which leaves arm as the honest place -- the same place the config converges. today a scene collection swapped under a running bus leaves every level tile lying.
-3. **CLI help drift.** `main.go` documents `reno obs standby`; the op is `arm`. the top-level `reno: need a verb` list omits `open-clip`, which the pad's clip tile fires. both are one-liners.
-4. **reno screenshots.** EXPLICITLY DEFERRED by the user 2026-08-21 ("go build everything but screenshot"), registered so it is not lost. a still-capture verb over `GetSourceScreenshot`. it diagnosed the black frame, it diagnosed the missing webcam, and it is how the pixelate no-op was caught -- three for three on the bugs that look fine from every readout.
-5. **what to do with the grid's slack.** about four blank rows at the bottom on a 196x24 glass. options in preference order: leave it, one blank row BETWEEN bands as separation, or give it to the transport. USER'S CALL after they see it. the FX band grew six tiles this session (three level pairs), so look again before deciding.
-6. **END RUN's representation.** parked BY THE USER until they have a better idea -- do not restyle it unasked. it shares `glyphStop` with the transport's STOP face, so two identically-shaped buttons sit adjacent doing different things. an unanswered proposal: STOP becomes `STOP TAKE`, END RUN gets its own glyph.
+items 1, 2 and 3 landed 2026-08-23 (`1a4e43d`, `c2a4106`). the crash wedge
+clears the sentinel on the launch path and names the safe-mode dialog when OBS
+is already sitting on one; the levels re-assert on arm and park when the camera
+goes away; the help names `arm` and `open-clip`. nothing is left in this queue
+that an agent should pick up unasked.
+
+1. **reno screenshots.** EXPLICITLY DEFERRED by the user 2026-08-21 ("go build everything but screenshot"), registered so it is not lost. a still-capture verb over `GetSourceScreenshot`. it diagnosed the black frame, it diagnosed the missing webcam, and it is how the pixelate no-op was caught -- three for three on the bugs that look fine from every readout.
+2. **what to do with the grid's slack.** about four blank rows at the bottom on a 196x24 glass. options in preference order: leave it, one blank row BETWEEN bands as separation, or give it to the transport. USER'S CALL after they see it. the FX band went from fourteen elements to eight when the d-pad landed, so look again before deciding.
+3. **END RUN's representation.** parked BY THE USER until they have a better idea -- do not restyle it unasked. it shares `glyphStop` with the transport's STOP face, so two identically-shaped buttons sit adjacent doing different things. an unanswered proposal: STOP becomes `STOP TAKE`, END RUN gets its own glyph.
 
 ## the OBS install is STILL in ~/Applications
 

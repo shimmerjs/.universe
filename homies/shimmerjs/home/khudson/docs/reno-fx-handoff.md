@@ -1,56 +1,135 @@
-# reno/obs handoff -- 2026-08-23
+# reno/obs handoff -- 2026-08-23, second pass
 
-the four items from the previous handoff all landed. this is what they became, what is verified and what is not, and what is left.
+the previous handoff's three open items and the devplan's first three queued
+ones all landed. what is left in the reno queue is three USER CALLS and
+nothing else.
 
 ## state
 
-committed on main, `2b9aa6e..deb3982`. `go build`, `go vet`, `go test -race ./...`, `gofmt -l`, and `nix build .#darwinConfigurations.aw-chainguard.system` all green -- the nix build runs the go suite in-sandbox (`doCheck = true`), so the tests are green twice over. the three khudson flake checks (glyphs, posture, bininstall) pass.
+committed on main, `1a4e43d` and `c2a4106`. `go build ./...`, `go vet ./...`,
+`gofmt -l`, `go test -race ./...` (all packages), `nix build
+.#darwinConfigurations.aw-chainguard.system`, and the khudson-glyphs and
+khudson-posture checks all exit 0. the nix build runs the go suite in-sandbox
+(`doCheck = true`), so the tests are green twice over.
 
-`nix flake check` does NOT pass, and did not before any of this: `nixosConfigurations.snake` fails to eval on `attribute 'buildDTBs' missing` from nixpkgs' `hardware/device-tree.nix`. verified pre-existing by stashing every uncommitted change and re-evaluating. it is a pinned-nixpkgs problem, not a config one.
+`nix flake check` still does NOT pass and still did not before any of this:
+`nixosConfigurations.snake` fails to eval on `attribute 'buildDTBs' missing`
+from nixpkgs' `hardware/device-tree.nix`. pinned-nixpkgs problem, not a config
+one.
 
-**nothing here has been run against live OBS.** everything below is verified by unit tests and by the build. the last session's work was verified on glass; this session's was not, and the difference matters most for the two items that touch OBS in ways nothing else does -- the sustained driver's process lifecycle and the browser source.
+**still nothing here has been run against live OBS.** the previous session's
+five glass items are all still owed, and this session added its own. every
+claim below is unit tests and the build.
 
 ## what landed
 
-**`khudson reno obs quit`** (`97d796c`). one verb for what took four: close the run, stop the take, drop the hardware, quit OBS. the order is load-bearing -- the take stops before the release (releasing mid-recording writes a clip of disabled sources) and the socket closes before the AppleEvent (a quit racing a request in flight is how a clip comes out half written). graceful quit only, never a signal, for the crash-sentinel reason. `ax.BundleRunning` is the confirmation half: the event returns once delivered, so the verb watches up to `ObsQuitGrace` (15s) and reports "still up (a dialog may be waiting)" rather than claiming a quit it did not see.
+**the crash wedge** (`1a4e43d`). OBS drops a `.sentinel/run_<uuid>` marker per
+live instance and deletes it on a clean exit, so a marker with no OBS running
+is a dead instance's -- and the next launch answers it with the safe-mode
+dialog, which binds no websocket. the launch path clears those markers, which
+DECLINES safe mode on khudson's behalf and says so on stderr. only the launch
+path, and only after `running()` said no instance is up, so a hand-started OBS
+still gets the offer.
 
-`quit-begin` is the ctl handshake, shaped like `apply-begin`. it closes the run and reports the take still owing a stop note, but emits neither the release nor the record-stop that `stop` emits -- the verb does both itself, and a second pair of children would race it to an OBS already leaving. `Release`'s body moved to `releaseHardware` so the two paths cannot drift.
+the other half is the OBS already sitting on the dialog, where khudson is not
+the one launching. `safeModeWaiting` reads the head of the newest OBS log for
+"Crash or unclean shutdown detected" with no later `[Safe Mode]` line, and the
+running-but-dead-socket refusal names the dialog instead of talking about a
+config that binds at launch. both marker strings are from this machine's own
+logs, not from docs.
 
-**sustained-effect driver** (`1c76626`). the jitter off-latency is fixed, and this is the shape the lamp went on. the old driver re-fired a one-shot per chunk, paying a process spawn and a websocket handshake between every batch, which is why a chunk had to be 3s and why "off" took 3s. now it is one long-lived verb per effect -- `reno obs cam <kind> <level> --sustain` -- holding one socket and its own phase. reading the pose ONCE is what frees a chunk from covering whole cycles, so `FXSustainChunk` is 250ms and that is the worst an off can cost.
+**the canvas goes back** (`c2a4106`). the first resize stashes what OBS had in
+`<state>/reno/canvas.json` -- only the first, since every later apply is reno
+resizing its own canvas -- and `restoreCanvas` puts it back from
+`releaseHardware`, so release and quit both do it. the stash is forgotten
+unconditionally, restore or no: a stash kept after a failure is an old
+session's frame waiting to land on top of a later one.
 
-an effect is three plans: `SustainSetup`, `SustainChunk` (carrying the phase it ended at, so the seam is invisible), `SustainHome`. the supervisor stops a driver by CLOSING ITS STDIN -- a stop needing neither a signal delivered nor a supervisor alive to deliver it, so a SIGKILLed bus still leaves an orphan putting the camera back. `sustainLifetime` (30m) is the backstop under that.
+**the levels re-assert on arm** (`c2a4106`). khudson owns the magnitude, OBS
+owns the filter or the pose it produced, and nothing kept them married -- a
+scene collection swapped under a running bus leaves every tile lying. `arm-note
+ok` now emits the one-shots for the filter levels and reconciles the drivers.
+a sustained kind gets no one-shot: its driver owns the camera while it runs,
+and `touchEverySustainLocked` starts one only where the level is up and nothing
+is driving it.
 
-sustained levels no longer survive a bus restart, deliberately: a pixelate does because its filter is still on the camera, a shake does not because its driver put the pose back on the way out.
+**the camera going away parks them** (`c2a4106`). a stopped driver put its own
+pose back, but a filter is state: hiding the webcam left the lamp's tint
+sitting on a source nobody was driving. `parkFXLocked` switches those off and
+zeroes the levels -- the tiles read off, because there is no tint on a camera
+that is not there -- and `unparkFXLocked` brings them back when a camera is
+staged again. the ordering is what makes it work: filters off BEFORE the item
+goes (with the webcam unset the apply removes the input entirely), and back on
+AFTER the placement or apply that stages it, which is why the unset path
+unparks off `apply-note ok` rather than off the tap. a level tapped while
+parked outranks the parked one.
 
-**lava** (`1c76626`, `deb3982`). the fourth level effect, driver-driven as the last handoff's second option. a slow hue swing either side of the camera's own colour on its own `color_filter_v2` (never purple's -- two independently levelled tiles sharing one filter would each overwrite the other). it oscillates rather than running round the wheel: a full rotation spends half its time with skin the colour of a bruise, and there is no graceful place to stop from the far side.
+fxParked is deliberately not persisted: a bus that restarted while the camera
+was off comes back with the effects off, which is what the pad says.
 
-`deb3982` is worth knowing about if you touch this. the driver's home does NOT disable the lamp's filter, because a level change stops one driver and starts another and a home that darkened it would flash the filter off and back on under every tap of the pair. level 0 fires the one-shot that disables it. a one-shot span still ends dark on its own, because nothing drives after one.
+**a scripted sustained effect no longer starts twice** (`c2a4106`). `cam jitter
+8` as a script step used to run its own 2s span and then get adopted and
+driven, with a driver spawn's stillness in the seam. run correlation is the
+signal -- only the bus's own executor issues one -- so a correlated sustained
+one-shot notes back and returns, and the driver does all of it. a hand-run one
+still runs its visible span. `adoptFXLevelLocked` now touches the supervisor
+even when the level did not move, because a step at the level already showing
+would otherwise do nothing at all.
 
-**d-pad** (`7b96a9f`). `module.RowDpad`: four presses in one tile, arranged where they point, sharing the stepper's renderer (`endsTile` / `registerEndsHits` draw two ends or four). the corner/size split is what makes four presses cover nine placements -- the d-pad slides at whatever size the camera has, a size pair grows or shrinks whichever corner it is in, both ends dim off a corner. `big` keeps a button. the FX band went from fourteen elements to eight.
+**bus tests stopped being able to write the real state root** (`c2a4106`).
+`TestMain` redirects `renoStateDir` package-wide. `paths.Resolve` reads `$HOME`
+not `XDG_STATE_HOME`, and the canvas stash found the trap the same way the
+lemmings page did -- it wrote `canvas.json` into
+`~/Library/Application Support/khudson/reno/` on the first test run.
 
-**lemmings** (`4f40d88`). a `browser_source` overlay on the camera's box. the page is `go:embed`ed from the source tree nix builds -- so it can never be a version behind the code that places it -- written to `<state>/reno/lemmings.html` and loaded by LOCAL FILE, never a url. it is written only when an apply wants one, and skipped when the file on disk is already that exact page (the source points at that path; rewriting under a live source blinks the overlay out).
+## what to check on glass
 
-`PlanInput.Overlay` names the item an input takes its BOX from, so the two coincide over a camera of any aspect while the scale still comes from the overlay's own page. it stacks last (bottom-first), and goes down with no visible camera. on the pad it is a plain toggle, not a level: the page animates itself, so there is no magnitude khudson holds and a stepper would be reporting a number it invented.
+the previous session's five are unchanged and still first:
 
-## what to check on glass first
+1. the lemmings page renders at all (obs-browser settings keys are from the
+   documented schema, not probed).
+2. the driver's stdin stop, with a batch in flight.
+3. 250ms chunks against real OBS.
+4. the d-pad's hit regions under a thumb.
+5. `reno obs quit`'s AppleEvent, which needs the one-time Automation grant.
 
-in rough order of how likely they are to be wrong.
+new, from this session:
 
-1. **the lemmings page renders at all.** obs-browser's settings keys are from its documented schema, NOT verified against this OBS the way the filter schemas were (`GetSourceFilterDefaultSettings`). if the overlay comes up blank or opaque, suspect `is_local_file`/`local_file` naming and the `css` key first. the transparency assertion in particular is a guess about obs-browser's default CSS being overridable this way.
-2. **the driver's stdin stop.** the whole lifecycle is unit-tested against a `sh -c 'cat >/dev/null'` child, which proves the supervisor and not the verb. what is untested is the verb's own `sustainStop` reading stdin to EOF while a batch is in flight.
-3. **250ms chunks against real OBS.** the claim is that a held socket makes the inter-chunk gap one loopback round trip. if there is a visible stutter at 4 chunks/second, the number to move is `FXSustainChunk`, and the trade is back to off-latency.
-4. **the d-pad's hit regions under a thumb.** the geometry is unit-tested; four cells wide by half a tile tall is small, and only glass says whether it is aimable.
-5. **`reno obs quit`'s AppleEvent.** it needs the one-time Automation grant (khudson -> OBS). the first run will prompt, or fail with the error naming the grant.
+6. **the sentinel clear against a real crashed OBS.** kill OBS with `kill -9`,
+   then `reno obs ensure`, and watch it come up without a dialog. the stderr
+   line naming the decline is the confirmation.
+7. **the canvas restore.** apply a multi-screen config (which resizes), then
+   END RUN, then look at OBS's video settings. `canvas.json` should be gone.
+8. **arm re-asserting into a swapped scene collection.** swap the collection
+   under a running bus, tap ARM, and the pixelate/purple levels the tiles show
+   should be back on the camera.
+9. **the park.** with purple up, tap hide; the filter should go off, not just
+   out of view. tap a placement and it should come back at the same level.
 
 ## still open
 
-- **the canvas is not restored.** `fitCanvas` writes OBS's base+output resolution and never puts it back, so switching to a non-reno scene leaves a canvas shaped for reno's. untouched this session. `release` is still the obvious place if you want it.
-- **the lamp's filter survives the camera going away.** turning the webcam off stops the driver but does not disable the filter (only level 0 does). nothing renders, since the cam item is disabled, and the tint returns with the camera at the level the tile still reads -- consistent, but it is a filter sitting on a source with no driver.
-- **a script step's sustained effect double-starts.** `cam jitter 8` as a script step runs its one-shot span, then the module adopts the level off the fx-note and starts a driver. home and phase 0 are the same state by construction so there is no visible jump, but there is a driver spawn's worth of stillness between them.
+- **the lamp's filter and a camera that never comes back.** parking handles the
+  webcam going to off or unset. a camera that dies at the DEVICE level, with
+  the config still naming it, still leaves a filter on a dead source. nothing
+  reconciles that, and it is not clear anything should.
+- **a level tapped while the camera is away** fires a one-shot at a camera that
+  is not there, which notes an error. the level still lands, so the tile is
+  honest and the unpark picks it up, but the pad shows a failure for something
+  that was not wrong.
 
 ## traps (still true)
 
 - **`git add` before any nix build.** the flake only sees tracked files.
-- **the deployed daemon re-applies over you.** until a switch lands, `khudson reno config ...` makes the running old-binary daemon run its own apply over yours. apply twice, or switch first.
-- **obs readback fields lie.** `sceneItemTransform.scaleX` reads stale after a bounds change; trust a screenshot over the transform readback when they disagree.
-- **tests must not resolve the real state root.** `paths.Resolve` reads `$HOME`, not `XDG_STATE_HOME`. `renoStateDir` is the seam; a test that skips it writes into `~/Library/Application Support/khudson` (this cost one round trip already).
+- **the deployed daemon re-applies over you.** until a switch lands, `khudson
+  reno config ...` makes the running old-binary daemon run its own apply over
+  yours. apply twice, or switch first.
+- **obs readback fields lie.** `sceneItemTransform.scaleX` reads stale after a
+  bounds change; trust a screenshot over the transform readback.
+- **tests must not resolve the real state root.** now enforced package-wide in
+  `internal/bus` by `TestMain`; the module tests get it from `testMod`'s
+  stateDir. anything new that resolves paths itself is back in the trap.
+- **another session may be in this repo.** this one ran alongside a second
+  agent working `internal/hudlaunch` and `internal/cgdisplay`, which committed
+  broadly twice and swept part of this work into `0faf2e5` -- the park tests in
+  `adhoc_test.go` are in a commit whose message is about display selectors.
+  path-scope every `git add`.
