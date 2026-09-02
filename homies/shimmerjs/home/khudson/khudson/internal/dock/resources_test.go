@@ -291,8 +291,12 @@ func TestResourcesBloomDoubleTapConverts(t *testing.T) {
 		Regions: []config.Region{{Widget: "res", Edge: "fill"}}}
 	m.View()
 
-	// fast double tap: converts pre-bloom, no overlay ever shows
-	if !m.resolveTap(10, 5) || !m.resolveTap(10, 5) {
+	// fast double tap: converts pre-bloom, no overlay ever shows. Bound
+	// separately because they are two taps, not one condition twice --
+	// inline, the second only fires when the first passed.
+	first := m.resolveTap(10, 5)
+	second := m.resolveTap(10, 5)
+	if !first || !second {
 		t.Fatal("card taps not consumed")
 	}
 	if m.overlay != nil {
