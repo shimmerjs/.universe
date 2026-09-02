@@ -274,7 +274,7 @@ func TestStackBoxesDellOverEdge(t *testing.T) {
 	if !ok || cw != 2560 || ch != 2200 {
 		t.Fatalf("canvas = %vx%v ok=%v, want 2560x2200", cw, ch, ok)
 	}
-	got := StackBoxes(cw, ch, 0, []float64{3840.0 / 2160, 2560.0 / 720})
+	got := StackBoxes(cw, ch, []float64{3840.0 / 2160, 2560.0 / 720})
 	if len(got) != 2 {
 		t.Fatalf("boxes = %+v", got)
 	}
@@ -309,15 +309,15 @@ func TestStackBoxesDellOverEdge(t *testing.T) {
 func TestStackBoxesSingleSlot(t *testing.T) {
 	// one row has nothing to be held apart from, so it takes no gutter and
 	// a screen matching the canvas fills it exactly, no bars anywhere
-	boxEq(t, "dell alone", StackBoxes(3840, 2160, 0, []float64{3840.0 / 2160})[0], 0, 0, 3840, 2160)
+	boxEq(t, "dell alone", StackBoxes(3840, 2160, []float64{3840.0 / 2160})[0], 0, 0, 3840, 2160)
 	// a lone wide strip spans the width and centers vertically
-	boxEq(t, "edge alone", StackBoxes(3840, 2160, 0, []float64{2560.0 / 720})[0], 0, 540, 3840, 1080)
+	boxEq(t, "edge alone", StackBoxes(3840, 2160, []float64{2560.0 / 720})[0], 0, 540, 3840, 1080)
 }
 
 func TestStackBoxesWidthBound(t *testing.T) {
 	// two tall slots: width binds instead of height, so the gutter costs
 	// nothing here and the block centers vertically rather than overflowing
-	got := StackBoxes(1000, 4000, 0, []float64{1, 1})
+	got := StackBoxes(1000, 4000, []float64{1, 1})
 	gutter := math.Round(1000 * StackGutterFrac)
 	boxEq(t, "top", got[0], 0, (4000-2000-gutter)/2, 1000, 1000)
 	boxEq(t, "bottom", got[1], 0, (4000-2000-gutter)/2+1000+gutter, 1000, 1000)
@@ -329,14 +329,14 @@ func TestStackBoxesWidthBound(t *testing.T) {
 func TestStackBoxesUnknownAspect(t *testing.T) {
 	// a source not reporting a size falls back to the canvas aspect rather
 	// than dividing by zero or collapsing the row
-	got := StackBoxes(1920, 1080, 0, []float64{0, 0})
+	got := StackBoxes(1920, 1080, []float64{0, 0})
 	if len(got) != 2 || got[0].BoundsH <= 0 || got[0].BoundsH != got[1].BoundsH {
 		t.Fatalf("unknown aspects = %+v", got)
 	}
 	if got[0].BoundsW/got[0].BoundsH-1920.0/1080 > 0.01 {
 		t.Errorf("fallback row must be canvas-shaped: %+v", got[0])
 	}
-	if StackBoxes(1920, 1080, 0, nil) != nil {
+	if StackBoxes(1920, 1080, nil) != nil {
 		t.Error("no slots plans no boxes")
 	}
 }
@@ -552,44 +552,4 @@ func TestPlanDedupesOneDisplaySelectedTwice(t *testing.T) {
 	if len(screens) != 2 {
 		t.Errorf("two crops of one display built %d captures, want 2", len(screens))
 	}
-}
-
-// One screen sized to the canvas leaves the webcam nowhere to go but on top
-// of the picture, and the Edge is a strip of small text -- a corner PiP over
-// it covers the thing being demonstrated. A single-screen canvas gets a band
-// below, and the band is solved so a plain corner preset clears the picture
-// by exactly the margin it keeps from every other edge.
-func TestCamBandKeepsTheCamOffASingleScreen(t *testing.T) {
-	const screenH = 720.0
-	band := CamBand(screenH)
-	if band != 240 {
-		t.Errorf("band for a 720 strip = %v, want 240", band)
-	}
-	canvasW, canvasH := 2560.0, screenH+band
-
-	// the screen keeps the top of the canvas, not the middle of it
-	box := StackBoxes(canvasW, canvasH, band, []float64{2560.0 / 720})[0]
-	boxEq(t, "edge over a band", box, 0, 0, 2560, 720)
-
-	// and a plain bottom corner lands entirely below it
-	for _, preset := range []string{"bl", "br"} {
-		cam := CamTransform(canvasW, canvasH, preset, 1920, 1080)
-		if cam.Y < screenH {
-			t.Errorf("%s starts at y=%v, over a picture ending at %v", preset, cam.Y, screenH)
-		}
-		if gap := cam.Y - screenH; gap != CamPad {
-			t.Errorf("%s clears the picture by %v, want the usual %v margin", preset, gap, CamPad)
-		}
-		if bottom := cam.Y + cam.BoundsH; bottom > canvasH {
-			t.Errorf("%s runs off the canvas: %v > %v", preset, bottom, canvasH)
-		}
-	}
-
-	// the take-over-the-frame presets still overlay, which is what they are
-	if cam := CamTransform(canvasW, canvasH, "big", 1920, 1080); cam.Y >= screenH {
-		t.Errorf("big must still cover the picture, got y=%v", cam.Y)
-	}
-
-	// no band, no reservation: the old behaviour is exactly preserved
-	boxEq(t, "no band", StackBoxes(2560, 720, 0, []float64{2560.0 / 720})[0], 0, 0, 2560, 720)
 }

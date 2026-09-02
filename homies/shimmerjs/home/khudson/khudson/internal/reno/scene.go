@@ -634,41 +634,6 @@ func EffectiveSize(srcW, srcH int, region *Region) (int, int) {
 // A sixty-fourth lands on whole pixels for every canvas width this records.
 const StackGutterFrac = 1.0 / 64
 
-// The plain corner preset's share of the canvas, and the margin every
-// preset keeps from the edge. Hoisted out of CamTransform because CamBand
-// has to solve for a canvas height that leaves this exact box clear of the
-// picture.
-const (
-	CamPipFrac = 0.2
-	CamPad     = 24.0
-)
-
-// CamBand is how much taller a SINGLE-screen canvas gets so the webcam has
-// somewhere to sit that is not on top of the picture. The Edge is a strip
-// of small text; a corner PiP over it covers the thing being demonstrated,
-// and a canvas sized to exactly the screen leaves nowhere else to put it.
-//
-// The height is solved, not chosen. A plain corner preset takes CamPipFrac
-// of the canvas and keeps CamPad from the edge, and the canvas is the screen
-// plus this band, so the band that puts the bottom of the picture exactly
-// CamPad above the cam is:
-//
-//	band = (CamPipFrac*screenH + 2*CamPad) / (1 - CamPipFrac)
-//
-// For the Edge's 720 that is 240, a 2560x960 canvas with the cam at y=744 --
-// clear of the strip by the same margin it keeps from every other edge.
-//
-// Only the plain corners are fitted. A "+" preset is a quarter of the canvas
-// AREA and big is nine tenths, so making the band hold either would grow the
-// canvas past twice the screen; those two are the take-over-the-frame
-// presets and they still overlay, which is what they are for.
-func CamBand(screenH float64) float64 {
-	if screenH <= 0 {
-		return 0
-	}
-	return math.Round((CamPipFrac*screenH + 2*CamPad) / (1 - CamPipFrac))
-}
-
 // StackCanvas is the canvas a stack of screens wants: wide enough that
 // nothing has to be UPSCALED, and exactly tall enough to hold the rows and
 // their gutters. sizes are the screens' effective pixel dimensions in slot
@@ -714,16 +679,8 @@ func StackCanvas(sizes [][2]int) (w, h float64, ok bool) {
 // cropped to make it fit -- a stack that cannot use the full width leaves
 // bars at the sides, which is the honest rendering of a tall composition
 // in a wide frame.
-// band is height reserved at the BOTTOM of the canvas that the screens must
-// not enter -- the webcam's, see CamBand. The stack lays out in what is
-// left, so the picture sits above the band rather than centering itself
-// through it.
-func StackBoxes(canvasW, canvasH, band float64, aspects []float64) []Transform {
+func StackBoxes(canvasW, canvasH float64, aspects []float64) []Transform {
 	if len(aspects) == 0 || canvasW <= 0 || canvasH <= 0 {
-		return nil
-	}
-	canvasH = max(canvasH-band, 0)
-	if canvasH <= 0 {
 		return nil
 	}
 	inv := make([]float64, len(aspects))
@@ -786,8 +743,7 @@ func ItemTransform(box Transform, srcW, srcH int, region *Region) (Transform, bo
 // the bottom edge it is named after. Zero means the size is unknown and
 // the box falls back to the canvas's own proportions.
 func CamTransform(canvasW, canvasH float64, preset string, srcW, srcH int) Transform {
-	const quarterFrac, bigFrac = 0.5, 0.9
-	const pipFrac, pad = CamPipFrac, CamPad
+	const pipFrac, quarterFrac, bigFrac, pad = 0.2, 0.5, 0.9, 24.0
 	// box sizes a w x h that fits frac of the canvas and keeps the camera's
 	// aspect, so the bounds are the picture rather than a rect around it
 	box := func(frac float64) (float64, float64) {

@@ -475,7 +475,6 @@ func fitCanvas(obs ObsTransport, items []placedItem, env *renocore.ObsEnv) error
 		// rather than inventing a frame around a dead capture
 		return nil
 	}
-	h += camBand(items)
 	if w == env.CanvasW && h == env.CanvasH {
 		return nil
 	}
@@ -579,33 +578,6 @@ func restoreCanvas(obs ObsTransport) (string, error) {
 // screenBoxes lays every screen slot out over the canvas as a stacked row.
 // Slot count comes from the plan rather than the item count so a partial
 // apply cannot silently renumber the stack.
-// camBand is the canvas height held back for the webcam, and it is held
-// back only for a SINGLE screen: a stacked composition already has gutters
-// and letterboxing the cam can sit in, where one screen sized to the canvas
-// leaves nowhere but on top of the picture.
-//
-// It does NOT depend on which preset is set. A canvas that resized under
-// every tap of the d-pad would move the picture out from under the thing
-// being demonstrated, which is the problem this is solving.
-func camBand(items []placedItem) float64 {
-	screens, screenH := 0, 0.0
-	placed := false
-	for _, it := range items {
-		switch {
-		case it.in.Slots > 0:
-			screens++
-			_, h := it.layoutSize()
-			screenH = float64(h)
-		case it.in.Preset != "" && it.in.Enabled && it.in.Name == renocore.CamInput:
-			placed = true
-		}
-	}
-	if screens != 1 || !placed || screenH <= 0 {
-		return 0
-	}
-	return renocore.CamBand(screenH)
-}
-
 func screenBoxes(items []placedItem, env renocore.ObsEnv) []renocore.Transform {
 	slots := 0
 	for _, it := range items {
@@ -625,7 +597,7 @@ func screenBoxes(items []placedItem, env renocore.ObsEnv) []renocore.Transform {
 			aspects[it.in.Slot] = float64(w) / float64(h)
 		}
 	}
-	return renocore.StackBoxes(env.CanvasW, env.CanvasH, camBand(items), aspects)
+	return renocore.StackBoxes(env.CanvasW, env.CanvasH, aspects)
 }
 
 // applyTransform positions one placed item: webcam presets and screen
