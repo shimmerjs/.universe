@@ -89,6 +89,11 @@ in
     };
   };
 
+  # Manual force collect, for when the weekly job is not the problem: it drops
+  # the build graph the keep-* hops pin and the dev caches the store is not
+  # responsible for. Dry-runs unless given --yes, self-elevates via sudo.
+  environment.systemPackages = [ gc.force ];
+
   networking = {
     hostName = hostname;
     computerName = hostname;

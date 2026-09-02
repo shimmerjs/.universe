@@ -236,6 +236,8 @@ let
     system = host.system;
     pkgs = nixpkgs.legacyPackages.${system};
     daemon = config.launchd.daemons.nix-gc-weekly or null;
+    forcePkg = lib.findFirst (p: (p.name or "") == "nix-gc-force") null
+      config.environment.systemPackages;
   in if daemon != null
     then { inherit system; name = "nix-gc-${hostname}";
            value = import ./nix-gc-check.nix {
@@ -243,6 +245,8 @@ let
              # from the rendered daemon, not a re-import: the check must run the
              # artifact the host actually schedules
              collect = builtins.head daemon.serviceConfig.ProgramArguments;
+             # likewise for the manual collector: the copy on the host's PATH
+             force = if forcePkg == null then "" else "${forcePkg}/bin/nix-gc-force";
              gcAutomatic = lib.boolToString config.nix.gc.automatic;
              daemonJson = builtins.toJSON daemon.serviceConfig;
            }; }

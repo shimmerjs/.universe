@@ -6,9 +6,12 @@
 #   - the daemon keeps the posture that makes failures visible, and the builtin
 #     nix-collect-garbage collector stays off.
 # Wired by mkchecks.nix into a `nix-gc-<host>` flake check.
+#   - the manual force collector shares that filter and keeps the properties
+#     that separate it from the weekly job.
 {
   pkgs,
   collect,
+  force,
   gcAutomatic,
   daemonJson,
 }:
@@ -20,7 +23,7 @@ pkgs.runCommandLocal "nix-gc-check"
       pkgs.gnugrep
       pkgs.jq
     ];
-    inherit collect gcAutomatic;
+    inherit collect force gcAutomatic;
     passAsFile = [ "daemonJson" ];
     inherit daemonJson;
   }
@@ -52,6 +55,27 @@ pkgs.runCommandLocal "nix-gc-check"
     grep -q '/Users/\*/.local/state/nix/profiles' "$collect" || {
       echo "FAIL: collect script does not prune user profiles by absolute path" >&2; exit 1; }
 
+    # 1c) the manual force collector. It must share the hazard filter (a force
+    #     run hits the same TCC wall), and keep the three properties that make
+    #     it a force run rather than a second weekly one: enumerate with the
+    #     keep-* hops off, feed the list over --stdin, and do nothing without
+    #     --yes. --stdin is load-bearing, not stylistic: the force list is
+    #     several MB of argv against a 1 MB kern.argmax, and `nix-store
+    #     --delete` given no path ARGUMENTS ignores stdin, deletes nothing and
+    #     exits 0 -- a silent no-op that reads as a clean run.
+    if [ -z "$force" ]; then
+      echo "FAIL: host schedules nix-gc-weekly but has no nix-gc-force on PATH" >&2; exit 1
+    fi
+    grep -q "$partition" "$force" || { echo "FAIL: $force does not invoke nix-gc-partition" >&2; exit 1; }
+    grep -q 'nix-store -q --requisites' "$force" || {
+      echo "FAIL: force script does not subtract the held-back closure" >&2; exit 1; }
+    grep -q -- '--print-dead' "$force" && grep -q 'keep-outputs false' "$force" || {
+      echo "FAIL: force script must enumerate dead paths with the keep-* hops off" >&2; exit 1; }
+    grep -q -- 'nix-store --delete --stdin' "$force" || {
+      echo "FAIL: force script must pass paths over --stdin (argv overflows, and no --stdin is a silent no-op)" >&2; exit 1; }
+    grep -q 'apply=0' "$force" && grep -q -- '--yes' "$force" || {
+      echo "FAIL: force script must default to a dry run" >&2; exit 1; }
+
     # 2) fixture store shapes.
     mkdir -p store
     # the poisoned shape: a real bundle directory (name carries spaces, as the
@@ -68,9 +92,12 @@ pkgs.runCommandLocal "nix-gc-check"
     # plain path, plus a regular FILE that merely ends in .app
     mkdir -p store/p-plain/bin
     touch store/p-plain/bin/thing.app
+    # a derivation: the force run's dead list is mostly these, and the filter
+    # short-circuits them without a find. Must still land in collectible.
+    touch store/p-thing.drv
 
     # p-gone raced away between enumerate and delete
-    for p in p-bundle p-nested p-farm p-plain p-gone; do
+    for p in p-bundle p-nested p-farm p-plain p-gone p-thing.drv; do
       echo "$PWD/store/$p"
     done > dead
 
@@ -85,7 +112,7 @@ pkgs.runCommandLocal "nix-gc-check"
       fi
     }
     check "held-back" held p-bundle p-nested
-    check "collectible" collect.txt p-farm p-plain p-gone
+    check "collectible" collect.txt p-farm p-plain p-gone p-thing.drv
 
     # 3) daemon posture: a silent failure is what made this bug invisible.
     d=$(cat "$daemonJsonPath")
