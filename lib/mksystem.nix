@@ -77,15 +77,21 @@ systemFn rec {
   ++ (lib.optionals loadHomeManager [
     home-manager.home-manager
     {
-      home-manager.useGlobalPkgs = true;
-      home-manager.useUserPackages = true;
-      # Propagate the same set of specialArgs to home-manager configuration.
-      home-manager.extraSpecialArgs = specialArgs;
-      home-manager.users.${user}.imports = [
-        hostConfig.home or { }
-        hostConfig.homie.home or { }
-        homieOSConfig.home or { }
-      ];
+      home-manager = {
+        useGlobalPkgs = true;
+        useUserPackages = true;
+        # External tooling occasionally replaces a home-manager symlink with a
+        # real file (e.g. a credential helper editing ~/.ssh/config). Move it
+        # aside instead of aborting the whole activation.
+        backupFileExtension = "hm-bak";
+        # Propagate the same set of specialArgs to home-manager configuration.
+        extraSpecialArgs = specialArgs;
+        users.${user}.imports = [
+          hostConfig.home or { }
+          hostConfig.homie.home or { }
+          homieOSConfig.home or { }
+        ];
+      };
     }
   ]);
 }
