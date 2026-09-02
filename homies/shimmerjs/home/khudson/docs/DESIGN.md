@@ -1,8 +1,9 @@
 # khudson design decisions
 
 Reconciled, load-bearing decisions for the Corsair Xeneon Edge touch HUD.
-Durable reference; current state and backlog live in `STATUS.md`. Deep
-gotchas and the verified-constraint history live in the author's memory
+Durable reference. Current state, backlog, devplans and handoffs are
+session work and live outside the repo. Deep gotchas and the
+verified-constraint history live in the author's memory
 (`edge-hud-project`).
 
 ## Shape
