@@ -398,7 +398,7 @@ func (m *model) registerEndsHits(id string, t module.Row, area rect) {
 	endW, _, ok := stepperEnds(area.w - 2)
 	want := endsWanted(t.Kind)
 	if !ok || want == 0 || len(t.Ends) != want || (t.Kind == module.RowDpad && area.h < 4) {
-		m.registerPadHit(id, t, area, id+":pad:"+t.Key)
+		m.registerPadHit(id, endsAsMenu(t), area, id+":pad:"+t.Key)
 		return
 	}
 	// x+1 clears the frame; the ends sit at the interior's two extremes
@@ -434,6 +434,31 @@ func (m *model) registerEndsHits(id string, t module.Row, area rect) {
 	// the element owns its whole frame: a tap on the label or the rules dies
 	// here rather than falling through to whatever is behind the pad
 	m.hits = append(m.hits, hitRegion{area: area, do: consumeTap})
+}
+
+// endsAsMenu is what a composite element carries into the plain-button
+// fallback: its directions as a menu, since the tile it was going to draw
+// them on is gone. A composite publishes its argv on the ENDS, so the row
+// itself has neither an act nor a menu, and registerPadHit lands such a row
+// on consumeTap -- a d-pad squeezed under its four lines rendered as a
+// button that swallowed every press in silence. A menu keeps the same four
+// destinations reachable in the one line the tile did get.
+//
+// Dim ends stay out. Dim is the end you are already on, and the fallback is
+// not the place to start offering moves the d-pad itself refuses.
+func endsAsMenu(t module.Row) module.Row {
+	if len(t.Act) > 0 || len(t.Menu) > 0 {
+		return t
+	}
+	var menu []module.Act
+	for _, e := range t.Ends {
+		if e.Dim || len(e.Argv) == 0 {
+			continue
+		}
+		menu = append(menu, module.Act{Label: e.Label, Argv: e.Argv})
+	}
+	t.Menu = menu
+	return t
 }
 
 // registerPadHit makes one button live. A tile carrying only a menu opens

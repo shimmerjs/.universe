@@ -2,6 +2,7 @@ package dock
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -757,6 +758,67 @@ func TestRenoPadDpadTooShortFallsBackToAButton(t *testing.T) {
 		if strings.HasSuffix(h.pressKey, ":tl") || strings.HasSuffix(h.pressKey, ":br") {
 			t.Errorf("a corner registered on a tile too short to place it: %+v", h.area)
 		}
+	}
+}
+
+// The fallback button still has to GO somewhere. A composite publishes its
+// argv on the ends, so the row itself carries neither an act nor a menu --
+// which used to leave the short tile on consumeTap, swallowing every press
+// with nothing anywhere saying why.
+func TestRenoPadShortDpadStillMoves(t *testing.T) {
+	ends := []module.End{
+		{Label: "tl", Key: "fx:move:tl", Argv: []string{"act", "move", "tl"}},
+		{Label: "tr", Key: "fx:move:tr", Argv: []string{"act", "move", "tr"}},
+		{Label: "bl", Key: "fx:move:bl", Argv: []string{"act", "move", "bl"}},
+		// the corner the camera is already in
+		{Label: "br", Key: "fx:move:br", Argv: []string{"act", "move", "br"}, Dim: true},
+	}
+	row := module.Row{Kind: module.RowDpad, Section: "fx", Key: "fx:move",
+		Text: "slide", Value: "br", Ends: ends}
+	m := renoModel(196, 24)
+	m.registerEndsHits("w", row, rect{0, 0, padTileMaxW, padTileFloorH})
+	h := m.hits[len(m.hits)-1]
+	if h.do == nil {
+		t.Fatal("the fallback registered no press at all")
+	}
+	h.do(1, 1)
+	if m.overlay == nil {
+		t.Fatal("a press on the short d-pad went nowhere")
+	}
+	var got []string
+	for _, it := range m.overlay.items {
+		got = append(got, it.label)
+	}
+	want := []string{"tl", "tr", "bl"}
+	if !slices.Equal(got, want) {
+		t.Errorf("menu = %v, want the live corners %v", got, want)
+	}
+}
+
+// A stepper degrades the same way, and its ends are the only thing on it.
+func TestRenoPadNarrowStepperStillSteps(t *testing.T) {
+	row := module.Row{Kind: module.RowStepper, Section: "fx", Key: "fx:size",
+		Text: "size", Ends: []module.End{
+			{Label: "-", Key: "fx:size:-", Argv: []string{"act", "size", "-"}},
+			{Label: "+", Key: "fx:size:+", Argv: []string{"act", "size", "+"}},
+		}}
+	m := renoModel(196, 24)
+	// too narrow to seat both caps and a legible middle
+	m.registerEndsHits("w", row, rect{0, 0, padTileMinW, padTileFloorH})
+	h := m.hits[len(m.hits)-1]
+	h.do(1, 1)
+	if m.overlay == nil || len(m.overlay.items) != 2 {
+		t.Fatalf("a narrow stepper lost both ends: %+v", m.overlay)
+	}
+}
+
+// A row that brought its own act keeps it: the ends are a fallback for a
+// tile that had nowhere else to go, not an override.
+func TestRenoPadFallbackLeavesAnActAlone(t *testing.T) {
+	row := module.Row{Kind: module.RowDpad, Key: "k", Act: []string{"act", "own"},
+		Ends: []module.End{{Label: "tl", Argv: []string{"act", "move", "tl"}}}}
+	if got := endsAsMenu(row); len(got.Menu) != 0 {
+		t.Errorf("menu = %+v, want the row's own act untouched", got.Menu)
 	}
 }
 
