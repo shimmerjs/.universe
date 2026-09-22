@@ -1,6 +1,6 @@
-#!/usr/bin/env bash
 # claude-statusline.sh -- a flat (non-powerline) control-center statusline.
-#                         Managed by ~/.universe.
+#                         Managed by ~/.universe; built by ./statusline.nix,
+#                         which supplies jq/git/coreutils on PATH.
 #
 # Tuned to how this account actually runs: heavy workflow/subagent fan-out, work
 # spread across many repos and worktrunk worktrees. The model name always shows
@@ -27,8 +27,6 @@
 # Tunables (env):
 #   STATUSLINE_LIVEWIN   seconds an agent counts as "live" after last write (default 25)
 
-export PATH="/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-
 JQ="$(command -v jq || true)"
 LIVEWIN="${STATUSLINE_LIVEWIN:-25}"
 
@@ -45,7 +43,6 @@ model_name="$(get '.model.display_name // .model.id // "Claude"')"
 # lower kebab-case the model display name, with a wink: opus -> opie, fable -> fabio
 model_disp="$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/opus/opie/; s/fable/fabio/')"
 [ -z "$model_disp" ] && model_disp="$model_name"
-session_id="$(get '.session_id // ""')"
 session_name="$(get '.session_name // empty')"
 
 # (khudson's claude-sessions spool is now module-owned: it is populated by
@@ -90,7 +87,7 @@ if [ "$in_git" -eq 1 ]; then
   esac
 else
   # not a git tree: fall back to a ~-relative cwd as the location
-  repo="${cwd/#$HOME/\~}"
+  repo="${cwd/#"$HOME"/\~}"
 fi
 
 now="$(date +%s)"

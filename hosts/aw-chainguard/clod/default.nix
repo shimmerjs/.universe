@@ -52,6 +52,8 @@ let
     cp -RL ${inputs.worktrunk}/plugins/worktrunk $out
     chmod -R u+w $out
   '';
+  # Main statusline (settings.statusLine); see ./statusline.nix.
+  statusline = import ./statusline.nix { inherit pkgs; };
   # Agent-panel row renderer (settings.subagentStatusLine). Go: one process per
   # refresh tick regardless of task count; unit tests run in the check phase.
   subagentStatusline = pkgs.buildGoModule {
@@ -449,10 +451,7 @@ in
   # script auto-deployed from ./workflows (see ./workflows/default.nix). No native
   # module option for workflows, so home.file.
   home.file = {
-    ".claude/statusline.sh" = {
-      executable = true;
-      source = ./statusline.sh;
-    };
+    ".claude/statusline.sh".source = "${statusline}/bin/clod-statusline";
     ".claude/subagent-statusline".source = "${subagentStatusline}/bin/subagent-statusline";
     ".claude/keybindings.json".source = ./keybindings.json;
     # cheatsheet.json: generated from every workflow's meta.flags at build time;

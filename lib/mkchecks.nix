@@ -4,7 +4,7 @@
 #   - clod-workflows-<host>:  JS syntax + agentType-wiring lint for hosts that
 #                             have a clod/workflows directory.
 #   - clod-statusline-<host>: bash syntax + session-title layout smoke test for
-#                             hosts that have a clod/statusline.sh.
+#                             hosts that have a clod/statusline.nix.
 #   - clod-workflow-tests-<host>: fixture unit tests (testdata/*.json) for the
 #                             workflow parser and pure helpers, under plain node.
 #   - khudson-bininstall-<host>: activation install-script legs (verify/tamper/
@@ -110,16 +110,20 @@ let
            }; }
     else null;
 
-  # Smoke-test a host's clod statusline (bash syntax + session-title layout).
-  # Returns null if the host has no clod/statusline.sh.
+  # Smoke-test a host's clod statusline (bash syntax + session-title layout),
+  # against the built artifact so the deployed PATH is what gets exercised.
+  # Returns null if the host has no clod/statusline.nix.
   mkStatuslineCheck = hostname: config: let
     host = importHost hostname;
     system = host.system;
     pkgs = nixpkgs.legacyPackages.${system};
-    statuslineScript = ../hosts/${hostname}/clod/statusline.sh;
-  in if builtins.pathExists statuslineScript
+    statuslineNix = ../hosts/${hostname}/clod/statusline.nix;
+  in if builtins.pathExists statuslineNix
     then { inherit system; name = "clod-statusline-${hostname}";
-           value = import ./statusline-check.nix { inherit pkgs statuslineScript; }; }
+           value = import ./statusline-check.nix {
+             inherit pkgs;
+             statuslineScript = "${import statuslineNix { inherit pkgs; }}/bin/clod-statusline";
+           }; }
     else null;
 
   # Behavioral tests for the clod hook estate: go-build-sweep narrowing,
