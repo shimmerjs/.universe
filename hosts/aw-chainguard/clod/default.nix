@@ -175,9 +175,7 @@ in
     };
 
     settings = {
-      model = "claude-opus-5";
-      # Opus 5 default; xhigh is scoped to long-horizon legs and pinned per-stage
-      # in workflows/aw-*.js. /effort bumps a single session.
+      model = "claude-opus-5-5";
       effortLevel = "high";
       outputStyle = "terse";
       tui = "fullscreen";
