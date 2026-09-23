@@ -13,9 +13,10 @@
     }:
     {
       imports = [
-        # darwin-side clod companion: fresh claude-code/codex overlay (the hm
-        # module can't set overlays under useGlobalPkgs)
+        # darwin-side clod/cody companions: fresh claude-code and codex
+        # overlays (hm modules can't set overlays under useGlobalPkgs)
         ./clod/overlays.nix
+        ./cody/overlays.nix
         # khudson's capture engine. Darwin-scoped because homebrew.casks is a
         # system option, but owned by khudson -- see the home-manager module
         # imported below.
@@ -64,6 +65,9 @@
       imports = [
         ../../modules/home-manager/gcloud.nix
         ./clod
+        # cody: the codex harness. Its own top-level module, but its
+        # programs.claude-code contributions merge into clod's.
+        ./cody
         # khudson Edge HUD: host-scoped on purpose (edge-host.md review m2 --
         # this is the only host physically driving the Xeneon Edge).
         ../../homies/shimmerjs/home/khudson/nix/module.nix

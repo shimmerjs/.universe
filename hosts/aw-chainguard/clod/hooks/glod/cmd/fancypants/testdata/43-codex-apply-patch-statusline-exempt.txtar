@@ -1,0 +1,5 @@
+# codex apply_patch: statusline sources are rendered UI, exempt like the clod path
+-- input.json --
+{"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Update File: /Users/x/.universe/hosts/h/clod/statusline.sh\n@@\n+echo '\u2014'\n*** End Patch"}}
+-- want --
+0

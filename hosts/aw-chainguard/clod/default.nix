@@ -85,11 +85,12 @@ let
   };
 in
 {
-  # everything cody (codex CLI, config.toml, AGENTS.md, consult skill,
-  # its allowlist slice) lives in its own module; contributions merge.
   # plannotator: plan-review plugin + release binary + annotate skill.
+  # (cody -- the codex harness -- used to be imported here; it is its own
+  # top-level module at ../cody now, imported by the host directly. It
+  # still contributes the consult skill and the Bash(codex ...) allowlist
+  # slice to programs.claude-code; module contributions merge.)
   imports = [
-    ./cody
     ./plannotator
   ];
 
@@ -179,6 +180,7 @@ in
       # in workflows/aw-*.js. /effort bumps a single session.
       effortLevel = "high";
       outputStyle = "terse";
+      tui = "fullscreen";
       autoScrollEnabled = true;
       includeCoAuthoredBy = false;
       spinnerTipsEnabled = false;

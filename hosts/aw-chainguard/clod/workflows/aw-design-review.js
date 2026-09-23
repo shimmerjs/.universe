@@ -244,7 +244,7 @@ if (flags.codex === 'on') legThunks.unshift(() => named('critique:codex-dissent'
   'Cross-model dissent leg: relay codex, do NOT add flaws of your own.\n' +
   '1. Check auth first: run "codex login status" if permitted; if it prompts or fails, skip straight to the codex exec attempt.\n' +
   '2. Write the design brief below to a temp file (mktemp; bash heredoc is quoting-safe), then run:\n' +
-  '   codex exec -s read-only -o <mktemp-out> "Read <input-file>. Attack the design described there: list every concrete flaw, each grounded in real code under ' + flags['code-root'] + ' with file:line, severity fatal|major|minor. Be adversarial; no praise."\n' +
+  '   codex exec -p review -s read-only -o <mktemp-out> "Read <input-file>. Attack the design described there: list every concrete flaw, each grounded in real code under ' + flags['code-root'] + ' with file:line, severity fatal|major|minor. Be adversarial; no praise."\n' +
   '3. Read the output file. For EACH codex flaw, verify the cited file/symbol actually exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
   '4. Return available=true with the surviving flaws (keep codex\'s wording in desc, cite the grounded file:line in evidence). If codex exits nonzero, times out, or errors (e.g. a 401 after retry churn -- that means auth expired), return available=false with the first error lines in error. Never fabricate flaws.\n' +
   'Design brief:\n' + framed.design + (locked ? '\nLOCKED (not flaws, do not relay complaints about these):\n' + locked : ''),

@@ -130,7 +130,29 @@ pkgs.runCommand "clod-hooks-check"
     # non-.go and sessionless inputs fall through untouched
     printf '%s' '{"tool_input":{"file_path":"/x.txt"},"session_id":"fmt1"}' | ${hooks.goFmtHook}/bin/clod-go-fmt-hook \
       || fail "non-.go input did not pass through"
-    echo "go-fmt-hook: syntax gate + queue OK"
+
+    # cody (codex) shape: apply_patch carries a whole envelope in
+    # tool_input.command and may touch several files at once, so the hook has
+    # to queue each one and still gate on a parse error in any of them.
+    printf 'package p\n\nfunc G() { fmt.Println("g") }\n' > "$fmt/cx1.go"
+    printf 'package p\n\nfunc alsoBroken( {\n' > "$fmt/cx2.go"
+    patch="*** Begin Patch
+*** Update File: $fmt/cx1.go
+@@
+ ctx
+*** Update File: $fmt/cx2.go
+@@
+ ctx
+*** End Patch"
+    rc=0
+    jq -cn --arg c "$patch" '{tool_name:"apply_patch",tool_input:{command:$c},session_id:"cx1"}' \
+      | ${hooks.goFmtHook}/bin/clod-go-fmt-hook 2>"$TMPDIR/cx.err" || rc=$?
+    [ "$rc" = 2 ] || fail "apply_patch parse error did not block the edit (rc=$rc)"
+    grep -q 'cx2.go:' "$TMPDIR/cx.err" || fail "apply_patch block message lacks basename:line: $(cat "$TMPDIR/cx.err")"
+    grep -qx "$fmt/cx1.go" "$CLOD_GO_PENDING_DIR/go-pending-cx1" || fail "apply_patch did not queue the first file"
+    grep -qx "$fmt/cx2.go" "$CLOD_GO_PENDING_DIR/go-pending-cx1" || fail "apply_patch did not queue the second file"
+    grep -q '"fmt"' "$fmt/cx1.go" || fail "apply_patch: goimports did not rewrite the clean file in place"
+    echo "go-fmt-hook: syntax gate + queue OK (clod + cody shapes)"
 
     # leg 4: aw-scriptpath-gate
     mkdir -p "$HOME/.claude/workflows"

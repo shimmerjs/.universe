@@ -170,7 +170,8 @@ const VERDICT = { type: 'object', required: ['refuted'], properties: { refuted: 
 
 // codex search leg: a different vendor's model AND retrieval stack digging the
 // same prior-art question -- recall the same-model deep-dives miss. Live web
-// search proven on codex 0.144.1. Claims PREPEND to the dig pool and ride the
+// search rides the `research` profile; a bare exec gets the "cached" default.
+// Claims PREPEND to the dig pool and ride the
 // same dedup + verify scoping; the verify cap gets +4 headroom so the extra
 // leg cannot crowd deep-dive claims out. Dead leg (auth/exec error) stays
 // distinguishable from "found nothing" via available=false.
@@ -182,7 +183,7 @@ let codexDown = false, codexDropped = 0
 const codexLeg = flags.codex !== 'on' ? null : () => named('dig:codex',
   'Cross-model search leg: relay codex, do NOT add claims of your own.\n' +
   '1. Write the research question below to a temp file (mktemp; a quoted bash heredoc is quoting-safe -- the question may contain $, backticks, or quotes), then run:\n' +
-  '   codex exec -s read-only -c \'tools.web_search=true\' -o <mktemp-out> "Read <input-file>. Research prior art for that question with live web search. Return concrete claims about how existing systems solve it, each on its own line with a source URL; end load-bearing claims with [load-bearing]."\n' +
+  '   codex exec -p research -s read-only -o <mktemp-out> "Read <input-file>. Research prior art for that question with live web search. Return concrete claims about how existing systems solve it, each on its own line with a source URL; end load-bearing claims with [load-bearing]."\n' +
   '2. Read the output file. Drop claims with no source URL and count them in dropped; keep codex\'s wording in text and map [load-bearing] to loadBearing=true.\n' +
   '3. Return available=true with the surviving claims. If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate claims.\n' +
   'Research question:\n' + prompt,

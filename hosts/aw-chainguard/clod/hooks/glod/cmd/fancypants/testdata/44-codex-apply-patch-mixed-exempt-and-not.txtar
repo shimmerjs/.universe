@@ -1,0 +1,7 @@
+# codex apply_patch: exemption is per-file -- a non-statusline file in the same patch still blocks
+-- input.json --
+{"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Update File: /Users/x/.universe/hosts/h/clod/statusline.sh\n@@\n+echo '\u2014'\n*** Update File: pkg/c.go\n@@\n+// c \u2014 d\n*** End Patch"}}
+-- want --
+2
+-- want_stderr --
+U+2014

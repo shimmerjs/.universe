@@ -1,0 +1,7 @@
+# codex apply_patch: a divider/banner comment in a new file is denied
+-- input.json --
+{"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Add File: pkg/b.go\n+package b\n+\n+// ---------------- helpers ----------------\n+func B() {}\n*** End Patch"}}
+-- want --
+2
+-- want_stderr --
+divider

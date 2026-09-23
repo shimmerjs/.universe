@@ -14,7 +14,7 @@ const FLAGS = {
   passes:    { short: 'p', type: 'int',  default: 2, min: 1, max: 6,  help: 'loop-until-dry rounds' },
   verify:    { short: 'v', type: 'int',  default: 3, min: 0, max: 5,  help: 'skeptics per claim (0 disables verification)' },
   breadth:   { short: 'b', type: 'list', default: ['web', 'code', 'docs'], help: 'search angles' },
-  codex:     { short: 'x', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'cross-model codex search leg in round 1 (live web search proven on 0.144.1; default off: claude searchers already fan the space -- flip on when recall matters more than spend)' },
+  codex:     { short: 'x', type: 'str',  default: 'off', choices: ['on', 'off'], help: 'cross-model codex search leg in round 1 (live web search via the research profile; default off: claude searchers already fan the space -- flip on when recall matters more than spend)' },
   intensity: { short: 'i', type: 'int',  default: 5, min: 0, max: 10, help: 'one knob scaling unset fanout/verify/passes' },
   subagents: { short: 's', type: 'str',  default: 'custom', choices: ['custom', 'stock'], help: 'stock drops the custom agent types' },
 }
@@ -145,8 +145,10 @@ const VERDICT = { type: 'object', required: ['refuted'], properties: { refuted: 
 
 // codex search leg (round 1 only): a different vendor's model AND retrieval
 // stack searching the same question -- recall the same-model searchers miss.
-// Live web search proven on codex 0.144.1 (the 0.142.x probe failed; revisit
-// condition met). Claims PREPEND to round 1's pool and ride the same dedup +
+// Live web search rides the `research` profile (web_search = "live"), which
+// is the only way to get it: a bare exec resolves to the "cached" default,
+// and `tools.web_search = true` is a dead key -- the deserializer matches the
+// bool variant and discards it. Claims PREPEND to round 1's pool and ride the same dedup +
 // skeptic quorum; the verify cap gets +4 headroom so the extra leg cannot
 // crowd Claude claims out. Dead leg (auth/exec error) stays distinguishable
 // from "found nothing" via available=false.
@@ -158,7 +160,7 @@ let codexDown = false, codexDropped = 0
 const codexLeg = flags.codex !== 'on' ? null : () => named('search:codex:1',
   'Cross-model search leg: relay codex, do NOT add claims of your own.\n' +
   '1. Write the research question below to a temp file (mktemp; a quoted bash heredoc is quoting-safe -- the question may contain $, backticks, or quotes), then run:\n' +
-  '   codex exec -s read-only -c \'tools.web_search=true\' -o <mktemp-out> "Read <input-file>. Research that question with live web search. Return concrete factual claims, each on its own line with a source URL."\n' +
+  '   codex exec -p research -s read-only -o <mktemp-out> "Read <input-file>. Research that question with live web search. Return concrete factual claims, each on its own line with a source URL."\n' +
   '2. Read the output file. Drop claims with no source URL and count them in dropped; keep codex\'s wording in text.\n' +
   '3. Return available=true with the surviving claims. If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate claims.\n' +
   'Research question:\n' + prompt,

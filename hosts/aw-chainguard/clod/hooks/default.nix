@@ -1,9 +1,19 @@
-# writeShellApplication-wrapped hook programs for clod, with nix-pinned binaries
-# (runtimeInputs) so they never depend on PATH. Imported by ../default.nix; each
-# wraps the like-named script in this directory.
+# writeShellApplication-wrapped hook programs, with nix-pinned binaries
+# (runtimeInputs) so they never depend on PATH. Each wraps the like-named
+# script in this directory.
+#
+# Imported by ../default.nix AND by ../../cody/hooks.nix: the same binaries
+# serve both harnesses. fancypants and go-fmt-hook handle codex's
+# `apply_patch` payload (a patch envelope in tool_input.command) alongside
+# Claude's Write/Edit/MultiEdit `file_path` shape; the tool names never
+# collide, so the payload alone selects the branch and no flavor flag exists.
+# The estate lives here rather than in cody/ because clod is the older and
+# heavier consumer -- aw-scriptpath-gate has no codex counterpart at all.
 { pkgs }:
 {
-  # PostToolUse: gofmt syntax gate + goimports per .go edit, queue for the Stop pass.
+  # PostToolUse: gofmt syntax gate + goimports per .go edit, queue for the Stop
+  # pass. Reads a single tool_input.file_path (clod) or every path named by an
+  # apply_patch envelope (cody), so one patch touching five files queues five.
   goFmtHook = pkgs.writeShellApplication {
     name = "clod-go-fmt-hook";
     runtimeInputs = with pkgs; [
@@ -17,9 +27,10 @@
 
   # One Go module (./glod) -> two hook binaries sharing an internal/txtar test
   # helper:
-  #   bin/fancypants      PreToolUse(Write|Edit|MultiEdit|Bash) style guard --
-  #     blocks decorative Unicode and banner/divider comments in file writes,
-  #     and decorative Unicode in git-commit / gh pr/issue/release prose.
+  #   bin/fancypants      PreToolUse(Write|Edit|MultiEdit|apply_patch|Bash)
+  #     style guard -- blocks decorative Unicode and banner/divider comments in
+  #     file writes (for apply_patch, in the patch's ADDED lines only), and
+  #     decorative Unicode in git-commit / gh pr/issue/release prose.
   #   bin/gocheck         Stop + SubagentStop gate -- `go build` + `go vet` the edited packages,
   #     using `go list -e -json` metadata to pick the buildable ones and
   #     `go vet -json` for structured findings; keeps the $GOCACHE cache.

@@ -1,11 +1,17 @@
-// Command fancypants is a PreToolUse(Write|Edit|MultiEdit|Bash) guard over
-// the text clod writes. It blocks two things: decorative Unicode (ASCII only)
-// and banner/divider comments (`// ---- foo ----`, `# ======`).
+// Command fancypants is a PreToolUse(Write|Edit|MultiEdit|apply_patch|Bash)
+// guard over the text an agent writes. It blocks two things: decorative
+// Unicode (ASCII only) and banner/divider comments (`// ---- foo ----`,
+// `# ======`).
 //
-// For file writes it inspects only the new text (content/new_string), so
-// pre-existing characters are never flagged. For Bash it scans git-commit and gh
-// pr/issue/release authored prose -- the commit-message and PR/issue-body
-// channels a file guard never sees.
+// It serves both harnesses from one binary. clod sends Write/Edit/MultiEdit;
+// cody (codex) sends apply_patch, whose tool_input.command is a patch envelope
+// rather than a file body. The two never collide, so the tool name alone
+// selects the shape and no flavor flag is needed.
+//
+// For file writes it inspects only the new text (content/new_string, or a
+// patch's added lines), so pre-existing characters are never flagged. For Bash
+// it scans git-commit and gh pr/issue/release authored prose -- the
+// commit-message and PR/issue-body channels a file guard never sees.
 //
 // Exit 2 + stderr denies the tool call and shows the message back, forcing a
 // redo. Malformed input exits 0. Only decorative typography is banned;
@@ -137,6 +143,40 @@ func findDividers(text string) []string {
 	return out
 }
 
+// applyPatchAdded pulls the added lines out of a codex apply_patch envelope,
+// dropping any that belong to a glyphSource file. The format is codex's own,
+// not unified diff: `*** Add File: p` / `*** Update File: p` / `*** Move to: p`
+// name the current file, `@@` marks a hunk, and content lines carry a leading
+// +/-/space. Only `+` lines are new text.
+func applyPatchAdded(patch string) []string {
+	var out []string
+	exempt := false
+	for _, line := range strings.Split(patch, "\n") {
+		if path, ok := strings.CutPrefix(line, "*** Add File: "); ok {
+			exempt = glyphSource.MatchString(path)
+			continue
+		}
+		if path, ok := strings.CutPrefix(line, "*** Update File: "); ok {
+			exempt = glyphSource.MatchString(path)
+			continue
+		}
+		if path, ok := strings.CutPrefix(line, "*** Move to: "); ok {
+			exempt = glyphSource.MatchString(path)
+			continue
+		}
+		if strings.HasPrefix(line, "*** ") || strings.HasPrefix(line, "@@") {
+			continue
+		}
+		if exempt {
+			continue
+		}
+		if added, ok := strings.CutPrefix(line, "+"); ok {
+			out = append(out, added)
+		}
+	}
+	return out
+}
+
 type hookInput struct {
 	ToolName  string `json:"tool_name"`
 	ToolInput struct {
@@ -173,6 +213,12 @@ func decide(stdin []byte) (code int, stderr string) {
 		for _, e := range in.ToolInput.Edits {
 			chunks = append(chunks, e.NewString)
 		}
+	case "apply_patch":
+		// codex's file-write tool. tool_input.command is the whole patch
+		// envelope, so the added lines have to be pulled out of it -- scanning
+		// the envelope whole would flag context and removed lines, i.e. text
+		// that was already in the file.
+		chunks = append(chunks, applyPatchAdded(in.ToolInput.Command)...)
 	case "Bash":
 		// Only the authored-prose subcommands; everything else carries no text
 		// the model wrote as content.

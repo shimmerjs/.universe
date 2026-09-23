@@ -200,7 +200,7 @@ if (flags.review !== 'off') {
     const cx = await named('review:codex',
       'Cross-model finder leg: relay codex, do NOT add findings of your own.\n' +
       '1. Run codex from the tree that holds the change' + (exec.worktree ? ' (worktree: ' + exec.worktree + ')' : '') + ':\n' +
-      '   codex exec -s read-only -o <mktemp-out> "Review the uncommitted diff (git diff; files: ' + (exec.filesChanged || []).join(', ') + ') for correctness / security / perf defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; report every defect you find, including low-severity ones, and let the severity label do the ranking. No praise."\n' +
+      '   codex exec -p review -s read-only -o <mktemp-out> "Review the uncommitted diff (git diff; files: ' + (exec.filesChanged || []).join(', ') + ') for correctness / security / perf defects, each with file:line and severity critical|high|med|low. Be adversarial and concrete; report every defect you find, including low-severity ones, and let the severity label do the ranking. No praise."\n' +
       '2. Read the output file. For EACH codex finding, verify the cited file/symbol exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
       '3. Return available=true with the surviving findings (keep codex\'s wording in desc). If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate findings.',
       { phase: 'Review', agentType: REVIEWER, schema: CODEX_FIND })

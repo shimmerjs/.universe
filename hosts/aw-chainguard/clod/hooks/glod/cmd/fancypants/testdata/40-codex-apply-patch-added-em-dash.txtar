@@ -1,0 +1,7 @@
+# codex apply_patch: em dash on an ADDED line is denied
+-- input.json --
+{"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Update File: pkg/a.go\n@@ func x()\n ctx line\n+// title \u2014 subtitle\n*** End Patch"}}
+-- want --
+2
+-- want_stderr --
+U+2014

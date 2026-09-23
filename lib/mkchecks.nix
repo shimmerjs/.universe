@@ -4,7 +4,7 @@
 #   - clod-workflows-<host>:  JS syntax + agentType-wiring lint for hosts that
 #                             have a clod/workflows directory.
 #   - clod-statusline-<host>: bash syntax + session-title layout smoke test for
-#                             hosts that have a clod/statusline.nix.
+#                             hosts that have a clod/statusline.sh.
 #   - clod-workflow-tests-<host>: fixture unit tests (testdata/*.json) for the
 #                             workflow parser and pure helpers, under plain node.
 #   - khudson-bininstall-<host>: activation install-script legs (verify/tamper/
@@ -19,6 +19,12 @@
 #   - clod-plugins-<host>:    claude-code plugin-estate integrity on the
 #                             rendered ~/.claude/skills (manifests seated,
 #                             pointers resolve, no dangling symlinks).
+#   - cody-config-<host>:     codex harness posture on the rendered ~/.codex
+#                             (profiles validate against the pinned CLI's
+#                             config schema, roles are real files, model/
+#                             effort pairs exist, config.toml unmanaged, and
+#                             every hook's trust hash is recomputed and
+#                             matched against the deployed wrapper's flag).
 #   - zshrc-<host>:           zsh rc posture pins (single compinit, cached
 #                             -C, keymap/matcher/alias posture) + isolated
 #                             runtime init smoke.
@@ -213,6 +219,29 @@ let
            }; }
     else null;
 
+  # cody (codex) harness posture on the rendered ~/.codex: profile layers
+  # validate against the PINNED CLI's own config.schema.json, role files
+  # are real regular files with the fields codex requires, model/effort
+  # pairs resolve in the pinned catalog, skills are directories, and
+  # config.toml stays unmanaged. The codex source comes from the user's
+  # configured package (the fresh-nixpkgs overlay one), not from the
+  # check's stock pkgs -- the schema must be the one the deployed binary
+  # enforces. Gated on programs.codex.enable.
+  mkCodyConfigCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+    codexPkg = hmUserCfg.programs.codex.package or null;
+  in if (hmUserCfg.programs.codex.enable or false) && codexPkg != null
+    then { inherit system; name = "cody-config-${hostname}";
+           value = import ./cody-config-check.nix {
+             inherit pkgs;
+             homeFiles = hmUserCfg.home-files;
+             codexPkg = codexPkg;
+           }; }
+    else null;
+
   # zsh rc posture pins + isolated init smoke on the rendered rc files.
   # shimmerjs-gated rather than zsh-gated: building it needs the user's
   # rendered .zshrc, and forcing scott's home config trips kraken's
@@ -256,7 +285,7 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkZshrcCheck mkNixGcCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkNixGcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

@@ -188,7 +188,7 @@ const CODEX_FIND = { type: 'object', required: ['available', 'findings', 'droppe
 let codexDown = false, codexDropped = 0
 const codexLeg = flags.codex !== 'on' ? null : () => named('audit:codex',
   'Cross-model finder leg: relay codex, do NOT add findings of your own.\n' +
-  '1. Run: codex exec -s read-only -o <mktemp-out> "Audit the ' + flags.lang + ' code under ' + flags.repo + ' (focus: ' + focus + '). Packages:\\n' + map.packages.join('\\n') + '\\nFind real, specific defects, each with file:line and severity p0|p1|p2. Be adversarial and concrete; report every defect you find, including p2s, and let the severity label do the ranking. No praise."\n' +
+  '1. Run: codex exec -p review -s read-only -o <mktemp-out> "Audit the ' + flags.lang + ' code under ' + flags.repo + ' (focus: ' + focus + '). Packages:\\n' + map.packages.join('\\n') + '\\nFind real, specific defects, each with file:line and severity p0|p1|p2. Be adversarial and concrete; report every defect you find, including p2s, and let the severity label do the ranking. No praise."\n' +
   '2. Read the output file. For EACH codex finding, verify the cited file/symbol exists (Read/Grep) before relaying; drop ungroundable ones and count them in dropped.\n' +
   '3. Return available=true with the surviving findings (keep codex\'s wording in desc). If codex exits nonzero or errors (a 401 after retry churn means auth expired), return available=false with the first error lines in error. Never fabricate findings.',
   { phase: 'Audit', agentType: REVIEWER, schema: CODEX_FIND })

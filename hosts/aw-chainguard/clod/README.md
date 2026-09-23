@@ -18,7 +18,6 @@ clod/
   SYSTEM_PROMPT.md       always-on operating rules (voice, honesty, environment)
   agents/                5 custom subagents (researcher, skeptic, reviewer, designer, mapper)
   skills/                auto-loading capabilities (handoff, go, deslop, memory-prune)
-  cody/                  codex as clod's cross-model consultant (see its README)
   workflows/             saved multi-agent workflows + the doctrine that governs them
     aw-*.js              the workflow scripts (research, review, audit, design-review, ...)
     partials/*.md        shared verdict spines, cited by path from a workflow stage
@@ -96,7 +95,7 @@ The main statusline is a flat, multiline dashboard that grows with activity: mod
 
 ### Skills -- `skills/`
 
-Skills are capability docs the model loads on its own when their description matches the work. Wired: **handoff** (continuity notes that survive compaction), **go** (the Go hook contract, so the agent works *with* the hooks above instead of fighting them), **deslop** (a final scrub pass for AI-tell residue). **codex-consult** (a cross-vendor second opinion) is present but intentionally not wired -- it needs codex configured first.
+Skills are capability docs the model loads on its own when their description matches the work. Wired: **handoff** (continuity notes that survive compaction), **go** (the Go hook contract, so the agent works *with* the hooks above instead of fighting them), **deslop** (a final scrub pass for AI-tell residue). **codex-consult** (a cross-vendor second opinion) is wired too, but it lives in the cody harness next door (`../cody/`) along with the codex config it depends on.
 
 ### Keybindings
 

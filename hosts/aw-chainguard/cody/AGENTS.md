@@ -17,3 +17,7 @@ not agreement. Be adversarial where the evidence supports it.
   straight quotes, -> for arrows, [x]/[ ] for checks.
 - This machine is nix-managed (config in ~/.universe). Never suggest
   mutating deployed files under ~; point at the nix source instead.
+
+When you delegate to a subagent, the rigor rules above are yours to
+enforce on its output too: an unsourced claim from a child is still an
+unsourced claim.

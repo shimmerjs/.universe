@@ -1,0 +1,5 @@
+# codex apply_patch: plain ASCII added lines pass
+-- input.json --
+{"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Add File: pkg/d.go\n+package d\n+\n+// D does a thing.\n+func D() {}\n*** End Patch"}}
+-- want --
+0

@@ -1,0 +1,5 @@
+# codex apply_patch: the same glyph on context/removed lines is pre-existing text -- allowed
+-- input.json --
+{"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Update File: pkg/a.go\n@@ func x()\n // title \u2014 subtitle\n-// old \u2014 thing\n+// clean replacement\n*** End Patch"}}
+-- want --
+0
