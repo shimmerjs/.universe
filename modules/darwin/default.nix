@@ -16,6 +16,7 @@ in
   imports = [
     ../nix.nix
     ../universe.nix
+    ./kitty-overlay.nix
   ];
 
   # Pin qemu to 10.2.2 (flake input nixpkgs-qemu). nixpkgs master ships qemu
