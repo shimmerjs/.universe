@@ -151,6 +151,51 @@ let
   # and are gated on the module being enabled for the host's user -- no other
   # builder discovers khudson, so this is the one lib/ shim. Both import from
   # the module dir so the checked script/artifacts are the deployed ones.
+  mkKhudsonDisplayCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+    runtime = lib.findFirst (p: (p.pname or "") == "khudson") null
+      (hmUserCfg.home.packages or []);
+  in if (hmUserCfg.universe.home.khudson.enable or false) && runtime != null
+    then { inherit system; name = "khudson-display-conformance-${hostname}";
+      value = runtime.overrideAttrs (_: {
+        pname = "khudson-display-conformance";
+        buildPhase = ''
+          runHook preBuild
+          runHook postBuild
+        '';
+        checkPhase = ''
+          runHook preCheck
+          "$CC" -x objective-c -fobjc-arc -framework AppKit \
+            internal/cgdisplay/testdata/application_policy.m -o application-policy-check
+          ./application-policy-check > application-policy.txt
+          go list -deps ./cmd/claudeman ./cmd/logiretch ./cmd/khresources ./cmd/kuiboard ./cmd/khcomponent ./cmd/renoman > standalone-deps.txt
+          if grep -E '/internal/(bus|dock|viewtransport)$' standalone-deps.txt; then
+            echo "standalone component imports integration runtime"
+            exit 1
+          fi
+          go vet ./...
+          find . -path ./vendor -prune -o -name '*.go' -exec gofmt -l {} + > formatting.txt
+          if [ -s formatting.txt ]; then cat formatting.txt; exit 1; fi
+          go test -race -json ./... > conformance.jsonl || {
+            cat conformance.jsonl
+            exit 1
+          }
+          go test -race -count=25 -run '^TestLogRotationBoundsConcurrentClients$' ./internal/diagnostic > diagnostic-rotation.txt || {
+            cat diagnostic-rotation.txt
+            exit 1
+          }
+          runHook postCheck
+        '';
+        installPhase = ''
+          mkdir -p "$out"
+          cp conformance.jsonl application-policy.txt standalone-deps.txt diagnostic-rotation.txt "$out/"
+        '';
+      });
+    }
+    else null;
+
   mkMagicbusConformanceCheck = hostname: config: let
     host = importHost hostname;
     system = host.system;
@@ -321,7 +366,7 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkKittyStartupCheck mkMagicbusConformanceCheck mkNixGcCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonDisplayCheck mkMagicbusConformanceCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkKittyStartupCheck mkNixGcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

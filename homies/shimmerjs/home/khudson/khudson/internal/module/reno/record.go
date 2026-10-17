@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // actRecord is the recorder view's one-tap control: with nothing live it
@@ -82,9 +82,8 @@ func (m *Mod) openRecordingLocked(runID string) (RecordOpen, error) {
 	case rec.Failed != "" && rec.StartedAt.IsZero():
 		// a failed start is re-armable: swap in a FRESH intent (never
 		// mutate in place -- a journal failure below must be able to
-		// restore the failed state, arc-2 review #9) and re-snapshot the
+		// restore the failed state) and re-snapshot the
 		// config so a fixed pending config actually applies on the retry
-		// (#8: the stale broken config was unrecoverable)
 		fresh := *rec
 		fresh.Failed = ""
 		fresh.IntentAt = m.now()
@@ -126,7 +125,7 @@ func (m *Mod) noteRecordingLocked(runID string, args []string) error {
 		if runID == "" && !m.run.Recording.StoppedAt.IsZero() {
 			// an unscoped note binds to whichever run is current AT
 			// ARRIVAL; over a closed recording that can write run A's
-			// clip into run B (arc-2 review #14) -- demand the run id
+			// clip into run B -- demand the run id
 			return fmt.Errorf("reno record-note: run %s's recording is closed; name the run the note belongs to", m.run.ID)
 		}
 		if err := applyRecordNote(m.run.Recording, args, m.now()); err != nil {
@@ -179,10 +178,8 @@ func applyRecordNote(rec *renocore.RecordingState, args []string, now time.Time)
 
 // recordEffect is the exec'd record verb; obsEffect the transport ops.
 // Every head is the exe identity (PATH flips mid-switch). The key is
-// per-ARM (IntentAt-stamped), not per-run: a re-arm after a failed
-// start is a fresh attempt the 2s debounce must never eat (arc-2
-// review #11); true tap double-fires still collapse because both taps
-// resolve one arm.
+// per-arm (IntentAt-stamped): a re-arm after a failed start is a fresh
+// attempt. Duplicate taps within one arm still share a debounce key.
 func (m *Mod) recordEffect() module.Effect {
 	key := m.run.ID + "/record"
 	if rec := m.run.Recording; rec != nil {

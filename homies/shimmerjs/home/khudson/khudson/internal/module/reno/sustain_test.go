@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // sustainMod is a module whose drivers are a shell blocked on stdin. It
@@ -76,9 +76,22 @@ func TestSustainStartsOneDriverPerEffect(t *testing.T) {
 		m.fxLevels[renocore.FXJitter] = 7
 		m.touchSustainLocked(renocore.FXJitter)
 	})
-	second := driver(m, renocore.FXJitter)
+	var second *sustainDriver
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		second = driver(m, renocore.FXJitter)
+		if second != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if second == nil || second == first {
 		t.Fatal("a level change must restart the driver")
+	}
+	select {
+	case <-first.done:
+	default:
+		t.Fatal("replacement started before prior driver exited")
 	}
 	if second.level != 7 {
 		t.Errorf("driver level = %d, want 7", second.level)
@@ -342,4 +355,23 @@ func waitGone(t *testing.T, d *sustainDriver) {
 		t.Errorf("driver pid %d was killed, not stopped: %v",
 			d.cmd.Process.Pid, d.cmd.ProcessState)
 	}
+}
+
+func TestCloseJoinsRetiringDriverAndRefusesRestart(t *testing.T) {
+	m := sustainMod(t, "br")
+	under(m, func() { m.fxLevels[renocore.FXJitter] = 1; m.touchSustainLocked(renocore.FXJitter) })
+	first := driver(m, renocore.FXJitter)
+	under(m, func() { m.fxLevels[renocore.FXJitter] = 2; m.touchSustainLocked(renocore.FXJitter) })
+	m.Close()
+	select {
+	case <-first.done:
+	default:
+		t.Fatal("retired child still running")
+	}
+	under(m, func() {
+		m.touchSustainLocked(renocore.FXJitter)
+		if len(m.sustain) != 0 || len(m.retiring) != 0 {
+			t.Fatal("closed owner retained or restarted child")
+		}
+	})
 }

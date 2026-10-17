@@ -4,7 +4,6 @@
 package registry
 
 import (
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/module/brightness"
 	"github.com/shimmerjs/khudson/khudson/internal/module/cheatsheets"
 	"github.com/shimmerjs/khudson/khudson/internal/module/claudesessions"
@@ -17,9 +16,10 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/module/logiretch"
 	"github.com/shimmerjs/khudson/khudson/internal/module/media"
 	"github.com/shimmerjs/khudson/khudson/internal/module/procs"
-	"github.com/shimmerjs/khudson/khudson/internal/module/reno"
 	"github.com/shimmerjs/khudson/khudson/internal/module/resources"
 	"github.com/shimmerjs/khudson/khudson/internal/module/sysmon"
+	reno "github.com/shimmerjs/khudson/khudson/internal/renoservice"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // All returns every compiled-in module keyed by schema name.
@@ -58,3 +58,6 @@ func All() map[string]module.Module {
 	}
 	return out
 }
+
+// Persistent returns only history owners, without constructing job services.
+func Persistent() []module.Persistent { return []module.Persistent{cpumem.New(), disk.New()} }

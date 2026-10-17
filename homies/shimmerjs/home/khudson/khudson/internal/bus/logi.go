@@ -9,12 +9,13 @@ package bus
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // logiRedial is the quiet reconnect cadence; logiretch absent is a normal
@@ -25,7 +26,8 @@ const logiRedial = 2 * time.Second
 // state. Reconnects forever, quietly; transitions are logged once.
 func (b *Bus) logiLoop(ctx context.Context) {
 	for ctx.Err() == nil {
-		conn, err := net.Dial("unix", b.opts.Paths.LogiSocket())
+		conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", b.opts.Paths.LogiSocket())
+		diagnostic.Default.Observe("logi.dial", err, "retry after backoff while a view exists")
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -40,6 +42,11 @@ func (b *Bus) logiLoop(ctx context.Context) {
 		// the source is gone: NO synthetic clear -- the last reading stands and
 		// the dock dims it once it ages past the staleness horizon
 		log.Printf("khudson bus: logi source lost")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(logiRedial):
+		}
 	}
 }
 
@@ -48,12 +55,16 @@ func (b *Bus) logiLoop(ctx context.Context) {
 func (b *Bus) consumeLogi(ctx context.Context, conn net.Conn) {
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	dec := json.NewDecoder(conn)
+	dec := socketio.NewDecoder(conn)
 	for {
 		var st proto.LogiState
 		if err := dec.Decode(&st); err != nil {
+			if ctx.Err() == nil {
+				diagnostic.Default.Observe("logi.read", err, "retain stale battery; reconnect after backoff")
+			}
 			return
 		}
+		diagnostic.Default.Observe("logi.read", nil, "receiving")
 		if st.Kind != "battery" {
 			// logiretch.sock carries state/input lines for the viewer too;
 			// only battery lines feed the strip readout

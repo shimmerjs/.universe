@@ -10,14 +10,14 @@ package procs
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 	"golang.org/x/sys/unix"
 )
 
@@ -117,9 +117,9 @@ func (m *Mod) setUtil(util float64, ok bool) {
 // since-boot cpu, so parseTop and parseUtil keep only the second. -s 1
 // pins the between-sample delay so the exec fits the bus's 5s poll budget.
 func pollTop(ctx context.Context, top int) ([]module.Row, float64, bool, error) {
-	out, err := exec.CommandContext(ctx, "/usr/bin/top",
+	out, err := subprocess.Output(ctx, "/usr/bin/top",
 		"-l", "2", "-s", "1", "-o", "cpu", "-n", strconv.Itoa(top),
-		"-stats", "pid,command,cpu,mem").Output()
+		"-stats", "pid,command,cpu,mem")
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("top: %w", err)
 	}
@@ -236,7 +236,7 @@ func memBytes(s string) (float64, bool) {
 func pollPS(ctx context.Context, top int) (module.Data, error) {
 	// -c: bare executable names; -r: cpu-descending, so parse keeps each
 	// name's hottest line
-	out, err := exec.CommandContext(ctx, "ps", "-Aceo", "pcpu=,pmem=,comm=", "-r").Output()
+	out, err := subprocess.Output(ctx, "ps", "-Aceo", "pcpu=,pmem=,comm=", "-r")
 	// without the proc-info entitlement macOS 26 ps exits 1 (and omits
 	// the pmem column) while still streaming rows; non-empty output wins
 	// over the exit status

@@ -1,10 +1,5 @@
-// Package reno is the demo presenter/recorder module: the step cursor,
-// stopwatch, and action dispatch behind the reno strip tab. The module is
-// the engine; machine actions exec as `khudson reno ...` verbs through
-// the bus effect executor (module.EffectHandler), so a wedged subprocess
-// can never stall the bus and the same verbs stay drivable from a shell.
-// Script and run-journal machinery live in internal/reno; this package
-// binds them to the bus contract.
+// Package reno owns recorder state and produces ordered effects for renoman's
+// service. Terminal clients consume snapshots and submit semantic operations.
 package reno
 
 import (
@@ -21,9 +16,9 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Act argvs, deliberately not command names so a bus that misses the
@@ -47,13 +42,12 @@ const transitionGap = 400 * time.Millisecond
 // rest, so the module windows before publishing.
 const gotoWindow = 12
 
-// Mod is the reno module singleton. Cross-poll state is the contract's
-// legal shape; everything below mu survives config reloads (module
-// instances are built once per bus process).
+// Mod holds one Reno owner's state. Clients share it through renoman serve.
 type Mod struct {
-	mu     sync.Mutex
-	staged *renocore.Script
-	run    *renocore.Run
+	displaySource func() ([]cgdisplay.Display, error)
+	mu            sync.Mutex
+	staged        *renocore.Script
+	run           *renocore.Run
 	// stale carries a loud recovery problem (script moved/edited under a
 	// live run); it renders as a warn row until the next load/start.
 	stale string
@@ -133,7 +127,11 @@ type Mod struct {
 	// FX kind (internal/module/reno/sustain.go). A key present means a
 	// child is out there driving that effect right now; the level it drives
 	// at lives in fxLevels like every other level FX.
-	sustain map[string]*sustainDriver
+	sustain  map[string]*sustainDriver
+	retiring map[string]*sustainDriver
+	closed   bool
+	stop     chan struct{}
+	workers  sync.WaitGroup
 
 	// winState is OBS's own window: "" unknown, "shown", "hidden". Unlike
 	// an OBS filter this reads back (kAXHidden), so the tile is allowed to
@@ -167,9 +165,8 @@ type Mod struct {
 	lastAct  time.Time
 }
 
-// New builds the singleton, recovering the newest live run journal (a
-// bus crash mid-demo must not lose the cursor) and sweeping old
-// finalized journals -- one-shot boot work, never per-tick.
+// New recovers the latest run and cached configuration, then prunes finalized
+// journals. Call only after acquiring exclusive service ownership.
 func New() *Mod {
 	m := &Mod{now: time.Now}
 	if exe, err := os.Executable(); err == nil {
@@ -293,7 +290,7 @@ func (m *Mod) transition(to int, viaGlass bool) []module.Effect {
 	if m.run.Demo != m.staged.Name {
 		// an AD HOC run with a script merely staged: walking the staged
 		// steps would fire its machine actions under a run that never
-		// vetted them and keeps no step accounting (arc-2 review #1)
+		// vetted them and keeps no step accounting
 		return nil
 	}
 	if to < 0 || to >= len(m.staged.Steps) {
@@ -443,7 +440,7 @@ func (m *Mod) finishRunLocked() bool {
 // stopWorthyLocked reports a take OBS may still be rolling: any recording
 // intent not yet stopped and not known-failed-before-start. An UNPROVEN
 // start (intent journaled, started note lost or the verb still in flight)
-// counts, or OBS records with no owner (arc-2 review #7/#12). Caller holds
+// counts, or OBS records with no owner. Caller holds
 // mu.
 func (m *Mod) stopWorthyLocked() bool {
 	if m.run == nil {
@@ -483,10 +480,8 @@ func (m *Mod) quitLocked() (QuitRequest, []module.Effect) {
 	return req, effects
 }
 
-// HandleCtl is the run-lifecycle control seam behind `khudson reno
-// load|start|stop|status|next|prev|goto`: the bus's reno ctl verb calls
-// it and execs returned effects through the same executor as tapped
-// acts -- one dispatch site.
+// HandleCtl applies a Reno control transition. The shared service owns the
+// journal and ordered execution of the returned effects.
 func (m *Mod) HandleCtl(args []string) (any, []module.Effect, error) {
 	if len(args) == 0 {
 		return nil, nil, errors.New("reno: need a subverb: load|start|stop|status|next|prev|goto")
@@ -722,7 +717,16 @@ func (m *Mod) Poll(_ context.Context, params map[string]any) (module.Data, error
 	// enumerate BEFORE taking mu: a display-server call under the module
 	// lock would put every ctl and act behind it, and only the recorder
 	// pad has anything to say about displays
-	local := localDisplays()
+	var local []cgdisplay.Display
+	if m.displaySource != nil {
+		var err error
+		local, err = m.displaySource()
+		if err != nil {
+			return module.Data{}, err
+		}
+	} else {
+		local = localDisplays()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.local = local
@@ -761,4 +765,11 @@ func fmtClock(d time.Duration) string {
 	mins := int(d.Minutes())
 	secs := int(d.Seconds()) % 60
 	return fmt.Sprintf("%d:%02d", mins, secs)
+}
+
+// NewWithDisplays lets a service share its event-driven topology cache.
+func NewWithDisplays(read func() ([]cgdisplay.Display, error)) *Mod {
+	m := New()
+	m.displaySource = read
+	return m
 }

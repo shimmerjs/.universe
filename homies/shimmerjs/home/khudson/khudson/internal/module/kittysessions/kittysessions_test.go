@@ -2,6 +2,7 @@ package kittysessions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Hand-written multi-window multi-tab fixture in the `kitten @ ls` shape:
@@ -245,5 +246,23 @@ func TestPollSocketUnreachable(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Poll against absent socket: want error, got nil")
+	}
+}
+
+func TestRunLSPreservesFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kitten"), []byte("#!/bin/sh\necho rejected >&2\nexit 23\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	_, err := runLS(context.Background(), "fixture.sock")
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 23 || string(exit.Stderr) != "rejected\n" {
+		t.Fatalf("lost exit details: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := runLS(ctx, "fixture.sock"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost cancellation: %v", err)
 	}
 }

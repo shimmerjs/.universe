@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 type fakeInj struct {
@@ -145,6 +146,40 @@ func TestHandleAction(t *testing.T) {
 	b.handleAction(proto.Msg{Type: proto.TypeAction, Widget: "w", Arg: "tap"})
 	if len(inj.keys) != 0 {
 		t.Fatalf("unbound gesture injected %v", inj.keys)
+	}
+}
+
+func TestQueuedInputCannotCrossReplacement(t *testing.T) {
+	for _, replacement := range []string{"renderer", "config"} {
+		t.Run(replacement, func(t *testing.T) {
+			b, inj := inputTestBus()
+			b.input = make(chan proto.Msg, 4)
+			pointer := proto.Msg{Type: proto.TypeForward, Widget: "w", Gesture: &proto.Gesture{Kind: proto.GestureTap}}
+			key := proto.Msg{Type: proto.TypeAction, Widget: "w", Arg: "swipe-left"}
+			b.enqueueInput(pointer)
+			b.enqueueInput(key)
+			if replacement == "renderer" {
+				b.installRenderer("/unused-new-generation.sock")
+				b.inj = inj
+			} else {
+				b.pending = b.cfg
+				b.trySwapPending(map[string]*schedEntry{})
+			}
+			st, _ := b.reg.Get("w")
+			st.setWindowID(7) // Window IDs can repeat in a new renderer.
+			b.handleForward(<-b.input)
+			b.handleAction(<-b.input)
+			if len(inj.sgr) != 0 || len(inj.keys) != 0 {
+				t.Fatalf("stale input injected: sgr=%v keys=%v", inj.sgr, inj.keys)
+			}
+			b.enqueueInput(pointer)
+			b.enqueueInput(key)
+			close(b.input)
+			b.inputWorker()
+			if len(inj.sgr) != 2 || len(inj.keys) != 1 {
+				t.Fatalf("fresh input lost: sgr=%v keys=%v", inj.sgr, inj.keys)
+			}
+		})
 	}
 }
 
@@ -536,7 +571,7 @@ func TestRowActSurfacesExit(t *testing.T) {
 
 	client, server := net.Pipe()
 	t.Cleanup(func() { client.Close(); server.Close() })
-	b.docks = map[net.Conn]*json.Encoder{server: json.NewEncoder(server)}
+	b.docks = map[net.Conn]*socketio.Writer{server: testDockWriter(t, server)}
 	notices := make(chan proto.Msg, 1)
 	go func() {
 		dec := json.NewDecoder(client)
@@ -570,7 +605,7 @@ func TestRowActSurfacesExit(t *testing.T) {
 // replay.
 func TestActFailRecordsBroadcastsAndReplays(t *testing.T) {
 	b, _ := inputTestBus()
-	b.docks = make(map[net.Conn]*json.Encoder)
+	b.docks = make(map[net.Conn]*socketio.Writer)
 	b.execStart = func(argv []string) (func() error, error) {
 		return nil, fmt.Errorf("exec: %q: executable file not found in $PATH", argv[0])
 	}
@@ -615,8 +650,8 @@ func TestActFailRecordsBroadcastsAndReplays(t *testing.T) {
 	t.Cleanup(func() { client.Close(); server.Close() })
 	go func() {
 		defer server.Close()
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 	greet := make(chan proto.Msg, 16)
 	go func() {

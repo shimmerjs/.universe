@@ -5,8 +5,7 @@ import (
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
-
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 	"github.com/shimmerjs/khudson/khudson/schema"
 )
 
@@ -35,19 +34,21 @@ func TestSchemaModuleVocabularyCompiled(t *testing.T) {
 }
 
 // The module.Persistent implementers (cpumem, disk) must be process-wide
-// singletons: cmdBus's restoreHist and bus.Run's b.mods each call All() and
-// must share the ring-holding instances, or a restored history would land in
-// rings nobody polls. Other modules may be fresh per call.
+// singletons shared between the history restore list and polling registry.
 func TestPersistentModulesAreSingletons(t *testing.T) {
-	a, b := All(), All()
+	a := All()
+	b := map[any]bool{}
+	for _, m := range Persistent() {
+		b[m] = true
+	}
 	found := 0
 	for name, m := range a {
 		if _, ok := m.(module.Persistent); !ok {
 			continue
 		}
 		found++
-		if b[name] != m {
-			t.Errorf("%s: Persistent module differs across All() calls; history restore and polling would split", name)
+		if !b[m] {
+			t.Errorf("%s: Persistent module differs between history restore and provider registry; history restore and polling would split", name)
 		}
 	}
 	if found == 0 {

@@ -10,6 +10,7 @@ import (
 func armedMod(t *testing.T, now time.Time) *Mod {
 	t.Helper()
 	m := New()
+	t.Cleanup(func() { m.Close() })
 	m.now = func() time.Time { return now }
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -116,6 +117,7 @@ func TestHandleCtlRefreshesArmDeadline(t *testing.T) {
 // whole mechanism is zero until someone arms.
 func TestNoWatchdogWhenNothingArmed(t *testing.T) {
 	m := New()
+	t.Cleanup(func() { m.Close() })
 	m.now = time.Now
 	if _, _, err := m.HandleCtl([]string{"status"}); err != nil {
 		t.Fatal(err)
@@ -124,5 +126,16 @@ func TestNoWatchdogWhenNothingArmed(t *testing.T) {
 	defer m.mu.Unlock()
 	if m.armWatch {
 		t.Fatal("started a watchdog with nothing armed")
+	}
+}
+
+func TestCloseJoinsArmWatchdog(t *testing.T) {
+	m := armedMod(t, time.Now())
+	done := make(chan struct{})
+	go func() { m.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("arm watchdog outlived close")
 	}
 }

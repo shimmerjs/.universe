@@ -46,9 +46,7 @@ func (p Paths) TouchSocket() string { return filepath.Join(p.Dir, "touch.sock") 
 // KeysSocket is where khudson-touchd serves Moonlander key events.
 func (p Paths) KeysSocket() string { return filepath.Join(p.Dir, "keys.sock") }
 
-// LogiSocket is where khudson-touchd serves logiretch (MX Master) state
-// lines. The bus battery-icon consumer (rendering last-known value + age) is a
-// later cut; this only pins the path so it stays a frozen contract.
+// LogiSocket carries Logitech device state from magicbus to subscribers.
 func (p Paths) LogiSocket() string { return filepath.Join(p.Dir, "logiretch.sock") }
 
 // KittySocket is the scrape-substrate kitty's RC socket: the windowless
@@ -58,13 +56,12 @@ func (p Paths) LogiSocket() string { return filepath.Join(p.Dir, "logiretch.sock
 func (p Paths) KittySocket() string { return filepath.Join(p.Dir, "kitty.sock") }
 
 // HudKittySocket is the HUD kitty's RC socket: the fullscreen window on the
-// Edge running the dock. Input injection targets this instance.
+// Edge running the dock. Forwarded widget input targets the separate scrape renderer.
 func (p Paths) HudKittySocket() string { return filepath.Join(p.Dir, "kitty-panel.sock") }
 
 // MainKittySocket is the daily (Launch Services) kitty's RC socket, bound
-// CLI-verbatim via darwinLaunchOptions. The bus never injects through it;
-// it only health-probes the fixed path so a SIGKILL corpse can be unlinked
-// (bus/mainkitty.go).
+// CLI-verbatim via darwinLaunchOptions. Explicit Claude/Reno controls use it;
+// the bus also monitors its availability.
 func (p Paths) MainKittySocket() string { return filepath.Join(p.Dir, "main-kitty.sock") }
 
 // ClaudeSpool is where the claude statusline tee drops session JSON.

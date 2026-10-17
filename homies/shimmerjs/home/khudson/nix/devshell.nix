@@ -31,13 +31,13 @@ let
     '';
   };
 
-  # Race detector on the two concurrency-heavy packages (bus + dock).
+  # Race detector on the bus and shared surface runtime.
   khudsonRace = pkgs.writeShellApplication {
     name = "khudson-race";
     runtimeInputs = [ pkgs.go ];
     text = ''
       cd ${khudsonRootExpr}
-      exec go test -race "$@" ./internal/bus/ ./internal/dock/
+      exec go test -race "$@" ./internal/bus/ ./surface/
     '';
   };
 
@@ -65,7 +65,7 @@ let
   };
 
   # Env-gated live tests. Each gate + its packages:
-  #   KHUDSON_KB_REAL=1     -> ./internal/dock (renders the real deployed
+  #   KHUDSON_KB_REAL=1     -> ./surface (renders the real deployed
   #                         layout through the loader; wants the board or
   #                         its local caches present).
   #   KHUDSON_CLAUDE_LIVE=1 -> ./internal/module/claudesessions (live host poll).
@@ -91,7 +91,7 @@ let
       export KHUDSON_SPIKE1_BTOP="''${KHUDSON_SPIKE1_BTOP:-${pkgs.btop}/bin/btop}"
       exec go test -v "$@" \
         ./internal/ax/ \
-        ./internal/dock/ \
+        ./surface/ \
         ./internal/module/claudesessions/ \
         ./internal/bus/
     '';
@@ -216,7 +216,7 @@ pkgs.mkShell {
     cat <<'EOF'
     khudson dev shell. Module: homies/shimmerjs/home/khudson/khudson
       khudson-test        go test ./...          (host tools present -> green)
-      khudson-race        go test -race          (./internal/bus ./internal/dock)
+      khudson-race        go test -race          (./internal/bus ./surface)
       khudson-build       go build -> /tmp/khudson/khudson
       khudson-vet         build + go vet ./...
       khudson-live        env-gated live tests   (KHUDSON_KB_REAL/CLAUDE_LIVE/SPIKE1/AX)

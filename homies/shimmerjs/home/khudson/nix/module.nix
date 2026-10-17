@@ -21,11 +21,10 @@ let
   #   khudson.sock        bus <-> dock/ctl
   #   touch.sock       touchd -> bus contact frames
   #   keys.sock        touchd -> bus Moonlander key events
-  #   kitty-panel.sock HUD kitty RC (fullscreen window on the Edge; bus
-  #                    injects input here; bound via --listen-on CLI, which
-  #                    is verbatim -- the config form appends -PID)
-  #   kitty.sock       scrape-substrate kitty RC (windowless instance hosting
-  #                    scraped TUIs; bus supervises/scrapes here)
+  #   kitty-panel.sock HUD kitty RC (fullscreen Edge window; theme commands;
+  #                    bound via --listen-on CLI without a PID suffix)
+  #   r-<pid>-<n>.sock bus-owned renderer RC (scraping and input injection;
+  #                    exists only while a connected dock needs exec widgets)
   #   main-kitty.sock  daily kitty RC (mainKittyIntegration, via LS launch
   #                    option -- CLI-verbatim like kitty-panel.sock above)
   #   claude/          claude-sessions spool (module-owned hooks, below)
@@ -41,6 +40,7 @@ let
   # single-sourced in magicbus (it signs touchd too); referenced, never
   # duplicated.
   khudsonInstall = "${appSupport}/bin/khudson";
+  renomanInstall = "${appSupport}/bin/renoman";
   khudsonSignRecipe = "sign-v1:${magicbus.signingIdentity}";
 
   # The verify+reinstall logic for both out-of-store installs, extracted so
@@ -48,7 +48,7 @@ let
   # exact script activation runs.
   binInstallScript = import ./install-script.nix { inherit pkgs; };
 
-  # khudson: bus + dock + ctl, one binary. Deps fetched from go.mod/go.sum
+  # Integrated host and standalone component binaries. Deps from go.mod/go.sum
   # (nix builds the go-modules FOD; no committed vendor tree -- recompute
   # vendorHash after any dep change: set lib.fakeHash, build, paste the got
   # hash). Only forced when cfg.enable.
@@ -65,6 +65,23 @@ let
     # needs __darwinAllowLocalNetworking = true.
     doCheck = true;
   };
+
+  couchSession = pkgs.writeText "khudson-couch.kitty-session" ''
+    new_tab Components
+    layout grid
+    launch --title Claude ${khudson}/bin/claudeman
+    launch --title Keyboard ${khudson}/bin/kuiboard
+    launch --title Logitech ${khudson}/bin/logiretch
+    launch --title Resources ${khudson}/bin/khresources
+    new_tab Shell
+    launch
+    focus_tab 1
+  '';
+  couchKitty = pkgs.writeText "khudson-couch-kitty.conf" ''
+    include ${config.xdg.configHome}/kitty/kitty.conf
+    startup_session ${couchSession}
+    allow_remote_control no
+  '';
 
   # Rebranded kitty.app copy (khudson.app + generated icns) so the HUD's
   # Dock tile and Cmd-Tab entry read "khudson"; the hud agent execs the
@@ -175,6 +192,7 @@ let
   # the Input Monitoring TCC grant and emits contact frames on touch.sock
   # and Moonlander key events on keys.sock.
   agentCommands = {
+    reno = ''/bin/wait4path "${renomanInstall}" && exec "${renomanInstall}" serve'';
     # The HUD kitty, display-gated: khudson hud-launcher launches the plain
     # fullscreen window (--position + --start-as fullscreen) ONLY while the
     # Edge is connected -- a blind launch clamps a junk non-fullscreen
@@ -195,28 +213,11 @@ let
     # fresh host) until khudsonBinInstall has run once.
     hud = ''/bin/wait4path "${khudsonInstall}" && exec "${khudsonInstall}" hud-launcher -kitty "${khudson-hud-app}/Applications/khudson.app/Contents/MacOS/.kitty-wrapped" -kitty-config "${config.xdg.configHome}/khudson/hud-kitty.conf" -config "${config.xdg.configHome}/khudson/edge.cue"'';
 
-    # The scrape substrate: a windowless regular-instance kitty hosting the
-    # scraped-TUI windows (minimized at launch, then RC-hidden). Regular
-    # instance because quick-access/panel instances never paint invisible
-    # windows; --config NONE because nothing here is user-visible.
-    # macos_hide_from_tasks is safe here -- this instance never fullscreens.
-    # The stale-socket rm guards KeepAlive relaunches: a leftover socket
-    # file would shadow the new bind (an exiting instance also unlinks a
-    # shared path, so no other agent may reuse this socket path).
-    # Execs the khudson.app copy's .kitty-wrapped, NOT pkgs.kitty: a bare
-    # kitty image makes this process a net.kovidgoyal.kitty activation
-    # target, so the dock rail's `open -a kitty` tap UNHIDES the substrate
-    # on glass (observed live 2026-07-09). Under the khudson bundle id no
-    # kitty activation can reach it. clear_all_mouse_actions matches the
-    # HUD conf: if a substrate window ever does surface, click-drag must
-    # not read as text selection.
-    substrate = ''/bin/wait4path "${khudson-hud-app}/Applications/khudson.app/Contents/MacOS/.kitty-wrapped" && rm -f "${appSupport}/kitty.sock" && exec "${khudson-hud-app}/Applications/khudson.app/Contents/MacOS/.kitty-wrapped" --config NONE -o clear_all_mouse_actions=yes -o allow_remote_control=socket-only -o macos_hide_from_tasks=yes --listen-on "unix:${appSupport}/kitty.sock" --title khudson-substrate --start-as hidden'';
-
     # Headless bus: recognizer, scheduler, RC client, widget supervision.
     # The Accessibility TCC client (dockmirror's direct AX walk plus the
     # `ax unminimize` row verb), so it execs the fixed install like the
     # hud agent above.
-    bus = ''/bin/wait4path "${khudsonInstall}" && exec "${khudsonInstall}" bus -config "${config.xdg.configHome}/khudson/edge.cue"'';
+    bus = ''/bin/wait4path "${khudsonInstall}" && exec "${khudsonInstall}" bus -renderer-kitty "${khudson-hud-app}/Applications/khudson.app/Contents/MacOS/.kitty-wrapped" -config "${config.xdg.configHome}/khudson/edge.cue"'';
   };
 in
 {
@@ -249,9 +250,23 @@ in
     # owes one manual daily-kitty relaunch (listen_on binds at startup), so
     # it is opt-in rather than riding cfg.enable.
     mainKittyIntegration.enable = lib.mkEnableOption "declarative main-kitty RC socket + socket-only hardening for the khudson bus (see main-kitty-integration.md)";
+
+    couchMode.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = cfg.mainKittyIntegration.enable;
+      defaultText = lib.literalExpression "config.universe.home.khudson.mainKittyIntegration.enable";
+      description = "Open independent component programs in kitty's existing Quick Access terminal startup session.";
+    };
   };
 
   config = lib.mkMerge [
+    (lib.mkIf cfg.couchMode.enable {
+      assertions = [{
+        assertion = cfg.enable && config.programs.kitty.enable;
+        message = "khudson couch mode requires khudson and kitty packages.";
+      }];
+      programs.kitty.quickAccessTerminalConfig.kitty_conf = "${couchKitty}";
+    })
     (lib.mkIf cfg.enable {
     # The HUD needs both HID sources feeding the bus: touch.sock (edge) and
     # keys.sock (moonlander) come from magicbus's daemon. mkDefault so a host
@@ -293,9 +308,8 @@ in
     # comment for why this bypasses launchd.agents). Launchers reinstall
     # unconditionally -- content may embed new store paths (kitty) while the
     # plist, which only names the stable launcher path, stays byte-identical;
-    # the running agents pick the new content up at the khudsonRestart
-    # kickstarts. Plists bootout/reinstall/bootstrap only on change, plus a
-    # bootstrap-if-unloaded repair leg so a hand-booted-out agent comes back.
+    # retire the current owners before bootstrapping their replacements.
+    # Unloaded agents are repaired even when the plist is unchanged.
     home.activation.khudsonAgents =
       lib.hm.dag.entryBetween
         [ "khudsonRestart" ]
@@ -307,21 +321,32 @@ in
         ''
           run install -d -m 700 "${agentsDir}"
           khudsonAgentsUid=$(id -u)
+          # The previous bus owned Reno state. Retire both possible owners
+          # before bootstrapping either replacement, including first migration.
+          ${builtins.readFile ./agent-lifecycle.sh}
+          khudsonRetireOwner "${agentLabel "bus"}" || exit 1
+          khudsonRetireOwner "${agentLabel "reno"}" || exit 1
+          khudsonRetireOwner "${agentLabel "hud"}" || exit 1
+          # The bus now owns the renderer. Retire the previous always-on agent.
+          if /bin/launchctl print "gui/$khudsonAgentsUid/${agentLabel "substrate"}" >/dev/null 2>&1; then
+            run /bin/launchctl bootout "gui/$khudsonAgentsUid/${agentLabel "substrate"}" || exit 1
+          fi
+          run rm -f "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel "substrate"}.plist" "${agentsDir}/khudson-substrate"
           ${lib.concatStrings (
             lib.mapAttrsToList (name: cmd: ''
               run install -m 755 "${mkLauncher name cmd}" "${agentsDir}/khudson-${name}"
               if ! /usr/bin/cmp -s "${mkAgentPlist name}" "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel name}.plist"; then
                 run /bin/launchctl bootout "gui/$khudsonAgentsUid/${agentLabel name}" 2>/dev/null || true
                 run install -m 444 "${mkAgentPlist name}" "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel name}.plist"
-                run /bin/launchctl bootstrap "gui/$khudsonAgentsUid" "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel name}.plist" || true
+                run /bin/launchctl bootstrap "gui/$khudsonAgentsUid" "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel name}.plist" || exit 1
               elif ! /bin/launchctl print "gui/$khudsonAgentsUid/${agentLabel name}" > /dev/null 2>&1; then
-                run /bin/launchctl bootstrap "gui/$khudsonAgentsUid" "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel name}.plist" || true
+                run /bin/launchctl bootstrap "gui/$khudsonAgentsUid" "${config.home.homeDirectory}/Library/LaunchAgents/${agentLabel name}.plist" || exit 1
               fi
             '') agentCommands
           )}
         '';
 
-    # --- ordered activation pipeline, DAG-encoded ---
+    # Ordered activation pipeline:
     # config flip (linkGeneration, implicit)
     #   -> khudsonRuntimeDirs (+ magicbusRuntimeDirs, magicbus.nix)
     #   -> khudsonBinInstall + khudsonTouchdInstall (magicbus.nix)
@@ -330,9 +355,7 @@ in
     #                              org.nix-community.home.* agents)
     #   -> khudsonAgents          (module-owned: launchers + plists + bootstrap;
     #                              magicbusAgents owns the touchd agent)
-    #   -> khudsonRestart         (substrate -> bus -> hud-launcher, liveness-
-    #                              gated; touchd's kickstart is magicbusKickstart,
-    #                              ordered before this)
+    #   -> khudsonRestart         (bus/Reno readiness; no second restart)
     # Accepted cost: any switch touching khudson restarts the whole HUD,
     # including keepAlive scraped panes.
 
@@ -350,7 +373,7 @@ in
     # khudsonTouchdInstall for the staging discipline and the
     # no-hardened-runtime rationale, which applies verbatim: khudson links
     # nix-store dylibs too). No .updated
-    # marker: khudsonRestart kickstarts bus + hud unconditionally. The script
+    # marker: khudsonAgents replaces service lifetimes on activation. The script
     # (install-script.nix) stages + signs BESIDE the granted binary and swaps
     # atomically only after codesign succeeds (M1c), verifies the installed
     # signature on EVERY activation (the stamp is only the store-path/recipe
@@ -364,13 +387,16 @@ in
             "${appSupport}/bin/.khudson.store-path" \
             "${khudson} ${khudsonSignRecipe}" \
             ${lib.escapeShellArg magicbus.signingIdentity}
+          run ${binInstallScript}/bin/khudson-bin-install \
+            "${khudson}/bin/renoman" \
+            "${renomanInstall}" \
+            "${appSupport}/bin/.renoman.store-path" \
+            "${khudson} ${khudsonSignRecipe}" \
+            ${lib.escapeShellArg magicbus.signingIdentity}
         '';
 
-    # One ordered restart pipeline, each step gated on liveness of
-    # the previous (socket presence as the proxy). Skeleton: gates warn rather
-    # than abort activation, and dock-adopt is a stub verb until khudson ctl
-    # lands. `@ ls` topology snapshots happen inside the bus only after its
-    # kitty gate passed, so the bus never snapshots a dying instance.
+    # Agents were retired and bootstrapped above. Check readiness without
+    # killing the replacement processes or requiring an attached Edge.
     home.activation.khudsonRestart = lib.hm.dag.entryAfter [ "setupLaunchAgents" ] ''
       khudsonWaitSock() {
         [ -n "''${DRY_RUN:-}" ] && return 0
@@ -383,30 +409,11 @@ in
         echo "khudson: timed out waiting for $1" >&2
         return 1
       }
-      khudsonUid=$(id -u)
 
-      # (touchd's conditional kickstart moved to magicbusKickstart, magicbus.nix,
-      # ordered before this step.)
-
-      # 1. scrape substrate. The agent clears its own stale socket pre-exec;
-      #    the wait gates the bus on a live substrate to adopt against.
-      run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "substrate"}" || true
-      khudsonWaitSock "${appSupport}/kitty.sock" || true
-
-      # 2. bus, only after the substrate is up.
-      run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "bus"}" || true
-      khudsonWaitSock "${appSupport}/khudson.sock" || true
-
-      # 3. hud-launcher. NO socket wait: the launcher only creates the HUD
-      #    (and its kitty-panel.sock) while the Edge is connected, so a wait
-      #    here would stall every switch on an unplugged display. The dock
-      #    reconnects to the bus whenever it does come up.
-      run /bin/launchctl kickstart -k "gui/$khudsonUid/${agentLabel "hud"}" || true
-
-      # 4. dock-adopt: dock re-handshakes with the bus (reports grid +
-      #    per-slot view state). Stub until `khudson ctl adopt`
-      #    exists; the dock itself was already restarted with its kitty.
-      run "${khudson}/bin/khudson" ctl adopt 2>/dev/null || true
+      khudsonWaitSock "${appSupport}/khudson.sock" || exit 1
+      khudsonWaitSock "${appSupport}/reno/owner.sock" || exit 1
+      run "${khudson}/bin/khudson" ctl status >/dev/null || exit 1
+      run "${khudson}/bin/renoman" jobs >/dev/null || exit 1
     '';
     })
 

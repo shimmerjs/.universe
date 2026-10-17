@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 func testMod() *Mod {
@@ -101,6 +101,24 @@ func TestArtLightsControls(t *testing.T) {
 	}
 	if !m.held["left"] || !m.isLit("left") {
 		t.Error("held button decayed")
+	}
+}
+
+func TestHeldHighlightAndReleaseExpiry(t *testing.T) {
+	m := testMod()
+	now := m.now()
+	m.now = func() time.Time { return now }
+	m.apply(wireLine{Kind: "input", Pressed: []string{"left"}, Held: []string{"left"}})
+	now = now.Add(10 * litFor)
+	m.expire()
+	if !m.isLit("left") {
+		t.Fatal("held highlight expired")
+	}
+	m.apply(wireLine{Kind: "input", Released: []string{"left"}})
+	now = now.Add(litFor + time.Millisecond)
+	m.expire()
+	if m.isLit("left") {
+		t.Fatal("released highlight did not expire")
 	}
 }
 

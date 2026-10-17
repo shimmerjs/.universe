@@ -1,26 +1,21 @@
-// Theme service: the bus owns the palette. kitty IS the theme (style
-// deferral): the HUD kitty's effective colors are fetched over RC
-// (get-colors) when a dock adopts, cached here, and broadcast as TypeTheme
-// {theme, palette}; `ctl theme day|night` re-colors the HUD kitty via
-// set-colors, pairs an m1ddc luminance move, then re-fetches and
-// re-broadcasts so docks always style from what the glass actually shows.
+// Semantic theme selection is independent of Edge availability. Physical
+// palette and brightness effects require an Edge host and retain separate outcomes.
 package bus
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net"
-	"os/exec"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 	"github.com/shimmerjs/khudson/khudson/internal/rc"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
 )
 
 // ThemeColors is the instance-global color surface of the HUD kitty; fakes
@@ -107,68 +102,8 @@ func (h *hudColors) ResetColors() error {
 	return err
 }
 
-// call mirrors internal/rc's wire framing (<ESC>P@kitty-cmd{json}<ESC>\,
-// envelope {cmd, version, payload}) for the two color commands. Kept local
-// instead of extending rc.Client so this client's verb surface stays
-// colors-only; the protocol version is shared with rc.
 func (h *hudColors) call(cmd string, payload any) (json.RawMessage, error) {
-	const dcsPrefix = "\x1bP@kitty-cmd"
-	const dcsSuffix = "\x1b\\"
-
-	conn, err := net.DialTimeout("unix", h.socket, h.timeout)
-	if err != nil {
-		return nil, fmt.Errorf("%s: dial %s: %w", cmd, h.socket, err)
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(h.timeout)); err != nil {
-		return nil, fmt.Errorf("%s: deadline: %w", cmd, err)
-	}
-
-	body, err := json.Marshal(struct {
-		Cmd     string `json:"cmd"`
-		Version [3]int `json:"version"`
-		Payload any    `json:"payload,omitempty"`
-	}{Cmd: cmd, Version: rc.Version, Payload: payload})
-	if err != nil {
-		return nil, fmt.Errorf("%s: marshal: %w", cmd, err)
-	}
-	if _, err := conn.Write(append(append([]byte(dcsPrefix), body...), dcsSuffix...)); err != nil {
-		return nil, fmt.Errorf("%s: write: %w", cmd, err)
-	}
-
-	var buf bytes.Buffer
-	tmp := make([]byte, 4096)
-	for {
-		n, rerr := conn.Read(tmp)
-		buf.Write(tmp[:n])
-		b := buf.Bytes()
-		if start := bytes.Index(b, []byte(dcsPrefix)); start >= 0 {
-			rest := b[start+len(dcsPrefix):]
-			if end := bytes.Index(rest, []byte(dcsSuffix)); end >= 0 {
-				var resp struct {
-					OK    bool            `json:"ok"`
-					Data  json.RawMessage `json:"data,omitempty"`
-					Error string          `json:"error,omitempty"`
-				}
-				if err := json.Unmarshal(rest[:end], &resp); err != nil {
-					return nil, fmt.Errorf("%s: bad response: %w", cmd, err)
-				}
-				if !resp.OK {
-					if resp.Error == "" {
-						resp.Error = "unspecified rc error"
-					}
-					return nil, fmt.Errorf("%s: kitty: %s", cmd, resp.Error)
-				}
-				return resp.Data, nil
-			}
-		}
-		if rerr != nil {
-			if rerr == io.EOF {
-				return nil, fmt.Errorf("%s: connection closed before response frame (got %d bytes)", cmd, buf.Len())
-			}
-			return nil, fmt.Errorf("%s: %w", cmd, rerr)
-		}
-	}
+	return rc.CallColors(h.socket, h.timeout, cmd, payload)
 }
 
 // parseColors parses `kitten @ get-colors` output: one "key<spaces>#rrggbb"
@@ -211,7 +146,7 @@ func truncateStr(s string, n int) string {
 type m1ddcLuminance struct{}
 
 func (m1ddcLuminance) Set(ctx context.Context, bin, display string, value int) error {
-	out, err := exec.CommandContext(ctx, bin, "display", "list").Output()
+	out, err := subprocess.Output(ctx, bin, "display", "list")
 	if err != nil {
 		return fmt.Errorf("%s display list: %w", bin, err)
 	}
@@ -237,27 +172,41 @@ func (m1ddcLuminance) Set(ctx context.Context, bin, display string, value int) e
 	if idx == 0 {
 		return fmt.Errorf("%s: display %q not found", bin, display)
 	}
-	if _, err := exec.CommandContext(ctx, bin, "display", strconv.Itoa(idx), "set", "luminance", strconv.Itoa(value)).Output(); err != nil {
+	if _, err := subprocess.Output(ctx, bin, "display", strconv.Itoa(idx), "set", "luminance", strconv.Itoa(value)); err != nil {
 		return fmt.Errorf("%s set luminance %d: %w", bin, value, err)
 	}
 	return nil
 }
 
-// ensurePalette fetches the HUD palette once, asynchronously, and broadcasts
-// it. Called from the dock greeting: the dock runs inside the HUD kitty, so
-// a dock hello IS the kitty liveness gate. A failed fetch stays uncached and
-// retries on the next dock hello (or a theme switch).
+// ensurePalette reconciles a newly adopted Edge host. Deferred theme selection
+// applies before reading its effective palette; failures remain pending.
 func (b *Bus) ensurePalette() {
 	b.mu.Lock()
-	if b.colors == nil || b.palette != nil || b.fetchingPalette {
+	if b.colors == nil || (b.palette != nil && !b.themePending) || b.fetchingPalette || !b.edgeAvailableLocked() {
 		b.mu.Unlock()
 		return
 	}
 	b.fetchingPalette = true
+	b.paletteWaiters.Add(1)
 	b.mu.Unlock()
 
 	go func() {
+		defer b.paletteWaiters.Done()
+		b.themeMu.Lock()
+		defer b.themeMu.Unlock()
+		b.mu.Lock()
+		pending, theme := b.themePending, b.themeLocked()
+		b.mu.Unlock()
+		if pending {
+			err := b.switchThemeLocked(theme)
+			diagnostic.Default.Observe("theme.edge.apply", err, "retain desired theme; retry on next Edge adoption or theme command")
+			b.mu.Lock()
+			b.fetchingPalette = false
+			b.mu.Unlock()
+			return
+		}
 		pal, err := b.colors.GetColors()
+		diagnostic.Default.Observe("theme.palette.read", err, "retry on next Edge adoption or theme command")
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.fetchingPalette = false
@@ -269,7 +218,7 @@ func (b *Bus) ensurePalette() {
 			return // a theme switch already installed a fresher palette
 		}
 		b.palette = pal
-		theme := b.themeLocked()
+		theme = b.themeLocked()
 		b.broadcastLocked(proto.Msg{Type: proto.TypeTheme, Theme: theme, Palette: pal})
 	}()
 }
@@ -292,9 +241,44 @@ func (b *Bus) themeLocked() string {
 func (b *Bus) switchTheme(theme string) error {
 	b.themeMu.Lock()
 	defer b.themeMu.Unlock()
+	if err := b.persistTheme(theme); err != nil {
+		diagnostic.Default.Observe("theme.persist", err, "refuse theme change until desired state is durable")
+		return err
+	}
+	return b.switchThemeLocked(theme)
+}
 
+// Caller holds themeMu. Semantic selection survives a missing Edge host.
+func (b *Bus) switchThemeLocked(theme string) (applyErr error) {
+	defer func() {
+		if applyErr == nil {
+			return
+		}
+		// Keep the same desired state in memory and on disk. A failed host
+		// update must remain eligible for reconciliation on its next adoption.
+		b.mu.Lock()
+		b.theme, b.themePending = theme, true
+		b.palette = map[string]string{}
+		if theme == "night" && b.cfg.Theme != nil {
+			b.palette = maps.Clone(b.cfg.Theme.Night.Colors)
+		}
+		b.broadcastLocked(proto.Msg{Type: proto.TypeTheme, Theme: theme, Palette: b.palette, ResetPalette: len(b.palette) == 0})
+		b.mu.Unlock()
+		applyErr = &reconciliationError{err: applyErr}
+	}()
 	b.mu.Lock()
 	themeCfg := b.cfg.Theme
+	if !b.edgeAvailableLocked() {
+		b.theme, b.themePending = theme, true
+		b.palette = map[string]string{}
+		if theme == "night" && themeCfg != nil {
+			b.palette = maps.Clone(themeCfg.Night.Colors)
+		}
+		b.broadcastLocked(proto.Msg{Type: proto.TypeTheme, Theme: theme, Palette: b.palette, ResetPalette: len(b.palette) == 0})
+		b.mu.Unlock()
+		diagnostic.Operation("theme.edge", "", "deferred", "no Edge view; semantic theme selected")
+		return nil
+	}
 	b.mu.Unlock()
 
 	if b.colors != nil {
@@ -322,8 +306,14 @@ func (b *Bus) switchTheme(theme string) error {
 		if theme == "night" {
 			v = themeCfg.Luminance.Night
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := b.lum.Set(ctx, themeCfg.Luminance.Bin, themeCfg.Luminance.Display, v); err != nil {
+		base := b.runCtx
+		if base == nil {
+			base = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(base, 10*time.Second)
+		err := b.lum.Set(ctx, themeCfg.Luminance.Bin, themeCfg.Luminance.Display, v)
+		diagnostic.Default.Observe("theme.luminance", err, "palette and brightness have independent outcomes; retry on explicit theme command")
+		if err != nil {
 			log.Printf("khudson bus: theme %s: luminance: %v", theme, err)
 		}
 		cancel()
@@ -332,8 +322,10 @@ func (b *Bus) switchTheme(theme string) error {
 	var pal map[string]string
 	if b.colors != nil {
 		var err error
-		if pal, err = b.colors.GetColors(); err != nil {
-			log.Printf("khudson bus: theme %s: palette re-fetch: %v", theme, err)
+		pal, err = b.colors.GetColors()
+		diagnostic.Default.Observe("theme.palette.read", err, "retain desired theme; reconcile on next Edge adoption")
+		if err != nil {
+			return fmt.Errorf("theme %s: palette re-fetch: %w", theme, err)
 		}
 	}
 
@@ -341,10 +333,11 @@ func (b *Bus) switchTheme(theme string) error {
 	// order with the state
 	b.mu.Lock()
 	b.theme = theme
+	b.themePending = false
 	if pal != nil {
 		b.palette = pal
 	}
-	b.broadcastLocked(proto.Msg{Type: proto.TypeTheme, Theme: theme, Palette: b.palette})
+	b.broadcastLocked(proto.Msg{Type: proto.TypeTheme, Theme: theme, Palette: b.palette, ResetPalette: len(b.palette) == 0})
 	b.mu.Unlock()
 	return nil
 }

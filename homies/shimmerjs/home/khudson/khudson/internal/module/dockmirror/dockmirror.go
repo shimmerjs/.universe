@@ -15,14 +15,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/ax"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // minimizedEvery is the default floor between AX sweeps; params
@@ -217,7 +217,7 @@ func titleApp(title string) string {
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := subprocess.Output(ctx, name, args...)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", name, err)
 	}

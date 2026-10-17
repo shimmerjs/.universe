@@ -6,11 +6,11 @@ package sysmon
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Mod implements module.Module. run is the exec test seam; nil means the
@@ -67,7 +67,7 @@ func (m *Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
 type runFunc func(ctx context.Context, name string, args ...string) (string, error)
 
 func runCmd(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := subprocess.Output(ctx, name, args...)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", name, err)
 	}

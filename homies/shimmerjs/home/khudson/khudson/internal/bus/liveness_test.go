@@ -21,8 +21,8 @@ func startLivenessDock(t *testing.T, b *Bus) (client, server net.Conn, done chan
 	go func() {
 		defer close(done)
 		defer server.Close()
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 	go func() {
 		dec := json.NewDecoder(client)

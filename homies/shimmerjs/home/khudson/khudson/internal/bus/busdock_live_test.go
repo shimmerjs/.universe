@@ -110,7 +110,7 @@ layout: "main"
 	defer conn.Close()
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(proto.Msg{
-		Type: proto.TypeHello, Role: proto.RoleDock,
+		Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(),
 		Cols: 160, Rows: 33, PanelCols: 120, PanelRows: 30,
 	}); err != nil {
 		t.Fatal(err)

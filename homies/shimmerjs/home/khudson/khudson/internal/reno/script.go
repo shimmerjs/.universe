@@ -179,7 +179,7 @@ func checkURL(args []string) error {
 
 // MaxScriptBytes bounds a script read: scripts are prose plus command
 // lines; anything bigger is not a script, and the bus reads this path
-// under the module lock (arc-2 review #18).
+// under the module lock.
 const MaxScriptBytes = 1 << 20
 
 // Load reads and parses the script at path. This is the one vet

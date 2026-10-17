@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 const gib = uint64(1024 * 1024 * 1024)

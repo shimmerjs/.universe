@@ -441,7 +441,7 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 	case "":
 		// leave OBS audio alone -- except reno's own mic: a prior take's
 		// device selection must not stay hot into a config that never
-		// asked for audio (arc-2 review #17)
+		// asked for audio
 		if _, ok := env.Inputs[MicInput]; ok {
 			p.Mutes[MicInput] = true
 		}
@@ -501,8 +501,7 @@ func BuildScenePlan(cfg RecordConfig, env ObsEnv) (*Plan, error) {
 		}
 	default:
 		// Webcam=="" means NO webcam item: a prior take's still-enabled
-		// reno-cam must not ride into this recording (arc-2 review #5 --
-		// the stale-camera mirror of the stale-screen prune)
+		// reno-cam must not ride into this recording; prune it just like a stale screen source
 		if kind, ok := env.Inputs[CamInput]; ok {
 			p.Inputs = append(p.Inputs, PlanInput{Name: CamInput, Kind: kind, Enabled: false})
 		}

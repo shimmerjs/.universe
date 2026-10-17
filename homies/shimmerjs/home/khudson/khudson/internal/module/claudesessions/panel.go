@@ -31,7 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 const (

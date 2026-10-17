@@ -10,6 +10,7 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // keysTestBus builds a minimal bus whose keys socket lives in a temp state
@@ -26,7 +27,7 @@ func keysTestBus(t *testing.T) (*Bus, <-chan proto.Msg, paths.Paths) {
 		opts:  Options{Paths: p},
 		cfg:   cfg,
 		reg:   NewRegistry(cfg),
-		docks: make(map[net.Conn]*json.Encoder),
+		docks: make(map[net.Conn]*socketio.Writer),
 	}
 	return b, addDecodingDock(t, b), p
 }

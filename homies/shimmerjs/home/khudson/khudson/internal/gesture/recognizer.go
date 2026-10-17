@@ -69,6 +69,11 @@ func New(cal Calibration, cells CellMetrics, cfg Config) *Recognizer {
 	return &Recognizer{cal: cal, cells: cells, cfg: cfg.withDefaults()}
 }
 
+// Cancel forgets an interrupted contact without synthesizing a tap or swipe.
+func (r *Recognizer) Cancel() {
+	*r = Recognizer{cal: r.cal, cells: r.cells, cfg: r.cfg}
+}
+
 // Frame consumes one contact frame and returns the gestures it completes
 // or advances. Multi-contact handling is fully separated: frames that
 // never carry two tip contacts never reach the multi path.

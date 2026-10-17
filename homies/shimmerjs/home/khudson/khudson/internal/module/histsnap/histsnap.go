@@ -17,7 +17,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // version is the snapshot format byte; a mismatch fails the load (fresh

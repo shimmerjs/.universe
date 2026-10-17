@@ -1,13 +1,5 @@
-// Package kittysessions lists the windows of the user's main kitty
-// instance over its RC socket (kitten @ ls). Pure data mapper: one row per
-// kitty window carrying the full RC address (os window / tab / window ids)
-// so the control-panel milestone can act on rows later; focus/resume verbs
-// are NOT this module's. The socket defaults to the fixed main-kitty.sock
-// under the khudson state root; the daily kitty runs
-// allow_remote_control=socket-only, so the user-write-only socket file is
-// the auth -- no password (kitty never consults remote_control_password
-// for socket peers; the retired M9 password arc built on that false
-// premise and never once worked from the launchd bus).
+// Package kittysessions maps main-kitty windows to provider rows.
+// The configured RC socket supplies access; actions belong to the host.
 package kittysessions
 
 import (
@@ -19,8 +11,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Mod implements module.Module.
@@ -53,20 +46,15 @@ func (Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error)
 	return renderWins(wins), nil
 }
 
-// runLS execs `kitten @ ls` against the socket. No password: the
-// socket-only daily kitty trusts socket peers, and setting
-// KITTY_RC_PASSWORD would make kitten demand a KITTY_PUBLIC_KEY that only
-// exists inside kitty's own children -- never in the bus.
 func runLS(ctx context.Context, socket string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "kitten", "@", "--to", "unix:"+socket, "ls")
-	out, err := cmd.Output()
+	out, err := subprocess.Output(ctx, "kitten", "@", "--to", "unix:"+socket, "ls")
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
 			msg, _, _ := strings.Cut(strings.TrimSpace(string(ee.Stderr)), "\n")
-			return nil, fmt.Errorf("kitten @ ls: %s", msg)
+			return nil, fmt.Errorf("kitten @ ls: %w: %s", err, msg)
 		}
-		return nil, fmt.Errorf("main kitty RC socket not reachable at %s (listen_on not configured?)", socket)
+		return nil, fmt.Errorf("query main kitty at %s: %w", socket, err)
 	}
 	return out, nil
 }

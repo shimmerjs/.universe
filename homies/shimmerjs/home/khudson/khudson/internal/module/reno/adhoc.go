@@ -17,9 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
 	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Recorder-view config acts (in-process, like the goto menu): each tap
@@ -123,7 +124,7 @@ func (m *Mod) setNotesLocked(args []string) error {
 	}
 	if !info.Mode().IsRegular() {
 		// the read runs in the bus under the module lock: a FIFO here
-		// would wedge every ctl and act (arc-2 review #18)
+		// would wedge every ctl and act
 		return fmt.Errorf("reno notes: %s is not a regular file", path)
 	}
 	if info.Size() > maxNotesBytes {
@@ -215,14 +216,10 @@ func (m *Mod) writeState(name string, v any) {
 		log.Printf("khudson reno: %s: %v", name, err)
 		return
 	}
-	tmp := filepath.Join(m.stateDir, name+".next")
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
-		log.Printf("khudson reno: %s: %v", name, err)
-		return
-	}
-	if err := os.Rename(tmp, filepath.Join(m.stateDir, name)); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.stateDir, name), body, 0600); err != nil {
 		log.Printf("khudson reno: %s: %v", name, err)
 	}
+
 }
 
 // recoverInventory reloads the cached probe. There is no age at which it
@@ -889,7 +886,7 @@ func (m *Mod) adoptFXLevelLocked(summary string) {
 	// loses the race against turning the effect off: the tap sets 0 and
 	// stops the driver, the driver's own note lands afterwards, and the
 	// level it carries would put the effect straight back up.
-	if m.sustain[fx.Kind] != nil {
+	if m.sustain[fx.Kind] != nil || m.retiring[fx.Kind] != nil {
 		return
 	}
 	if m.fxLevels == nil {
@@ -959,10 +956,8 @@ func (m *Mod) toggleScreenLocked(display string) {
 
 // openConfigLocked picks the config the arm journals: the script's for a
 // scripted recording run, the pending one for ad hoc. The returned value
-// is a DEEP snapshot -- a shallow copy would alias the Screens backing
-// array, so a later screen toggle (in-place delete) would corrupt the
-// journaled config and race the post-unlock RecordOpen marshal (arc-2
-// review #3). Caller holds mu.
+// is a deep snapshot: screen toggles must not change the journaled config
+// or race RecordOpen's marshal after unlock. Caller holds mu.
 func (m *Mod) openConfigLocked() *renocore.RecordConfig {
 	src := m.desired
 	if m.staged != nil && m.run != nil && m.run.Demo == m.staged.Name {

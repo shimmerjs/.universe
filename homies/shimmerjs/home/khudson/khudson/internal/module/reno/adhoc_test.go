@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 func testInventory() string {

@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Mod implements module.Module.

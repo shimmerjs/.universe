@@ -1,25 +1,13 @@
-// Caffeinate supervision: khudson owns the machine's background caffeinate.
-// The bus spawns /usr/bin/caffeinate -di (display + idle assertions), default
-// ON at start (config caffeinate.on), restarts it with backoff if it dies,
-// and kills it on toggle-off and bus shutdown. One supervision goroutine owns
-// spawn/kill, so a second copy is impossible by construction (single-flight);
-// toggles only flip the desired state and kick the loop. Desired state is the
-// surfaced/broadcast state -- spawn latency and crash-restarts are supervisor
-// detail the widget must not flap on; ctl status distinguishes "on (starting)"
-// for honesty.
-//
-// Orphan handling: launchctl kickstart -k SIGKILLs the bus, which skips the
-// kill and leaves the child caffeinate reparented to launchd, holding the
-// assertions forever. Every spawn writes the child pid to caffeinate.pid in
-// the state dir; the next bus reads it at startup and SIGTERMs that pid --
-// after verifying via ps that it still names a caffeinate, so pid reuse never
-// kills an innocent process. This is the simplest honest recovery: a
-// pgrep-style sweep could kill a caffeinate the user started by hand, while
-// the pidfile scopes the kill to processes this supervisor created.
+// The bus holds display/idle assertions only while an Edge view is available and
+// the user preference is on. One goroutine owns spawn/kill. caffeinate -w
+// also ties the assertion to the bus PID when normal cleanup cannot run.
+// The pidfile supports recovery of older children created without -w.
 package bus
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -31,10 +19,11 @@ import (
 	"syscall"
 	"time"
 
-	"context"
-
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
 )
 
 const (
@@ -59,30 +48,42 @@ type caffProc interface {
 
 type realCaffProc struct{ cmd *exec.Cmd }
 
-func (p realCaffProc) Pid() int    { return p.cmd.Process.Pid }
-func (p realCaffProc) Kill()       { _ = p.cmd.Process.Kill() }
+func (p realCaffProc) Pid() int { return p.cmd.Process.Pid }
+func (p realCaffProc) Kill() {
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		diagnostic.Default.Observe("caffeinate.kill", err, "wait_for_exit_before_replacement")
+	}
+}
 func (p realCaffProc) Wait() error { return p.cmd.Wait() }
 
 // launchCaffeinate starts the real assertion holder: -d (display) + -i
 // (idle system sleep), held until the process dies.
 func launchCaffeinate() (caffProc, error) {
-	cmd := exec.Command(caffBin, "-di")
+	cmd := caffeinateCommand(os.Getpid())
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	return realCaffProc{cmd: cmd}, nil
 }
 
+func caffeinateCommand(ownerPID int) *exec.Cmd {
+	return exec.Command(caffBin, "-di", "-w", strconv.Itoa(ownerPID))
+}
+
 // caffIsCaffeinate reports whether pid is (still) a caffeinate process, via
-// ps comm. Any failure -- pid gone, ps missing -- reports false: never kill
-// blind.
-func caffIsCaffeinate(pid int) bool {
-	out, err := exec.Command("/bin/ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+// ps comm. Read failures remain errors so recovery keeps the owner record.
+func caffIsCaffeinate(pid int) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := subprocess.Output(ctx, "/bin/ps", "-o", "comm=", "-p", strconv.Itoa(pid))
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	comm := strings.TrimSpace(string(out))
-	return comm == caffBin || strings.HasSuffix(comm, "/caffeinate") || comm == "caffeinate"
+	return comm == caffBin || strings.HasSuffix(comm, "/caffeinate") || comm == "caffeinate", nil
 }
 
 func caffSigterm(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
@@ -93,16 +94,17 @@ type caffeinator struct {
 	pidFile string
 	// exec seams
 	launch func() (caffProc, error)
-	isCaff func(pid int) bool // orphan identity check
+	isCaff func(pid int) (bool, error) // orphan identity check
 	kill   func(pid int) error
 
 	minBackoff, maxBackoff time.Duration
 	healthyAfter           time.Duration
 
-	mu   sync.Mutex
-	want bool          // desired state; the loop converges the process onto it
-	pid  int           // 0 = no live process
-	kick chan struct{} // buffered(1): wakes the loop after a toggle
+	mu     sync.Mutex
+	paused bool          // no Edge view can use the assertion
+	want   bool          // desired state; the loop converges the process onto it
+	pid    int           // 0 = no live process
+	kick   chan struct{} // buffered(1): wakes the loop after a toggle
 }
 
 func newCaffeinator(on bool, p paths.Paths) *caffeinator {
@@ -115,8 +117,28 @@ func newCaffeinator(on bool, p paths.Paths) *caffeinator {
 		maxBackoff:   caffBackoffMax,
 		healthyAfter: caffHealthyAfter,
 		want:         on,
+		paused:       true,
 		kick:         make(chan struct{}, 1),
 	}
+}
+
+func (c *caffeinator) SetAvailable(available bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.paused = !available
+	c.mu.Unlock()
+	select {
+	case c.kick <- struct{}{}:
+	default:
+	}
+}
+
+func (c *caffeinator) active() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.want && !c.paused
 }
 
 // Set flips the desired state and wakes the loop. State moves immediately
@@ -160,6 +182,8 @@ func (c *caffeinator) State() string {
 	switch {
 	case !c.want:
 		return caffStateOff
+	case c.paused:
+		return "on (waiting for Edge view)"
 	case c.pid != 0:
 		return caffStateOn
 	default:
@@ -177,8 +201,8 @@ func (c *caffeinator) writePid(pid int) {
 	if c.pidFile == "" {
 		return
 	}
-	if err := os.WriteFile(c.pidFile, []byte(strconv.Itoa(pid)), 0o600); err != nil {
-		log.Printf("khudson bus: caffeinate pidfile: %v", err)
+	if err := atomicfile.Write(c.pidFile, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		diagnostic.Default.Observe("caffeinate.owner.write", err, "continue_with_parent_pid_guard")
 	}
 }
 
@@ -187,44 +211,68 @@ func (c *caffeinator) dropPid() {
 		return
 	}
 	if err := os.Remove(c.pidFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		log.Printf("khudson bus: caffeinate pidfile: %v", err)
+		diagnostic.Default.Observe("caffeinate.owner.remove", err, "reverify_on_restart")
 	}
 }
 
 // reapOrphan recovers from a SIGKILLed previous bus (see the package comment
 // for why pidfile-scoped, not a process sweep).
-func (c *caffeinator) reapOrphan() {
+func (c *caffeinator) reapOrphan() error {
 	if c.pidFile == "" {
-		return
+		return nil
 	}
 	data, err := os.ReadFile(c.pidFile)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("khudson bus: caffeinate pidfile: %v", err)
-		}
-		return
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	defer c.dropPid()
+	if err != nil {
+		return err
+	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
-		log.Printf("khudson bus: caffeinate pidfile corrupt (%q); ignoring", data)
-		return
+		return fmt.Errorf("invalid caffeinate owner file %s", c.pidFile)
 	}
-	if !c.isCaff(pid) {
-		return // exited on its own, or the pid was reused: hands off
+	ours, err := c.isCaff(pid)
+	if err != nil {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			c.dropPid()
+			return nil
+		}
+		return fmt.Errorf("cannot verify caffeinate pid %d: %w", pid, err)
+	}
+	if !ours {
+		c.dropPid()
+		return nil
 	}
 	if err := c.kill(pid); err != nil {
-		log.Printf("khudson bus: orphaned caffeinate pid %d: kill: %v", pid, err)
-		return
+		return fmt.Errorf("orphan caffeinate pid %d: %w", pid, err)
 	}
-	log.Printf("khudson bus: killed orphaned caffeinate (pid %d) left by a previous bus", pid)
+	c.dropPid()
+	log.Printf("khudson bus: terminated orphan caffeinate pid %d", pid)
+	return nil
 }
 
 // run is the supervision loop; the ONLY goroutine that spawns or kills, so
 // two copies cannot race into existence. Blocks until ctx is done, killing
 // any live process on the way out.
 func (c *caffeinator) run(ctx context.Context) {
-	c.reapOrphan()
+	retry := c.minBackoff
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := c.reapOrphan()
+		diagnostic.Default.Observe("caffeinate.orphan", err, "retry_without_spawning_on_error")
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retry):
+		}
+		retry = min(retry*2, c.maxBackoff)
+	}
 	if !c.On() {
 		log.Printf("khudson bus: caffeinate off at start (config)")
 	}
@@ -249,9 +297,14 @@ func (c *caffeinator) run(ctx context.Context) {
 	}
 
 	for {
-		if c.On() {
+		if ctx.Err() != nil {
+			stop("bus shutdown")
+			return
+		}
+		if c.active() {
 			if proc == nil && !time.Now().Before(retryAt) {
 				p, err := c.launch()
+				diagnostic.Default.Observe("caffeinate.spawn", err, "backoff_on_error")
 				if err != nil {
 					log.Printf("khudson bus: caffeinate spawn: %v; retry in %s", err, backoff)
 					retryAt = time.Now().Add(backoff)
@@ -269,14 +322,14 @@ func (c *caffeinator) run(ctx context.Context) {
 				}
 			}
 		} else {
-			stop("toggled off")
+			stop("disabled or no dock")
 			retryAt = time.Time{}
 		}
 
 		// arm a retry timer only while waiting out a backoff
 		var timer *time.Timer
 		var retry <-chan time.Time
-		if c.On() && proc == nil {
+		if c.active() && proc == nil {
 			timer = time.NewTimer(max(time.Until(retryAt), 0))
 			retry = timer.C
 		}

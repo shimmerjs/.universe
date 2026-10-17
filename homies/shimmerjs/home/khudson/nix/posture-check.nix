@@ -6,10 +6,12 @@
 # remote_control_password for socket peers, so any password line is inert
 # posture-theater and legs (a)/(c) now REJECT it outright.
 #   (a) hud-kitty.conf     socket-only RC, no password line
-#   (b) substrate argv     the launcher's kitty line carries
-#                          -o allow_remote_control=socket-only
-#   (c) daily kitty.conf   socket-only RC, no password include, no
-#                          password line
+#   (b) owner launchers    bus owns the renderer; Reno has its own owner
+#   (c) daily kitty        kitty.conf socket-only RC, no password include,
+#                          no password line; the bundle's LSEnvironment keeps
+#                          KITTY_LAUNCHED_BY_LAUNCH_SERVICES=1 and
+#                          macos-launch-services-cmdline parses to one
+#                          --listen-on unix:<state root>/main-kitty.sock
 #   (d) state root         khudsonRuntimeDirs re-asserts -m 700 on the
 #                          ".../Library/Application Support/khudson" root
 #                          every activation (BSD install -d would silently
@@ -54,21 +56,47 @@ let
     if argv != ["--listen-on", want]:
         sys.exit(f"POSTURE FAIL: macos-launch-services-cmdline parses to {argv}, want exactly one --listen-on {want!r}")
   '';
+  couchOn = hmCfg.universe.home.khudson.couchMode.enable or false;
+  couchKitty = if couchOn then hmCfg.programs.kitty.quickAccessTerminalConfig.kitty_conf else "";
 in
 pkgs.runCommand "khudson-posture-check"
   {
-    inherit hudKitty dailyKitty dailyKittyApp lsCmdline mainKittyListen;
+    inherit
+      hudKitty
+      dailyKitty
+      dailyKittyApp
+      lsCmdline
+      mainKittyListen
+      couchKitty
+      ;
     # The activation scripts as rendered strings; their string context
     # carries the launcher store paths, so the files exist in this build.
     agentsData = hmCfg.home.activation.khudsonAgents.data;
+    magicAgentsData = hmCfg.home.activation.magicbusAgents.data;
+    magicInstallData = hmCfg.home.activation.khudsonTouchdInstall.data;
+    binInstallData = hmCfg.home.activation.khudsonBinInstall.data;
     runtimeDirsData = hmCfg.home.activation.khudsonRuntimeDirs.data;
     passAsFile = [
       "agentsData"
+      "magicAgentsData"
+      "magicInstallData"
+      "binInstallData"
       "runtimeDirsData"
     ];
   }
   ''
     fail() { echo "POSTURE FAIL: $*" >&2; exit 1; }
+
+    ${pkgs.bash}/bin/bash ${./agent-lifecycle-test.sh} ${./agent-lifecycle.sh}
+
+    for script in "$agentsDataPath" "$magicAgentsDataPath" "$magicInstallDataPath"; do
+      ${pkgs.bash}/bin/bash -n "$script" || fail "invalid activation shell"
+    done
+    grep -Fq 'khudsonRetireOwner "org.magicbus.daemon" || exit 1' "$magicAgentsDataPath" \
+      || fail "hardware owner retirement is not checked"
+    if grep -Eq 'kickstart|bootstrap .*\|\| true' "$magicAgentsDataPath"; then
+      fail "hardware replacement force-restarts or ignores failure"
+    fi
 
     echo "(a) hud-kitty.conf: socket-only, no password"
     grep -Fq 'allow_remote_control socket-only' "$hudKitty" \
@@ -77,13 +105,25 @@ pkgs.runCommand "khudson-posture-check"
       fail "hud-kitty.conf grew a remote_control_password (inert on socket peers; the posture is passwordless socket-only)"
     fi
 
-    echo "(b) substrate agent argv: socket-only RC"
-    line=$(grep -E 'install -m 755 "[^"]+" "[^"]+/agents/khudson-substrate"' "$agentsDataPath") \
-      || fail "khudsonAgents activation has no khudson-substrate launcher install line"
+    echo "(b) bus owns the on-demand renderer"
+    line=$(grep -E 'install -m 755 "[^"]+" "[^"]+/agents/khudson-bus"' "$agentsDataPath") \
+      || fail "missing bus launcher"
     launcher=$(printf '%s\n' "$line" | head -n1 | sed -E 's/.*install -m 755 "([^"]+)".*/\1/')
-    [ -r "$launcher" ] || fail "substrate launcher $launcher is not readable"
-    grep -Fq -- '-o allow_remote_control=socket-only' "$launcher" \
-      || fail "substrate kitty argv lost '-o allow_remote_control=socket-only'"
+    grep -Fq -- '-renderer-kitty' "$launcher" || fail "bus does not own renderer"
+    if grep -E 'install -m 755 "[^"]+" "[^"]+/agents/khudson-substrate"' "$agentsDataPath"; then
+      fail "always-on substrate agent remains"
+    fi
+
+    line=$(grep -E 'install -m 755 "[^"]+" "[^"]+/agents/khudson-reno"' "$agentsDataPath") \
+      || fail "missing Reno owner launcher"
+    launcher=$(printf '%s\n' "$line" | head -n1 | sed -E 's/.*install -m 755 "([^"]+)".*/\1/')
+    grep -Eq '/bin/renoman" serve' "$launcher" || fail "Reno launcher does not run shared owner"
+    grep -Fq 'khudsonRetireOwner "org.khudson.bus" || exit 1' "$agentsDataPath" || fail "old bus ownership is not retired"
+    grep -Fq 'khudsonRetireOwner "org.khudson.reno" || exit 1' "$agentsDataPath" || fail "old Reno ownership is not retired"
+    package=$(sed -n 's@.*"\(/nix/store/[^" ]*\)/bin/renoman".*@\1@p' "$binInstallDataPath" | head -n1)
+    for program in khcomponent renoman claudeman logiretch khresources kuiboard; do
+      test -x "$package/bin/$program" || fail "$program is not packaged"
+    done
 
     echo "(c) daily kitty: socket-only, passwordless, LS launch binds main-kitty.sock"
     if [ -n "$dailyKitty" ]; then
@@ -100,6 +140,19 @@ pkgs.runCommand "khudson-posture-check"
     echo "(d) state root installed 0700"
     grep -Eq 'install -d -m 700 "[^"]+/Library/Application Support/khudson"' "$runtimeDirsDataPath" \
       || fail "khudsonRuntimeDirs no longer applies install -d -m 700 to the khudson state root"
+
+    if [ -n "$couchKitty" ]; then
+      grep -Fxq 'allow_remote_control no' "$couchKitty" || fail "couch RC must remain disabled"
+      session=$(sed -n 's/^startup_session //p' "$couchKitty")
+      test -f "$session" || fail "missing couch startup session"
+      for program in claudeman kuiboard logiretch khresources; do
+        executable=$(grep "/bin/$program" "$session" | awk '{print $NF}')
+        test -x "$executable" || fail "couch component $program is not packaged"
+      done
+      if grep -Eq 'khudson (dock|bus)|grab.keyboard' "$session"; then
+        fail "couch session must launch independent component programs"
+      fi
+    fi
 
     touch $out
   ''

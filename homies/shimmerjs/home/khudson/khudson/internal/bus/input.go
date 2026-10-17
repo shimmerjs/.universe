@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,10 +9,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/actionjournal"
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	module "github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // wheelBurstCap bounds how many wheel reports one forwarded gesture may
@@ -28,8 +32,39 @@ const rowActDebounce = 2 * time.Second
 // inputWorker drains forwarded pointer events and config actions on one
 // goroutine so a tap's press/release pair can never interleave with
 // another injection.
-func (b *Bus) inputWorker() {
-	for m := range b.input {
+func (b *Bus) inputWorker() { b.inputWorkerContext(context.Background()) }
+
+func (b *Bus) inputWorkerContext(ctx context.Context) {
+	for {
+		var m proto.Msg
+		select {
+		case <-ctx.Done():
+			return
+		case next, ok := <-b.input:
+			if !ok {
+				return
+			}
+			m = next
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if m.Type == proto.TypeAction || m.Type == proto.TypeRowAct {
+			var fresh bool
+			var err error
+			m, fresh, err = b.acceptAction(m, actionjournal.DiscardOnRestart)
+			if err != nil {
+				b.rejectAction(m, err)
+				continue
+			}
+			if !fresh {
+				continue
+			}
+			if err = b.transitionAction(m, actionjournal.Pending, actionjournal.Running, ""); err != nil {
+				b.rejectAction(m, err)
+				continue
+			}
+		}
 		switch m.Type {
 		case proto.TypeForward:
 			b.handleForward(m)
@@ -51,22 +86,49 @@ func (b *Bus) inputWorker() {
 // never execs, and the widget repolls on the next scheduler tick so the
 // flip lands on glass immediately.
 func (b *Bus) handleRowAct(m proto.Msg) {
+	state, reason := actionjournal.Discarded, "empty or unsupported row action"
+	defer func() {
+		if state != "" {
+			b.finishAction(m, state, reason)
+		}
+	}()
+
+	b.mu.Lock()
+	current := b.inputCurrent(m)
+	b.mu.Unlock()
+	if !current {
+		reason = "config or renderer generation retired"
+		return
+	}
+
 	if len(m.Argv) == 0 {
 		return
 	}
 	allowed, handler, effector := b.vetRowAct(m)
 	if !allowed {
+		state, reason = actionjournal.Failed, "not published by the bus"
 		log.Printf("khudson bus: row act %s: argv %v not published by the bus; refused", m.Widget, m.Argv)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
 			Error: fmt.Sprintf("row act %s: argv refused (not published by the bus)", m.Widget)})
 		b.actFailed(m.Argv, errors.New("refused (not published by the bus)"))
 		return
 	}
+	if owner, ok := handler.(module.ActionHandler); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		err := owner.Act(ctx, m.Argv, module.Operation{ID: m.OperationID, ViewID: m.ViewID, Generation: m.ViewGeneration})
+		state, reason = actionjournal.Dispatched, "shared owner accepted operation"
+		if err != nil {
+			state, reason = actionjournal.ExecutionState(err), err.Error()
+		}
+		b.pokePoll(m.Widget)
+		return
+	}
 	if effector != nil {
 		handled := false
 		// transition + dispatch run as one unit so a concurrent ctl
 		// boundary cannot slot between the cursor move and the enqueue
-		b.DispatchTransition(m.Widget, func() []module.Effect {
+		dispatchErr := b.dispatchTransitionFor(m, m.Widget, func() []module.Effect {
 			var effects []module.Effect
 			if handled, effects = effector.HandleActEffects(m.Argv); handled {
 				// effectful transitions: cursor moved in-process (repoll
@@ -78,12 +140,18 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 			}
 			return nil
 		})
+		if dispatchErr != nil {
+			state, reason = actionjournal.ExecutionState(dispatchErr), dispatchErr.Error()
+			return
+		}
 		if handled {
+			state, reason = actionjournal.Dispatched, "module transition applied; effect outcomes recorded separately"
 			b.pokePoll(m.Widget)
 			return
 		}
 	}
 	if handler != nil && handler.HandleAct(m.Argv) {
+		state, reason = actionjournal.Succeeded, "module transition applied"
 		// in-process acts are cheap view flips and NEVER debounced: the
 		// panel's fold act is a toggle whose argv is identical in both
 		// directions, so a window here would eat the unfold retap.
@@ -92,11 +160,13 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 		return
 	}
 	if b.debounceRowAct(m) {
+		state, reason = actionjournal.Discarded, "duplicate within debounce window"
 		log.Printf("khudson bus: debounced repeat act %s: %v", m.Widget, m.Argv)
 		return
 	}
 	wait, err := b.startArgv(m.Argv)
 	if err != nil {
+		state, reason = actionjournal.Failed, err.Error()
 		// start failures are the config-typo class; as loud as exits
 		log.Printf("khudson bus: row act %v: %v", m.Argv, err)
 		b.broadcast(proto.Msg{Type: proto.TypeNotice,
@@ -105,7 +175,8 @@ func (b *Bus) handleRowAct(m proto.Msg) {
 		return
 	}
 	log.Printf("khudson bus: row act %s: %v", m.Widget, m.Argv)
-	go b.reapCmd("row act", m.Argv, wait)
+	state = ""
+	b.actionWaiters.Go(func() { b.reapAction(m, "row act", m.Argv, wait) })
 }
 
 // debounceRowAct reports whether a vetted act is an identical retap of one
@@ -196,7 +267,14 @@ func (b *Bus) startArgv(argv []string) (wait func() error, err error) {
 	if b.execStart != nil {
 		return b.execStart(argv)
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	ctx := b.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -234,7 +312,11 @@ func (b *Bus) actFailed(argv []string, err error) {
 // line, capped at actFailMax.
 func actFailMsg(argv []string, err error) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(err.Error()), "\n")
-	s := filepath.Base(argv[0]) + ": " + line
+	head := "action"
+	if len(argv) > 0 {
+		head = filepath.Base(argv[0])
+	}
+	s := head + ": " + line
 	if r := []rune(s); len(r) > actFailMax {
 		s = string(r[:actFailMax-3]) + "..."
 	}
@@ -244,11 +326,31 @@ func actFailMsg(argv []string, err error) string {
 // enqueueInput hands a dock message to the worker; a full queue drops the
 // event loudly (input is ephemeral, blocking the dock reader is worse).
 func (b *Bus) enqueueInput(m proto.Msg) {
+	m.BusEpoch = b.inputEpoch.Load()
 	select {
 	case b.input <- m:
+		diagnostic.Default.Observe("input.queue", nil, "queued")
 	default:
-		log.Printf("khudson bus: input queue full, dropped %s for %s", m.Type, m.Widget)
+		diagnostic.Default.Observe("input.queue", errInputQueueFull, "drop_event")
+		b.discardInput(m, errInputQueueFull.Error())
 	}
+}
+
+var errInputQueueFull = errors.New("input queue full")
+var errInputGeneration = errors.New("queued input belongs to a retired config or renderer")
+
+// Caller holds b.mu through target selection, preventing replacement between
+// the epoch check and capturing the registry and injector.
+func (b *Bus) inputCurrent(m proto.Msg) bool {
+	if m.ViewID != "" && !b.viewActionCurrentLocked(m) {
+		return false
+	}
+	if m.BusEpoch != b.inputEpoch.Load() {
+		diagnostic.Default.Observe("input.generation", errInputGeneration, "drop_event")
+		return false
+	}
+	diagnostic.Default.Observe("input.generation", nil, "dispatch")
+	return true
 }
 
 // handleForward injects a widget-relative pointer event into the widget's
@@ -258,7 +360,12 @@ func (b *Bus) handleForward(m proto.Msg) {
 		return
 	}
 	b.mu.Lock()
+	if !b.inputCurrent(m) {
+		b.mu.Unlock()
+		return
+	}
 	reg := b.reg
+	inj := b.inj
 	b.mu.Unlock()
 	st, ok := reg.Get(m.Widget)
 	if !ok {
@@ -275,13 +382,13 @@ func (b *Bus) handleForward(m proto.Msg) {
 	var err error
 	switch m.Gesture.Kind {
 	case proto.GestureTap:
-		if err = b.inj.SendSGR(match, 0, x, y, false); err == nil {
-			err = b.inj.SendSGR(match, 0, x, y, true)
+		if err = inj.SendSGR(match, 0, x, y, false); err == nil {
+			err = inj.SendSGR(match, 0, x, y, true)
 		}
 	case proto.GestureLongPress:
 		// long-press lands as a right click
-		if err = b.inj.SendSGR(match, 2, x, y, false); err == nil {
-			err = b.inj.SendSGR(match, 2, x, y, true)
+		if err = inj.SendSGR(match, 2, x, y, false); err == nil {
+			err = inj.SendSGR(match, 2, x, y, true)
 		}
 	case proto.GestureWheel:
 		burst := func(delta, negBtn, posBtn int) error {
@@ -293,7 +400,7 @@ func (b *Bus) handleForward(m proto.Msg) {
 			}
 			n = min(n, wheelBurstCap)
 			for range n {
-				if err := b.inj.SendSGR(match, btn, x, y, false); err != nil {
+				if err := inj.SendSGR(match, btn, x, y, false); err != nil {
 					return err
 				}
 			}
@@ -305,17 +412,27 @@ func (b *Bus) handleForward(m proto.Msg) {
 	default:
 		return
 	}
-	if err != nil {
-		log.Printf("khudson bus: forward %s to %s: %v", m.Gesture.Kind, m.Widget, err)
-	}
+	diagnostic.Default.Observe("input.pointer."+m.Widget, err, "drop_failed_event")
 }
 
 // handleAction executes a config gesture action (effectful verbs carry a
 // target). view/back/focus are dock-local and never reach the bus.
 func (b *Bus) handleAction(m proto.Msg) {
+	state, reason := actionjournal.Discarded, "stale, unavailable, or unsupported config action"
+	defer func() {
+		if state != "" {
+			b.finishAction(m, state, reason)
+		}
+	}()
+
 	b.mu.Lock()
+	if !b.inputCurrent(m) {
+		b.mu.Unlock()
+		return
+	}
 	w, ok := b.cfg.Widgets[m.Widget]
 	reg := b.reg
+	inj := b.inj
 	b.mu.Unlock()
 	if !ok {
 		return
@@ -339,8 +456,11 @@ func (b *Bus) handleAction(m proto.Msg) {
 		if winID == 0 {
 			return
 		}
-		if err := b.inj.SendKey(fmt.Sprintf("id:%d", winID), a.Keys); err != nil {
-			log.Printf("khudson bus: action send-key %s: %v", m.Widget, err)
+		err := inj.SendKey(fmt.Sprintf("id:%d", winID), a.Keys)
+		diagnostic.Default.Observe("input.key."+m.Widget, err, "drop_failed_event")
+		state, reason = actionjournal.Succeeded, ""
+		if err != nil {
+			state, reason = actionjournal.ExecutionState(err), err.Error()
 		}
 	case "run":
 		if len(a.Argv) == 0 {
@@ -348,23 +468,27 @@ func (b *Bus) handleAction(m proto.Msg) {
 		}
 		wait, err := b.startArgv(a.Argv)
 		if err != nil {
+			state, reason = actionjournal.Failed, err.Error()
 			log.Printf("khudson bus: action run %v: %v", a.Argv, err)
 			b.broadcast(proto.Msg{Type: proto.TypeNotice,
 				Error: fmt.Sprintf("run %v failed to start: %v", a.Argv, err)})
 			b.actFailed(a.Argv, err)
 			return
 		}
-		go b.reapCmd("action run", a.Argv, wait)
+		state = ""
+		b.actionWaiters.Go(func() { b.reapAction(m, "action run", a.Argv, wait) })
 	case "open-url":
 		argv := []string{"open", a.URL}
 		wait, err := b.startArgv(argv)
 		if err != nil {
+			state, reason = actionjournal.Failed, err.Error()
 			log.Printf("khudson bus: action open-url %s: %v", a.URL, err)
 			b.broadcast(proto.Msg{Type: proto.TypeNotice,
 				Error: fmt.Sprintf("open-url failed to start: %v", err)})
 			b.actFailed(argv, err)
 			return
 		}
-		go b.reapCmd("action open-url", argv, wait)
+		state = ""
+		b.actionWaiters.Go(func() { b.reapAction(m, "action open-url", argv, wait) })
 	}
 }

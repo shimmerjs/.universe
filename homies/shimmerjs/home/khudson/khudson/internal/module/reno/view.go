@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Row key conventions consumed by the dock's reno chrome renderer. The
@@ -341,7 +341,7 @@ func (m *Mod) recorderTiles() []module.Row {
 
 	// a scripted recording run reads its config FROM the script: the ad
 	// hoc knobs would lie about what is about to record, so the script's
-	// config shows as one unpressable readout instead (arc-2 review #6)
+	// config shows as one unpressable readout instead
 	if m.staged != nil && m.staged.Record &&
 		m.run != nil && m.run.Live() && m.run.Demo == m.staged.Name {
 		v := "from script"

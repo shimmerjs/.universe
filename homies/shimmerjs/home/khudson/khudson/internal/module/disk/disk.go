@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // fsStat is the statfs subset the module consumes, in bytes.

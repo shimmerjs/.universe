@@ -6,11 +6,11 @@ package brightness
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Mod implements module.Module.
@@ -64,7 +64,7 @@ func (Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error)
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := subprocess.Output(ctx, name, args...)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", name, err)
 	}

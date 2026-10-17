@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/actionjournal"
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 )
@@ -117,5 +119,59 @@ func TestSwapPendingKeepsRuntimeLayout(t *testing.T) {
 	b.mu.Unlock()
 	if got != "main" {
 		t.Fatalf("layout after fallback swap = %q, want main (the pending default)", got)
+	}
+}
+
+func TestLayoutPersistenceFailureDoesNotPublishSuccess(t *testing.T) {
+	b, _, _ := schedTestBus(t)
+	b.opts.Paths.Dir = t.TempDir()
+	b.cfg.Layouts["other"] = config.Layout{Kind: "dock-grid", Tiles: []string{"w"}}
+	before := b.cfg.Layout
+	if err := os.Mkdir(filepath.Join(b.opts.Paths.Dir, layoutStateFileName), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.setLayout("other"); err == nil {
+		t.Fatal("reported success with no durable layout")
+	}
+	if b.cfg.Layout != before {
+		t.Fatal("published layout despite failed persistence")
+	}
+}
+
+func TestLayoutPersistenceDoesNotBlockBusState(t *testing.T) {
+	for _, invalidate := range []bool{false, true} {
+		b, _, _ := schedTestBus(t)
+		b.cfg.Layouts["other"] = config.Layout{Kind: "dock-grid", Tiles: []string{"w"}}
+		before := b.cfg.Layout
+		writing, release := make(chan struct{}), make(chan struct{})
+		b.layoutWrite = func(string) error { close(writing); <-release; return nil }
+		done := make(chan error, 1)
+		go func() { done <- b.setLayout("other") }()
+		<-writing
+		responsive := make(chan struct{})
+		go func() {
+			b.mu.Lock()
+			if invalidate {
+				delete(b.cfg.Layouts, "other")
+			}
+			b.mu.Unlock()
+			close(responsive)
+		}()
+		select {
+		case <-responsive:
+		case <-time.After(time.Second):
+			close(release)
+			<-done
+			t.Fatal("storage blocked bus state")
+		}
+		close(release)
+		err := <-done
+		if invalidate {
+			if err == nil || actionjournal.ExecutionState(err) != actionjournal.Uncertain || b.cfg.Layout != before {
+				t.Fatalf("invalidated layout published: %s %v", b.cfg.Layout, err)
+			}
+		} else if err != nil || b.cfg.Layout != "other" {
+			t.Fatalf("valid layout not published: %s %v", b.cfg.Layout, err)
+		}
 	}
 }

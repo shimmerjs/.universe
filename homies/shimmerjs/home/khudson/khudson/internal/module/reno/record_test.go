@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 const recScript = `demo rec-tour

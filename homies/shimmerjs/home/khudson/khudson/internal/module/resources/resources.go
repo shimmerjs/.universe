@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Mod implements module.Module. The parts keep history rings across Poll

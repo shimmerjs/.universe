@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 const (
@@ -38,11 +39,11 @@ func (Mod) Poll(ctx context.Context, params map[string]any) (module.Data, error)
 		"--json", "title,repository,number,author,updatedAt,url",
 		"--limit", strconv.Itoa(limit)}
 	args = append(args, strings.Fields(search)...)
-	out, err := exec.CommandContext(ctx, "gh", args...).Output()
+	out, err := subprocess.Output(ctx, "gh", args...)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return module.Data{}, fmt.Errorf("gh: %s", strings.TrimSpace(string(ee.Stderr)))
+			return module.Data{}, fmt.Errorf("gh: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
 		}
 		return module.Data{}, fmt.Errorf("gh: %w", err)
 	}

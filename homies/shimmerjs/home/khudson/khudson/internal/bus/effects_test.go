@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // fakeEffectMod is a native module whose "fx:go" act is handled with
@@ -64,9 +64,9 @@ func effectTestBus(t *testing.T) (*Bus, *fakeEffectMod, *execRecorder) {
 	b.reg = NewRegistry(b.cfg)
 	b.mods = map[string]module.Module{"fake-fx": mod}
 	b.repoll = make(chan string, 4)
-	b.effects = newEffectRunner()
+	b.effects = b.newEffectRunner()
 	go b.runEffects()
-	t.Cleanup(b.effects.shutdown)
+	t.Cleanup(b.effects.Shutdown)
 	rec := &execRecorder{}
 	b.execStart = rec.start
 	st, _ := b.reg.Get("n")
@@ -93,7 +93,7 @@ func TestHandleRowActEffectDispatch(t *testing.T) {
 	if len(mod.handled) != 1 {
 		t.Fatal("act not handled")
 	}
-	b.effects.flush()
+	b.effects.Flush()
 	starts := rec.all()
 	if len(starts) != 2 || starts[0][2] != "launch-session" || starts[1][2] != "focus-session" {
 		t.Fatalf("effects must exec in script order: %v", starts)
@@ -110,21 +110,21 @@ func TestHandleRowActEffectDispatch(t *testing.T) {
 	// identical keys inside the window are debounced (retap replay);
 	// fresh keys (new visit) pass despite identical argvs
 	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: []string{"fx:go"}})
-	b.effects.flush()
+	b.effects.Flush()
 	if len(rec.all()) != 2 {
 		t.Fatalf("repeat keys must debounce, execs = %d", len(rec.all()))
 	}
 	mod.effects = []module.Effect{{Key: "run/0/2/0", Argv: []string{"khudson", "reno", "focus-session", "work"}}}
 	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: []string{"fx:go"}})
-	b.effects.flush()
+	b.effects.Flush()
 	if len(rec.all()) != 3 {
 		t.Fatalf("fresh key must exec despite identical argv, execs = %d", len(rec.all()))
 	}
 
 	// the window expires: same key fires again
-	b.effects.now = func() time.Time { return time.Now().Add(rowActDebounce + time.Second) }
+	b.effects.SetClock(func() time.Time { return time.Now().Add(rowActDebounce + time.Second) })
 	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: []string{"fx:go"}})
-	b.effects.flush()
+	b.effects.Flush()
 	if len(rec.all()) != 4 {
 		t.Fatalf("expired key must exec, execs = %d", len(rec.all()))
 	}
@@ -138,7 +138,7 @@ func TestEffectArgvGate(t *testing.T) {
 		{Key: "k1", Argv: []string{"rm", "-rf", "/tmp/x"}},
 	}
 	b.handleRowAct(proto.Msg{Type: proto.TypeRowAct, Widget: "n", Argv: []string{"fx:go"}})
-	b.effects.flush()
+	b.effects.Flush()
 	if len(rec.all()) != 0 {
 		t.Fatalf("non-reno argv must be refused: %v", rec.all())
 	}
@@ -163,7 +163,8 @@ func TestEffectArgvGate(t *testing.T) {
 
 // Effect children run in their own process group and die at shutdown.
 func TestEffectShutdownKillsGroups(t *testing.T) {
-	b := &Bus{effects: newEffectRunner()}
+	b := &Bus{}
+	b.effects = b.newEffectRunner()
 	go b.runEffects()
 	wait, err := b.startEffect([]string{"sleep", "30"}, false)
 	if err != nil {
@@ -171,15 +172,13 @@ func TestEffectShutdownKillsGroups(t *testing.T) {
 	}
 	go func() { _ = wait() }()
 
-	b.effects.mu.Lock()
-	pgid := b.effects.group
-	b.effects.mu.Unlock()
+	pgid := b.effects.Group()
 	if pgid == 0 {
 		t.Fatal("child not tracked")
 	}
 
 	done := make(chan struct{})
-	go func() { b.effects.shutdown(); close(done) }()
+	go func() { b.effects.Shutdown(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(effectKillGrace + 3*time.Second):
@@ -234,7 +233,7 @@ func TestHandleCtlReno(t *testing.T) {
 	if len(f.got) != 1 || f.got[0][0] != "next" {
 		t.Fatalf("ctl args = %v", f.got)
 	}
-	b.effects.flush()
+	b.effects.Flush()
 	if len(rec.all()) != 1 {
 		t.Fatalf("ctl-driven effects must exec, starts = %v", rec.all())
 	}
@@ -260,7 +259,7 @@ func TestHandleCtlReno(t *testing.T) {
 // actions must not execute into run B.
 func TestEffectBoundaryInvalidatesQueued(t *testing.T) {
 	b, _ := inputTestBus()
-	b.effects = newEffectRunner()
+	b.effects = b.newEffectRunner()
 	rec := &execRecorder{}
 	b.execStart = rec.start
 
@@ -273,8 +272,8 @@ func TestEffectBoundaryInvalidatesQueued(t *testing.T) {
 		{Key: "runB/0/1/0", Argv: []string{"khudson", "reno", "focus-session", "b"}},
 	})
 	go b.runEffects()
-	t.Cleanup(b.effects.shutdown)
-	b.effects.flush()
+	t.Cleanup(b.effects.Shutdown)
+	b.effects.Flush()
 	starts := rec.all()
 	if len(starts) != 1 || starts[0][3] != "b" {
 		t.Fatalf("run A's chain must die at the boundary: %v", starts)
@@ -286,11 +285,11 @@ func TestEffectBoundaryInvalidatesQueued(t *testing.T) {
 // close (a send on a closed channel panics the bus).
 func TestDispatchAfterShutdownDoesNotPanic(t *testing.T) {
 	b, _ := inputTestBus()
-	b.effects = newEffectRunner()
+	b.effects = b.newEffectRunner()
 	rec := &execRecorder{}
 	b.execStart = rec.start
 	go b.runEffects()
-	b.effects.shutdown()
+	b.effects.Shutdown()
 	b.dispatchEffects("reno", []module.Effect{
 		{Key: "late/0/1/0", Argv: []string{"khudson", "reno", "focus-session", "x"}},
 	})
@@ -303,7 +302,7 @@ func TestDispatchAfterShutdownDoesNotPanic(t *testing.T) {
 // Final effect (the recording stop) survives any boundary.
 func TestEffectBoundaryMidChainAndFinal(t *testing.T) {
 	b, _ := inputTestBus()
-	b.effects = newEffectRunner()
+	b.effects = b.newEffectRunner()
 	rec := &execRecorder{}
 	gate := make(chan struct{})
 	first := true
@@ -323,7 +322,7 @@ func TestEffectBoundaryMidChainAndFinal(t *testing.T) {
 		{Key: "runA/stop/1", Argv: []string{"khudson", "reno", "obs", "stop"}, Final: true},
 	})
 	go b.runEffects()
-	t.Cleanup(b.effects.shutdown)
+	t.Cleanup(b.effects.Shutdown)
 	// wait for effect 1 to start, then cut the run while it is live
 	for range 100 {
 		if len(rec.all()) == 1 {
@@ -333,7 +332,7 @@ func TestEffectBoundaryMidChainAndFinal(t *testing.T) {
 	}
 	b.dispatchEffects("reno", []module.Effect{module.Boundary()})
 	close(gate)
-	b.effects.flush()
+	b.effects.Flush()
 	starts := rec.all()
 	if len(starts) != 2 {
 		t.Fatalf("mid-chain boundary must drop the plain remainder but keep the Final stop: %v", starts)

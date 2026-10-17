@@ -39,7 +39,7 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/hookspool"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 	"golang.org/x/sys/unix"
 )
 

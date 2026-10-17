@@ -9,13 +9,14 @@ package logiretch
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // redial is the quiet reconnect cadence; the daemon absent (no mouse,
@@ -65,13 +66,17 @@ type wRemap struct {
 	Flags  string `json:"flags"`
 }
 
-// Mod is the viewer widget singleton. The reader goroutine starts on the
-// first Poll (lazy: a config that never shows the widget opens no
-// socket, per the module lifecycle doctrine) and runs for the process
-// life.
+// Mod starts its reader on the first demanded Poll and joins it when demand
+// ends or the owning bus closes. Poll deadlines do not own this shared reader.
 type Mod struct {
-	sock string
-	now  func() time.Time
+	sock     string
+	now      func() time.Time
+	dial     func(context.Context, string, string) (net.Conn, error)
+	life     sync.Mutex
+	cancel   context.CancelFunc
+	done     chan struct{}
+	disabled bool
+	closed   bool
 
 	mu       sync.Mutex
 	started  bool
@@ -106,9 +111,13 @@ func (m *Mod) Name() string { return "logiretch" }
 // No I/O on the poll path -- the reader goroutine owns the socket.
 func (m *Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
 	m.mu.Lock()
-	if !m.started && m.sock != "" {
+	if !m.started && !m.closed && !m.disabled && m.sock != "" {
 		m.started = true
-		go m.read(context.Background())
+		readerCtx, cancel := context.WithCancel(context.Background())
+		m.cancel = cancel
+		m.done = make(chan struct{})
+		done := m.done
+		go func() { defer close(done); m.read(readerCtx) }()
 	}
 	m.expire()
 	d := m.render()
@@ -116,31 +125,85 @@ func (m *Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
 	return d, nil
 }
 
-// read dials logiretch.sock and folds decoded lines into the snapshot,
-// reconnecting forever; a lost socket resets the live state so the
-// widget reads "daemon down", never a frozen last frame.
+var _ module.Closer = (*Mod)(nil)
+var _ module.DemandAware = (*Mod)(nil)
+
+func (m *Mod) Close() error {
+	m.life.Lock()
+	defer m.life.Unlock()
+	m.stopReader(true)
+	return nil
+}
+
+func (m *Mod) SetDemand(wanted bool) {
+	m.life.Lock()
+	defer m.life.Unlock()
+	if !wanted {
+		m.stopReader(false)
+		return
+	}
+	m.mu.Lock()
+	m.disabled = false
+	m.mu.Unlock()
+}
+
+func (m *Mod) stopReader(final bool) {
+	m.mu.Lock()
+	m.closed = m.closed || final
+	m.disabled = true
+	cancel, done := m.cancel, m.done
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	m.mu.Lock()
+	m.cancel, m.done, m.started = nil, nil, false
+	m.mu.Unlock()
+}
+
 func (m *Mod) read(ctx context.Context) {
+	dial := m.dial
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: time.Second}).DialContext
+	}
 	for ctx.Err() == nil {
-		conn, err := net.Dial("unix", m.sock)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(redial):
+		conn, err := dial(ctx, "unix", m.sock)
+		if ctx.Err() != nil {
+			if conn != nil {
+				conn.Close()
 			}
-			continue
+			return
 		}
-		m.setSockUp(true)
-		dec := json.NewDecoder(conn)
-		for {
-			var l wireLine
-			if err := dec.Decode(&l); err != nil {
-				break
+		diagnostic.Default.Observe("module.logiretch.dial", err, "retry while demanded")
+		if err == nil {
+			stop := context.AfterFunc(ctx, func() { conn.Close() })
+			m.setSockUp(true)
+			dec := socketio.NewDecoder(conn)
+			for {
+				var l wireLine
+				err = dec.Decode(&l)
+				if ctx.Err() != nil {
+					break
+				}
+				diagnostic.Default.Observe("module.logiretch.read", err, "reset live state; reconnect while demanded")
+				if err != nil {
+					break
+				}
+				m.apply(l)
 			}
-			m.apply(l)
+			stop()
+			conn.Close()
+			m.setSockUp(false)
 		}
-		conn.Close()
-		m.setSockUp(false)
+		// Also pace accept-then-EOF and malformed feeds; they must not spin.
+		timer := time.NewTimer(redial)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 }
 

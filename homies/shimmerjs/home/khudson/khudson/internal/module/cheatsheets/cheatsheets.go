@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // maxRows keeps the payload inside a ~20-row dock panel.

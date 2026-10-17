@@ -12,6 +12,7 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
 	"github.com/shimmerjs/khudson/khudson/internal/rc"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // fakeSup is a Supervisor that materializes instantly and records calls.
@@ -174,7 +175,7 @@ func schedTestBus(t *testing.T) (*Bus, *fakeSup, *fakeScraper) {
 	b := &Bus{
 		cfg:         cfg,
 		reg:         NewRegistry(cfg),
-		docks:       make(map[net.Conn]*json.Encoder),
+		docks:       make(map[net.Conn]*socketio.Writer),
 		substrateRC: rc.New("/nonexistent/kitty.sock"),
 		sup:         sup,
 		scrape:      scr,
@@ -198,7 +199,7 @@ func addFakeDock(t *testing.T, b *Bus) {
 		}
 	}()
 	b.mu.Lock()
-	b.docks[server] = json.NewEncoder(server)
+	b.docks[server] = testDockWriter(t, server)
 	b.panelCols, b.panelRows = 80, 24
 	b.mu.Unlock()
 }
@@ -230,8 +231,8 @@ func TestServeDockCtlLayout(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 
 	enc := json.NewEncoder(client)
@@ -261,7 +262,7 @@ func TestServeDockCtlLayout(t *testing.T) {
 		t.Fatalf("greeting layout %q != bus layout %q", greet.Layout, cur)
 	}
 
-	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "other"}); err != nil {
+	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "other", ViewID: greet.ViewID, ViewGeneration: greet.ViewGeneration}); err != nil {
 		t.Fatal(err)
 	}
 	var bcast proto.Msg
@@ -272,7 +273,7 @@ func TestServeDockCtlLayout(t *testing.T) {
 		t.Fatalf("broadcast = %s/%s, want layout/other", bcast.Type, bcast.Layout)
 	}
 	b.mu.Lock()
-	got := b.cfg.Layout
+	got := b.views[server].layout
 	b.mu.Unlock()
 	if got != "other" {
 		t.Fatalf("bus layout = %q, want other", got)
@@ -280,7 +281,7 @@ func TestServeDockCtlLayout(t *testing.T) {
 
 	// unknown target: no resp, but the bus re-asserts the current layout
 	// so a desynced dock snaps back
-	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "nope"}); err != nil {
+	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "nope", ViewID: bcast.ViewID, ViewGeneration: bcast.ViewGeneration}); err != nil {
 		t.Fatal(err)
 	}
 	var reassert proto.Msg
@@ -290,7 +291,7 @@ func TestServeDockCtlLayout(t *testing.T) {
 	if reassert.Type != proto.TypeLayout || reassert.Layout != "other" {
 		t.Fatalf("after unknown target got %s/%s, want re-asserted layout/other", reassert.Type, reassert.Layout)
 	}
-	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "main"}); err != nil {
+	if err := enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "main", ViewID: reassert.ViewID, ViewGeneration: reassert.ViewGeneration}); err != nil {
 		t.Fatal(err)
 	}
 	var next proto.Msg
@@ -360,6 +361,7 @@ func TestSchedulerLifecycle(t *testing.T) {
 		t.Fatalf("polls = %d, want 1", scr.count())
 	}
 	b.applySnapshot(<-b.snapshots, entries)
+	drainBusy(t, entries, busyCh)
 	if len(st.Snapshot) == 0 {
 		t.Fatal("snapshot not recorded on registry")
 	}
@@ -376,6 +378,7 @@ func TestSchedulerLifecycle(t *testing.T) {
 		t.Fatalf("poll did not fire after the interval")
 	}
 	b.applySnapshot(<-b.snapshots, entries)
+	drainBusy(t, entries, busyCh)
 
 	// grid change: window chases the new panel region
 	b.mu.Lock()
@@ -416,7 +419,7 @@ func TestSchedulerLifecycle(t *testing.T) {
 	if _, _, r := sup.counts(); r != 0 {
 		t.Fatalf("released before idleKill elapsed")
 	}
-	now = lastVisible.Add(1100 * time.Millisecond)
+	now = maxTime(lastVisible.Add(1100*time.Millisecond), entries["w"].backoffUntil.Add(time.Millisecond))
 	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if _, _, r := sup.counts(); r != 1 || st.WindowID != 0 {
@@ -676,8 +679,8 @@ func TestReloadReachesDock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 	msgs := make(chan proto.Msg, 16)
 	go func() {
@@ -765,7 +768,7 @@ func TestNativeBackoff(t *testing.T) {
 	b := &Bus{
 		cfg:       cfg,
 		reg:       NewRegistry(cfg),
-		docks:     make(map[net.Conn]*json.Encoder),
+		docks:     make(map[net.Conn]*socketio.Writer),
 		sup:       sup,
 		snapshots: make(chan snapshotResult, 16),
 		natives:   make(chan nativeResult, 16),
@@ -848,16 +851,18 @@ func TestLayoutBroadcastConsistency(t *testing.T) {
 	b.cfg.Layouts["other"] = config.Layout{Kind: "dock-grid", Tiles: []string{"w"}}
 
 	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 
 	var mu sync.Mutex
 	last := ""
 	greeted := make(chan struct{})
+	delivered := make(chan struct{})
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -867,6 +872,9 @@ func TestLayoutBroadcastConsistency(t *testing.T) {
 			var m proto.Msg
 			if err := dec.Decode(&m); err != nil {
 				return
+			}
+			if m.Type == proto.TypeNotice && m.Error == "layout barrier" {
+				close(delivered)
 			}
 			if m.Type == proto.TypeLayout {
 				mu.Lock()
@@ -903,6 +911,14 @@ func TestLayoutBroadcastConsistency(t *testing.T) {
 		}
 	}()
 	<-swDone
+	// Enqueue is asynchronous. Observe a following frame before closing the
+	// peer, otherwise shutdown may legitimately cancel undelivered layouts.
+	b.broadcast(proto.Msg{Type: proto.TypeNotice, Error: "layout barrier"})
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("layout stream did not reach barrier")
+	}
 
 	b.mu.Lock()
 	final := b.cfg.Layout
@@ -937,7 +953,7 @@ func TestGreetingReplaysCachedState(t *testing.T) {
 	b := &Bus{
 		cfg:   cfg,
 		reg:   NewRegistry(cfg),
-		docks: make(map[net.Conn]*json.Encoder),
+		docks: make(map[net.Conn]*socketio.Writer),
 	}
 	stW, _ := b.reg.Get("w")
 	stW.setSize(80, 24)
@@ -950,8 +966,8 @@ func TestGreetingReplaysCachedState(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 
 	dec := json.NewDecoder(client)
@@ -1033,7 +1049,7 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 		t.Fatalf("polls = %d, want 1", scr.count())
 	}
 
-	// dock leaves, idleKill=1s elapses: the widget releases mid-scrape
+	// Dock leaves. Release must wait for the in-flight scrape.
 	b.mu.Lock()
 	for c := range b.docks {
 		delete(b.docks, c)
@@ -1041,12 +1057,17 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 	b.mu.Unlock()
 	now = entries["w"].lastVisible.Add(1100 * time.Millisecond)
 	b.schedulerPass(ctx, now, entries, busyCh, false, false)
+	if st.WindowID == 0 {
+		t.Fatal("released while scrape was in flight")
+	}
+	scr.resolve(t, 0, []byte("late frame"), nil)
+	drainBusy(t, entries, busyCh)
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	drainBusy(t, entries, busyCh)
 	if st.WindowID != 0 {
 		t.Fatal("release did not unbind")
 	}
 
-	scr.resolve(t, 0, []byte("late frame"), nil)
 	b.applySnapshot(<-b.snapshots, entries)
 	if snap, _, _, _, _ := st.cached(); len(snap) != 0 {
 		t.Fatalf("late snapshot repopulated a released widget: %q", snap)
@@ -1060,8 +1081,8 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 	msgs := make(chan proto.Msg, 16)
 	go func() {
@@ -1075,9 +1096,6 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 			msgs <- m
 		}
 	}()
-	if err := json.NewEncoder(client).Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "main"}); err != nil {
-		t.Fatal(err)
-	}
 	layouts := 0
 	for layouts < 2 {
 		select {
@@ -1090,6 +1108,11 @@ func TestScrapeDropsPostReleaseSnapshot(t *testing.T) {
 			}
 			if m.Type == proto.TypeLayout {
 				layouts++
+				if layouts == 1 {
+					if err := json.NewEncoder(client).Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "layout", Arg: "main", ViewID: m.ViewID, ViewGeneration: m.ViewGeneration}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("no message within 2s")
@@ -1137,8 +1160,8 @@ func TestAdoptDoesNotBlockTick(t *testing.T) {
 		b.schedulerPass(ctx, now, entries, busyCh, false, false)
 		now = now.Add(schedTick + 100*time.Millisecond)
 	}
-	if scr.count() < 2 {
-		t.Fatalf("polls stalled during a hung adopt: %d", scr.count())
+	if scr.count() != 0 {
+		t.Fatalf("scrape raced adoption: %d", scr.count())
 	}
 	if !b.adoptPending() {
 		t.Fatal("needAdopt cleared while LS was still blocked")
@@ -1153,6 +1176,11 @@ func TestAdoptDoesNotBlockTick(t *testing.T) {
 	if b.adoptPending() {
 		t.Fatal("adopt did not clear needAdopt")
 	}
+	b.schedulerPass(ctx, now, entries, busyCh, false, false)
+	if scr.count() != 1 {
+		t.Fatal("scrape did not resume after adoption")
+	}
+	drainBusy(t, entries, busyCh)
 }
 
 // TestSnapshotStaleFlag: a widget whose scrapes stop gets one ANSI-less
@@ -1169,8 +1197,8 @@ func TestSnapshotStaleFlag(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock,
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(),
 				Cols: 320, Rows: 18, PanelCols: 80, PanelRows: 24})
 	}()
 	msgs := make(chan proto.Msg, 16)
@@ -1209,6 +1237,7 @@ func TestSnapshotStaleFlag(t *testing.T) {
 	now = now.Add(schedTick)
 	b.schedulerPass(ctx, now, entries, busyCh, false, false)
 	b.applySnapshot(<-b.snapshots, entries)
+	drainBusy(t, entries, busyCh)
 	if m := read(); m.Type != proto.TypeSnapshot || m.Stale || m.ANSI == "" {
 		t.Fatalf("fresh snapshot = %+v, want live TypeSnapshot", m)
 	}
@@ -1303,7 +1332,7 @@ func TestChromeNeverScheduled(t *testing.T) {
 	b := &Bus{
 		cfg:       cfg,
 		reg:       NewRegistry(cfg),
-		docks:     make(map[net.Conn]*json.Encoder),
+		docks:     make(map[net.Conn]*socketio.Writer),
 		sup:       sup,
 		scrape:    scr,
 		snapshots: make(chan snapshotResult, 16),
@@ -1451,6 +1480,7 @@ func TestSchedulerCrossWidgetInterleave(t *testing.T) {
 		t.Fatalf("polls = %d, want v polled in the same pass as w's blocked ensure", scr.count())
 	}
 	b.applySnapshot(<-b.snapshots, entries)
+	drainBusy(t, entries, busyCh)
 
 	// later pass, w still blocked: v's next due poll fires anyway
 	now = now.Add(350 * time.Millisecond)
@@ -1459,6 +1489,7 @@ func TestSchedulerCrossWidgetInterleave(t *testing.T) {
 		t.Fatalf("polls = %d, want v repolled while w stays blocked", scr.count())
 	}
 	b.applySnapshot(<-b.snapshots, entries)
+	drainBusy(t, entries, busyCh)
 
 	close(gate)
 	drainBusy(t, entries, busyCh)
@@ -1469,4 +1500,11 @@ func TestSchedulerCrossWidgetInterleave(t *testing.T) {
 	if id, _, _ := stW.Binding(); id == 0 {
 		t.Fatal("w did not bind after ungate")
 	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }

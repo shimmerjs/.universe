@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // Row keys the dock's chrome renderer keys off (the reno precedent): the
@@ -301,10 +301,16 @@ func (m *Mod) mapRows() []module.Row {
 		if r.Target != "" {
 			v += " -> " + r.Target
 		}
+		if r.Flags != "" {
+			v += " (" + r.Flags + ")"
+		}
 		rows = append(rows, module.Row{Kind: module.RowKV, Key: "remap", Value: v, Style: module.StyleDim})
 	}
 	if s.Pending != "" {
 		rows = append(rows, module.Row{Kind: module.RowKV, Key: "pending", Value: s.Pending + " (retrying)", Style: module.StyleWarn})
+	}
+	if s.Takeover != "" {
+		rows = append(rows, module.Row{Kind: module.RowKV, Key: "takeover", Value: s.Takeover})
 	}
 	return rows
 }

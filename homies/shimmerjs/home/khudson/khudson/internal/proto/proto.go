@@ -34,11 +34,13 @@ const (
 	TypeCaffeinate = "caffeinate"
 	// TypeNotice carries a transient bus-side warning (refused row act, an
 	// exec'd argv exiting nonzero) to docks in Msg.Error.
-	TypeNotice = "notice"
+	TypeNotice       = "notice"
+	TypeActionStatus = "action-status"
 	// TypePing is the dock's idle keepalive (no payload, no response): all
 	// other dock->bus traffic is event-driven, and the bus reaps a dock
 	// silent past its read grace.
-	TypePing = "ping"
+	TypePing      = "ping"
+	TypeViewState = "view-state"
 	// TypeLogiState carries the latest MX-device battery frame (Msg.Logi) to
 	// docks. The bus caches the last one and replays it in the dock greeting
 	// (the TypeCaffeinate pattern); a distinct type because the battery
@@ -56,6 +58,16 @@ const (
 // survive and a mute dock is reaped.
 const HeartbeatEvery = 5 * time.Second
 
+const Version = 2
+
+// ViewCapabilities describes rendering and physical input independently.
+// A terminal view never owns the Edge's geometry or sleep assertions.
+type ViewCapabilities struct {
+	Layouts []string `json:"layouts,omitempty"`
+	Scraped bool     `json:"scraped,omitempty"`
+	Edge    bool     `json:"edge,omitempty"`
+}
+
 // Roles for TypeHello.
 const (
 	RoleDock = "dock"
@@ -64,7 +76,18 @@ const (
 
 // Msg is every message on khudson.sock; unused fields stay zero.
 type Msg struct {
-	Type string `json:"type"`
+	Protocol          int               `json:"protocol,omitempty"`
+	Capabilities      *ViewCapabilities `json:"capabilities,omitempty"`
+	Type              string            `json:"type"`
+	ViewID            string            `json:"view_id,omitempty"`
+	ViewGeneration    uint64            `json:"view_generation,omitempty"`
+	Hidden            bool              `json:"hidden,omitempty"`
+	ParentOperationID string            `json:"parent_operation_id,omitempty"`
+	OperationID       string            `json:"operation_id,omitempty"`
+	OperationState    string            `json:"operation_state,omitempty"`
+	// BusEpoch fences queued input across config and renderer replacement.
+	// It is assigned locally and cannot be supplied by a socket peer.
+	BusEpoch uint64 `json:"-"`
 
 	// hello / grid; PanelCols/PanelRows is the dock's active-panel content
 	// region -- the cell grid the bus sizes scraped windows to
@@ -98,8 +121,9 @@ type Msg struct {
 	// theme: Theme is the name (day|night); Palette is the HUD kitty's
 	// effective colors (kitty color name -> "#rrggbb", from get-colors),
 	// present once the bus has fetched them
-	Theme   string            `json:"theme,omitempty"`
-	Palette map[string]string `json:"palette,omitempty"`
+	Theme        string            `json:"theme,omitempty"`
+	Palette      map[string]string `json:"palette,omitempty"`
+	ResetPalette bool              `json:"reset_palette,omitempty"`
 
 	// caffeinate: desired assertion state as broadcast ("on"|"off")
 	Caffeinate string `json:"caffeinate,omitempty"`
@@ -228,11 +252,12 @@ type ActFail struct {
 
 // Status is the resp payload for `khudson ctl status`.
 type Status struct {
-	ConfigPath string   `json:"configPath"` // "" = embedded example
-	Layout     string   `json:"layout"`
-	Widgets    []string `json:"widgets"`
-	Docks      int      `json:"docks"`
-	Touch      string   `json:"touch"` // connected | absent
+	RendererSocket string   `json:"renderer_socket,omitempty"`
+	ConfigPath     string   `json:"configPath"` // "" = embedded example
+	Layout         string   `json:"layout"`
+	Widgets        []string `json:"widgets"`
+	Docks          int      `json:"docks"`
+	Touch          string   `json:"touch"` // connected | absent
 	// MainKitty is the daily kitty RC socket's health: unknown | absent |
 	// healthy | stale. Stale means the bus unlinked a connect-refused corpse
 	// and the daily kitty needs a hand relaunch; it clears on healthy.

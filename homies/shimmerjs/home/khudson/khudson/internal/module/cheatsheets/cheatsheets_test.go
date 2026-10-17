@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 func wellFormed() map[string]any {

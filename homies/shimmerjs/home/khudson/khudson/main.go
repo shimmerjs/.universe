@@ -12,24 +12,33 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"syscall"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/ax"
+	"github.com/shimmerjs/khudson/khudson/internal/axcli"
 	"github.com/shimmerjs/khudson/khudson/internal/bus"
 	"github.com/shimmerjs/khudson/khudson/internal/config"
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/dock"
 	"github.com/shimmerjs/khudson/khudson/internal/hookspool"
 	"github.com/shimmerjs/khudson/khudson/internal/hudlaunch"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
 	"github.com/shimmerjs/khudson/khudson/internal/module/histsnap"
 	"github.com/shimmerjs/khudson/khudson/internal/module/registry"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
+func init() { runtime.LockOSThread() }
+
 func main() {
+	if len(os.Args) < 2 || os.Args[1] != "hud-launcher" {
+		runtime.UnlockOSThread()
+	}
 	args := os.Args[1:]
 	if len(args) == 0 {
 		usage()
@@ -161,6 +170,7 @@ const histFlushEvery = 5 * time.Minute
 
 func cmdBus(args []string) error {
 	fs := flag.NewFlagSet("bus", flag.ExitOnError)
+	rendererBin := fs.String("renderer-kitty", "", "kitty executable owned on demand by the bus")
 	configPath := fs.String("config", "", "config file (default: embedded example)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -169,21 +179,17 @@ func cmdBus(args []string) error {
 	if err != nil {
 		return err
 	}
+	restoreLog, err := serviceLog(p.Dir, "bus")
+	if err != nil {
+		return err
+	}
+	defer restoreLog()
 	logStart("bus")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// only the module.Persistent constructors (cpumem, disk) are process-
-	// wide singletons -- registry.All() builds other modules fresh per call
-	// -- so this call and bus.Run's own registry.All() resolve the same
-	// ring-holding instances (pinned by the registry package's
-	// TestPersistentModulesAreSingletons)
-	var pers []module.Persistent
-	for _, m := range registry.All() {
-		if pm, ok := m.(module.Persistent); ok {
-			pers = append(pers, pm)
-		}
-	}
+	// History restore must not construct the shared job owner before socket claim.
+	pers := registry.Persistent()
 	restoreHist(p.HistSnap(), pers)
 	ready := make(chan struct{})
 	flushDone := make(chan struct{})
@@ -205,7 +211,7 @@ func cmdBus(args []string) error {
 		histsnap.FlushLoop(ctx, p.HistSnap(), pers, tick.C)
 	}()
 
-	err = bus.Run(ctx, bus.Options{ConfigPath: *configPath, Paths: p,
+	err = bus.Run(ctx, bus.Options{ConfigPath: *configPath, Paths: p, RendererBin: *rendererBin,
 		Ready: func() { close(ready) }})
 	stop() // bus.Run can fail with ctx still live; the shutdown flush needs the cancel
 	<-flushDone
@@ -243,6 +249,7 @@ func cmdDock(args []string) error {
 	fs := flag.NewFlagSet("dock", flag.ExitOnError)
 	configPath := fs.String("config", "", "config file (default: embedded example)")
 	socket := fs.String("socket", "", "bus socket (default: state dir khudson.sock)")
+	edge := fs.Bool("edge", false, "physical Edge surface (set by hud-launcher)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -254,7 +261,7 @@ func cmdDock(args []string) error {
 		*socket = p.BusSocket()
 	}
 	logStart("dock")
-	return dock.Run(dock.Options{ConfigPath: *configPath, BusSocket: *socket})
+	return dock.Run(dock.Options{ConfigPath: *configPath, BusSocket: *socket, Edge: *edge})
 }
 
 func cmdCtl(args []string) error {
@@ -265,11 +272,23 @@ func cmdCtl(args []string) error {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return fmt.Errorf("ctl: need a command: reload | layout <name> | theme <day|night> | caffeinate <on|off|toggle> | repoll <widget|module> | status")
+		return fmt.Errorf("ctl: need a command: reload | layout <name> | theme <day|night> | caffeinate <on|off|toggle> | repoll <widget|module> | status | actions [after-sequence] | discard-action <id>")
 	}
 	cmd, arg := rest[0], ""
 	switch cmd {
+	case "actions":
+		if len(rest) > 2 {
+			return fmt.Errorf("ctl actions: optional after-sequence cursor")
+		}
+		if len(rest) == 2 {
+			arg = rest[1]
+		}
 	case "reload", "status":
+	case "discard-action":
+		if len(rest) != 2 {
+			return fmt.Errorf("ctl discard-action: need operation id")
+		}
+		arg = rest[1]
 	case "layout":
 		if len(rest) < 2 {
 			return fmt.Errorf("ctl layout: need a layout name")
@@ -318,7 +337,7 @@ func cmdCtl(args []string) error {
 		return err
 	}
 	var resp proto.Msg
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+	if err := socketio.NewDecoder(conn).Decode(&resp); err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
 	if !resp.OK {
@@ -336,6 +355,17 @@ func cmdCtl(args []string) error {
 	}
 	fmt.Println("ok")
 	return nil
+}
+
+// Service diagnostics retain two bounded files instead of growing with uptime.
+func serviceLog(dir, name string) (func(), error) {
+	writer, err := diagnostic.OpenFile(filepath.Join(dir, "log", name+".diagnostics.log"), 4<<20)
+	if err != nil {
+		return nil, err
+	}
+	previous := log.Writer()
+	log.SetOutput(writer)
+	return func() { log.SetOutput(previous); writer.Close() }, nil
 }
 
 func cmdHudLauncher(args []string) error {
@@ -360,10 +390,15 @@ func cmdHudLauncher(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve khudson binary: %w", err)
 	}
+	restoreLog, err := serviceLog(p.Dir, "hud-launcher")
+	if err != nil {
+		return err
+	}
+	defer restoreLog()
 	logStart("hud-launcher")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return hudlaunch.Run(ctx, hudlaunch.Options{
+	return hudlaunch.RunApplication(ctx, hudlaunch.Options{
 		KittyBin:    *kittyBin,
 		KittyConfig: *kittyConfig,
 		KhudsonBin:  khudsonBin,
@@ -420,59 +455,7 @@ func cmdClaude(args []string) error {
 // argv puts --app AFTER the positional title and stdlib flag stops at the
 // first non-flag, so the title is taken from rest[0] before Parse -- never
 // Parse the whole tail.
-func cmdAx(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("ax: need a verb: unminimize <title> [--app <name>] | quit --bundle <id> | force-quit --bundle <id> | status")
-	}
-	switch args[0] {
-	case "status":
-		if ax.Trusted() {
-			fmt.Println("trusted: yes")
-		} else {
-			fmt.Println("trusted: no")
-		}
-		return nil
-	case "unminimize":
-		rest := args[1:]
-		if len(rest) == 0 {
-			return fmt.Errorf("ax unminimize: need a window title")
-		}
-		title := rest[0]
-		fs := flag.NewFlagSet("ax unminimize", flag.ExitOnError)
-		app := fs.String("app", "", "owning app for the in-app window fallback")
-		if err := fs.Parse(rest[1:]); err != nil {
-			return err
-		}
-		if !ax.Trusted() {
-			return fmt.Errorf("ax unminimize: Accessibility not granted -- grant the installed khudson binary in System Settings > Privacy & Security > Accessibility, then restart the bus")
-		}
-		err := ax.PressMinimizedItem(title)
-		if errors.Is(err, ax.ErrNotFound) && *app != "" {
-			// tap-vs-sweep race: the dock item vanished between render and
-			// tap; fall back to the app's own window attributes
-			return ax.UnminimizeWindow(*app, title)
-		}
-		return err
-	case "quit", "force-quit":
-		// no AX grant needed: resolution is lsappinfo, the quit an
-		// AppleEvent, the kill a plain signal -- resolve + re-validate
-		// happen inside the verb, at exec time
-		fs := flag.NewFlagSet("ax "+args[0], flag.ExitOnError)
-		bundle := fs.String("bundle", "", "bundle id of the running app")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if *bundle == "" {
-			return fmt.Errorf("ax %s: need --bundle <id>", args[0])
-		}
-		if args[0] == "quit" {
-			return ax.QuitBundle(*bundle)
-		}
-		return ax.ForceQuitBundle(*bundle)
-	default:
-		return fmt.Errorf("ax: unknown verb %q (unminimize | quit | force-quit | status)", args[0])
-	}
-}
+func cmdAx(args []string) error { return axcli.Run(args) }
 
 // cmdHook is the claude-code hook handler: one static-binary fork per
 // fire instead of the bash+jq scripts it replaced (~65-70ms measured for
@@ -512,7 +495,7 @@ func pokeBus(socket string) {
 	_ = enc.Encode(proto.Msg{Type: proto.TypeHello, Role: proto.RoleCtl})
 	_ = enc.Encode(proto.Msg{Type: proto.TypeCtl, Cmd: "repoll", Arg: "claude-sessions"})
 	var resp proto.Msg
-	_ = json.NewDecoder(conn).Decode(&resp)
+	_ = socketio.NewDecoder(conn).Decode(&resp)
 }
 
 func cmdConfig(args []string) error {

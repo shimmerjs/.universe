@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // quit-begin closes the run exactly like stop does, but emits NOTHING that

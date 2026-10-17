@@ -15,6 +15,7 @@ import (
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // fakeCaffProc is one fake caffeinate: Wait blocks until Kill (supervisor
@@ -104,7 +105,7 @@ func testCaffeinator(t *testing.T, on bool) (*caffeinator, *fakeLaunch) {
 	return &caffeinator{
 		pidFile:      filepath.Join(t.TempDir(), caffPidFileName),
 		launch:       fl.launch,
-		isCaff:       func(int) bool { return false },
+		isCaff:       func(int) (bool, error) { return false, nil },
 		kill:         func(int) error { return nil },
 		minBackoff:   time.Millisecond,
 		maxBackoff:   20 * time.Millisecond,
@@ -309,7 +310,7 @@ func TestCaffeinateReapOrphan(t *testing.T) {
 		var killed []int
 		c := &caffeinator{
 			pidFile: filepath.Join(t.TempDir(), caffPidFileName),
-			isCaff:  func(int) bool { return isCaff },
+			isCaff:  func(int) (bool, error) { return isCaff, nil },
 			kill: func(pid int) error {
 				killed = append(killed, pid)
 				return nil
@@ -345,13 +346,17 @@ func TestCaffeinateReapOrphan(t *testing.T) {
 		}
 		wantGone(t, c)
 	})
-	t.Run("corrupt pidfile ignored", func(t *testing.T) {
+	t.Run("corrupt pidfile retained for diagnosis", func(t *testing.T) {
 		c, killed := newC(t, "not-a-pid", true)
-		c.reapOrphan()
+		if err := c.reapOrphan(); err == nil {
+			t.Fatal("corrupt owner accepted")
+		}
 		if len(*killed) != 0 {
 			t.Fatalf("killed = %v, want none", *killed)
 		}
-		wantGone(t, c)
+		if _, err := os.Stat(c.pidFile); err != nil {
+			t.Fatal("owner evidence lost")
+		}
 	})
 	t.Run("missing pidfile is a no-op", func(t *testing.T) {
 		c, killed := newC(t, "", true)
@@ -375,7 +380,7 @@ func caffTestBus(t *testing.T, on bool) *Bus {
 	return &Bus{
 		cfg:   cfg,
 		reg:   NewRegistry(cfg),
-		docks: make(map[net.Conn]*json.Encoder),
+		docks: make(map[net.Conn]*socketio.Writer),
 		caff:  c,
 	}
 }
@@ -476,8 +481,8 @@ func TestServeDockCaffeinateGreetingAndToggle(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 	msgs := make(chan proto.Msg, 16)
 	go func() {
@@ -492,11 +497,12 @@ func TestServeDockCaffeinateGreetingAndToggle(t *testing.T) {
 		}
 	}()
 
-	if m := wantCaffMsg(t, msgs); m.Caffeinate != "on" {
+	greeting := wantCaffMsg(t, msgs)
+	if m := greeting; m.Caffeinate != "on" {
 		t.Fatalf("greeting caffeinate = %q, want on", m.Caffeinate)
 	}
 	if err := json.NewEncoder(client).Encode(proto.Msg{
-		Type: proto.TypeCtl, Cmd: "caffeinate", Arg: "toggle",
+		Type: proto.TypeCtl, Cmd: "caffeinate", Arg: "toggle", ViewID: greeting.ViewID, ViewGeneration: greeting.ViewGeneration,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -521,10 +527,69 @@ func TestCaffIsCaffeinateRealPs(t *testing.T) {
 	if _, err := os.Stat("/bin/ps"); err != nil {
 		t.Skipf("no /bin/ps: %v", err)
 	}
-	if caffIsCaffeinate(os.Getpid()) {
+	if matches, _ := caffIsCaffeinate(os.Getpid()); matches {
 		t.Error("test binary identified as caffeinate")
 	}
-	if caffIsCaffeinate(1 << 30) {
+	if matches, _ := caffIsCaffeinate(1 << 30); matches {
 		t.Error("nonexistent pid identified as caffeinate")
 	}
+}
+
+func TestCaffeinateSuspendsWithoutDockAndPreservesPreference(t *testing.T) {
+	c, fl := testCaffeinator(t, true)
+	c.SetAvailable(false)
+	startCaff(t, c)
+	wantNoSpawn(t, fl, 30*time.Millisecond)
+	if c.State() != "on (waiting for Edge view)" || !c.On() {
+		t.Fatal(c.State())
+	}
+	c.SetAvailable(true)
+	p := wantSpawn(t, fl)
+	c.SetAvailable(false)
+	waitCond(t, "last dock removal", p.isDead)
+	wantNoSpawn(t, fl, 30*time.Millisecond)
+	c.Set(false)
+	c.SetAvailable(true)
+	wantNoSpawn(t, fl, 30*time.Millisecond)
+	c.Set(true)
+	wantSpawn(t, fl)
+	if fl.sawOverlap() {
+		t.Fatal("overlap")
+	}
+}
+
+func TestCaffeinateAssertionIsTiedToOwnerProcess(t *testing.T) {
+	cmd := caffeinateCommand(1234)
+	if got := strings.Join(cmd.Args, " "); got != "/usr/bin/caffeinate -di -w 1234" {
+		t.Fatal(got)
+	}
+}
+
+func TestCaffeinateFailedOrphanKillPreservesOwnerAndBlocksSpawn(t *testing.T) {
+	c, fl := testCaffeinator(t, true)
+	if err := os.WriteFile(c.pidFile, []byte("1234"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.isCaff = func(int) (bool, error) { return true, nil }
+	c.kill = func(int) error { return errors.New("cannot terminate") }
+	startCaff(t, c)
+	wantNoSpawn(t, fl, 30*time.Millisecond)
+	if _, err := os.Stat(c.pidFile); err != nil {
+		t.Fatal("failed termination lost owner record")
+	}
+}
+
+func TestCancelledCaffeinatorDoesNotRecoverOrSpawn(t *testing.T) {
+	c, _ := testCaffeinator(t, true)
+	if err := os.WriteFile(c.pidFile, []byte("12345"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.isCaff = func(int) (bool, error) { t.Error("recovery started after cancellation"); return false, nil }
+	c.launch = func() (caffProc, error) {
+		t.Error("spawned after cancellation")
+		return nil, errors.New("unexpected launch")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.run(ctx)
 }

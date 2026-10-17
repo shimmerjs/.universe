@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
 )
 
 // runVersion stamps every journal file; foreign versions are treated as
@@ -110,6 +112,9 @@ func NewRunID(now time.Time) string {
 // Callers surface errors loudly: a demo whose journal cannot land must
 // say so, not pretend (deliberate delta from claudeverb's silent logf).
 func WriteRun(dir string, r *Run) error {
+	if r.ID == "" || r.ID == "." || r.ID == ".." || filepath.Base(r.ID) != r.ID {
+		return errors.New("reno run journal: invalid run id")
+	}
 	if dir == "" {
 		return errors.New("reno run journal: no state dir")
 	}
@@ -120,11 +125,7 @@ func WriteRun(dir string, r *Run) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, fmt.Sprintf(".%s.%d.tmp", r.ID, os.Getpid()))
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(dir, r.ID+".json"))
+	return atomicfile.Write(filepath.Join(dir, r.ID+".json"), b, 0600)
 }
 
 // ReadRun loads one journal file; foreign versions error.

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/ax"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // fakeExe stands in for the os.Executable() the module resolves in New:

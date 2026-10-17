@@ -12,22 +12,9 @@ import (
 	renocore "github.com/shimmerjs/khudson/khudson/internal/reno"
 )
 
-// A sustained effect -- the shake, the lamp -- runs for as long as its
-// level is up, which makes it the one kind of FX that is a PROCESS rather
-// than a request. This is the supervisor: one driver per effect while its
-// level is above zero, none when it is not, and the level itself still
-// lives in fxLevels like every other level FX.
-//
-// The driver is a `khudson reno obs cam <kind> <level> --sustain` child
-// holding one socket, and it is stopped by CLOSING ITS STDIN. That is the
-// whole reason the pipe exists: a stop that needs no signal to be delivered
-// and no supervisor to still be alive to deliver it. A bus killed outright
-// leaves the pipe closed anyway, so an orphan driver puts the camera back
-// and exits rather than shaking it at an empty room.
-//
-// Going through the CLI rather than dialling obs-websocket from here keeps
-// one FX path: the driver notes its outcome back to this module, so the
-// tiles still agree with the camera afterwards.
+// Sustained effects own a child while their level is nonzero. Closing the
+// child's stdin requests restoration and exit, including if the Reno owner
+// dies. Driver notes report the resulting state back to this module.
 
 // sustainStopGrace is how long a driver gets to notice the closed pipe,
 // restore the state it found, and exit. Past it the child is killed and the
@@ -54,7 +41,7 @@ type sustainDriver struct {
 // restart one whose level moved under it. Called wherever a level changes.
 // Caller holds mu.
 func (m *Mod) touchSustainLocked(kind string) {
-	if !renocore.IsSustainFX(kind) {
+	if m.closed || !renocore.IsSustainFX(kind) || m.retiring[kind] != nil {
 		return
 	}
 	want := m.fxLevels[kind]
@@ -70,9 +57,19 @@ func (m *Mod) touchSustainLocked(kind string) {
 			return
 		}
 		delete(m.sustain, kind)
-		// off the module goroutine: stopping waits out a grace, and the ctl
-		// path that got here must not block on a subprocess
-		go stopSustainDriver(kind, d)
+		// The retiring driver must restore its state before its replacement starts.
+		if m.retiring == nil {
+			m.retiring = make(map[string]*sustainDriver)
+		}
+		m.retiring[kind] = d
+		m.workers.Go(func() {
+			stopSustainDriver(kind, d)
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			delete(m.retiring, kind)
+			m.touchSustainLocked(kind)
+		})
+		return
 	}
 	if want <= 0 {
 		return
@@ -88,7 +85,7 @@ func (m *Mod) touchSustainLocked(kind string) {
 		m.sustain = map[string]*sustainDriver{}
 	}
 	m.sustain[kind] = d
-	go m.reapSustainDriver(kind, d)
+	m.workers.Go(func() { m.reapSustainDriver(kind, d) })
 }
 
 // touchEverySustainLocked reconciles every sustained effect at once, for
@@ -100,14 +97,18 @@ func (m *Mod) touchEverySustainLocked() {
 	}
 }
 
-// Close is module.Closer: the bus calls it at clean shutdown. A driver is
-// a child this module started OUTSIDE the effect executor -- it has to be,
-// since a process that runs for minutes would block every effect queued
-// behind it -- so nothing else in the bus knows to reap one. The drivers go
-// down in parallel because each waits out its own grace putting the camera
-// back, and shutdown should not pay for those one after another.
+// Close retires the watchdog and every active or stopping driver. Pipe closure
+// requests restoration before the kill deadline; all child reapers are joined.
 func (m *Mod) Close() error {
 	m.mu.Lock()
+	m.closed = true
+	if m.stop != nil {
+		select {
+		case <-m.stop:
+		default:
+			close(m.stop)
+		}
+	}
 	running := m.sustain
 	m.sustain = nil
 	m.mu.Unlock()
@@ -117,6 +118,7 @@ func (m *Mod) Close() error {
 		wg.Go(func() { stopSustainDriver(kind, d) })
 	}
 	wg.Wait()
+	m.workers.Wait()
 	return nil
 }
 
@@ -126,8 +128,7 @@ var sustainArgv = func(kind string, level int) []string {
 	return []string{"reno", "obs", "cam", kind, strconv.Itoa(level), "--sustain"}
 }
 
-// startSustainDriver spawns one driver. Stdout and stderr go to the bus's
-// own, so a driver that failed says so where every other verb does.
+// Driver output inherits the owner's log streams.
 func startSustainDriver(exe, kind string, level int) (*sustainDriver, error) {
 	if exe == "" {
 		return nil, fmt.Errorf("no khudson binary to run")

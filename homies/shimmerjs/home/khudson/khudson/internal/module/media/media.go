@@ -9,7 +9,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // script returns state/artist/track/album on one line, joined by the ASCII
@@ -30,7 +31,7 @@ func (m Mod) Poll(ctx context.Context, _ map[string]any) (module.Data, error) {
 	run := m.run
 	if run == nil {
 		run = func(ctx context.Context) ([]byte, error) {
-			return exec.CommandContext(ctx, "osascript", "-e", script).Output()
+			return subprocess.Output(ctx, "osascript", "-e", script)
 		}
 	}
 	out, err := run(ctx)

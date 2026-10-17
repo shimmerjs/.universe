@@ -8,12 +8,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
+	"github.com/shimmerjs/khudson/khudson/provider"
 	"golang.org/x/sys/unix"
 )
 
@@ -199,7 +199,7 @@ func memory(ctx context.Context) (float64, float64, error) {
 	if err != nil {
 		return 0, 0, fmt.Errorf("sysctl hw.memsize: %w", err)
 	}
-	out, err := exec.CommandContext(ctx, "vm_stat").Output()
+	out, err := subprocess.Output(ctx, "vm_stat")
 	if err != nil {
 		return 0, 0, fmt.Errorf("vm_stat: %w", err)
 	}

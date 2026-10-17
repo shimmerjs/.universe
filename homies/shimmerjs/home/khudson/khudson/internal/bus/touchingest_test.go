@@ -11,6 +11,7 @@ import (
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // touchTestBus builds a minimal bus with a recognizer grid and a decoding
@@ -34,7 +35,7 @@ func touchTestBus(t *testing.T) (*Bus, <-chan proto.Msg, paths.Paths) {
 		opts:  Options{Paths: p},
 		cfg:   cfg,
 		reg:   NewRegistry(cfg),
-		docks: make(map[net.Conn]*json.Encoder),
+		docks: make(map[net.Conn]*socketio.Writer),
 	}
 	b.setGrid(320, 18)
 	return b, addDecodingDock(t, b), p
@@ -171,8 +172,9 @@ func TestTouchHeartbeatLiveness(t *testing.T) {
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go b.touchLoop(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); b.touchLoop(ctx) }()
+	defer func() { cancel(); <-done }()
 
 	var src net.Conn
 	select {
@@ -187,6 +189,10 @@ func TestTouchHeartbeatLiveness(t *testing.T) {
 		if err := enc.Encode(proto.TouchFrame{TimeNS: time.Now().UnixNano(), HB: true}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Accept can return before the client's DialContext has completed.
+	if !pollUntil(3*time.Second, b.touchState) {
+		t.Fatal("connected touch reader did not become ready")
 	}
 	// beats alone, no contact for well past the window: nobody is touching
 	// the glass and touch must still read live

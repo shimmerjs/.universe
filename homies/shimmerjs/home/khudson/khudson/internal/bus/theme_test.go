@@ -15,6 +15,7 @@ import (
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // fakeColors is a ThemeColors that behaves like a kitty: SetColors merges
@@ -129,7 +130,7 @@ func themeTestBus(t *testing.T) (*Bus, *fakeColors, *fakeLum) {
 	b := &Bus{
 		cfg:    cfg,
 		reg:    NewRegistry(cfg),
-		docks:  make(map[net.Conn]*json.Encoder),
+		docks:  make(map[net.Conn]*socketio.Writer),
 		colors: fc,
 		lum:    fl,
 	}
@@ -155,7 +156,7 @@ func addDecodingDock(t *testing.T, b *Bus) <-chan proto.Msg {
 		}
 	}()
 	b.mu.Lock()
-	b.docks[server] = json.NewEncoder(server)
+	b.docks[server] = testDockWriter(t, server)
 	if b.activeDock == nil {
 		b.activeDock = server // a real dock claims the slot at hello
 	}
@@ -311,8 +312,7 @@ func TestSwitchThemeDay(t *testing.T) {
 	}
 }
 
-// TestSwitchThemeSetColorsFailure: a failed set-colors fails the verb and
-// leaves theme state and docks untouched.
+// A failed host update must not erase the durable desired theme.
 func TestSwitchThemeSetColorsFailure(t *testing.T) {
 	b, fc, _ := themeTestBus(t)
 	ch := addDecodingDock(t, b)
@@ -327,18 +327,24 @@ func TestSwitchThemeSetColorsFailure(t *testing.T) {
 	b.mu.Lock()
 	theme := b.theme
 	b.mu.Unlock()
-	if theme != "" {
-		t.Fatalf("theme = %q, want unchanged", theme)
+	if theme != "night" || !b.themePending || resp.OperationState != "uncertain" {
+		t.Fatalf("desired theme lost: theme=%q pending=%t response=%+v", theme, b.themePending, resp)
 	}
-	select {
-	case m := <-ch:
-		t.Fatalf("unexpected broadcast after failed switch: %+v", m)
-	case <-time.After(100 * time.Millisecond):
+	if m := wantThemeMsg(t, ch); m.Theme != "night" {
+		t.Fatalf("desired theme not published: %+v", m)
+	}
+	fc.mu.Lock()
+	fc.setErr = nil
+	fc.mu.Unlock()
+	b.ensurePalette()
+	b.paletteWaiters.Wait()
+	if b.themePending || b.theme != "night" {
+		t.Fatal("failed theme was not reconciled")
 	}
 }
 
 // TestSwitchThemeNoNightColors: a config without night colors still flips
-// and broadcasts the theme without touching the kitty without touching the kitty.
+// and broadcasts the theme without changing kitty colors.
 func TestSwitchThemeNoNightColors(t *testing.T) {
 	b, fc, _ := themeTestBus(t)
 	b.cfg.Theme = nil
@@ -370,8 +376,8 @@ func TestAdoptFetchesAndBroadcastsPalette(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server, json.NewDecoder(server),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 
 	dec := json.NewDecoder(client)
@@ -408,15 +414,15 @@ func TestAdoptFetchesAndBroadcastsPalette(t *testing.T) {
 		t.Fatal("serveDock did not exit on close")
 	}
 
-	// second dock: palette is cached, greeting carries it inline and no new
-	// fetch fires
+	// A new Edge host may have its startup palette again. Fetch for this
+	// host lifetime instead of trusting a prior process's colors.
 	client2, server2 := net.Pipe()
 	defer client2.Close()
 	done2 := make(chan struct{})
 	go func() {
 		defer close(done2)
-		b.serveDock(server2, json.NewEncoder(server2), json.NewDecoder(server2),
-			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Cols: 320, Rows: 18})
+		b.serveDock(server2, json.NewDecoder(server2),
+			proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18})
 	}()
 	dec2 := json.NewDecoder(client2)
 	msgs2 := make(chan proto.Msg, 16)
@@ -430,14 +436,17 @@ func TestAdoptFetchesAndBroadcastsPalette(t *testing.T) {
 			msgs2 <- m
 		}
 	}()
+	if m := wantThemeMsg(t, msgs2); m.Palette != nil {
+		t.Fatalf("new host inherited stale palette: %v", m.Palette)
+	}
 	if m := wantThemeMsg(t, msgs2); !maps.Equal(m.Palette, dayPalette()) {
-		t.Fatalf("cached greeting palette = %v, want %v", m.Palette, dayPalette())
+		t.Fatalf("new host palette missing: %v", m.Palette)
 	}
 	fc.mu.Lock()
 	gets = fc.gets
 	fc.mu.Unlock()
-	if gets != 1 {
-		t.Fatalf("get-colors calls = %d after cached greeting, want still 1", gets)
+	if gets != 2 {
+		t.Fatalf("get-colors calls=%d, want one per host lifetime", gets)
 	}
 	client2.Close()
 	select {
@@ -562,5 +571,161 @@ func TestHudColorsWire(t *testing.T) {
 	// a bad color never reaches the wire
 	if err := h.SetColors(map[string]string{"background": "black"}); err == nil {
 		t.Fatal("SetColors accepted a non-hex color")
+	}
+}
+
+func TestThemeWithoutEdgeDefersPhysicalEffectsUntilAdoption(t *testing.T) {
+	b, colors, lum := themeTestBus(t)
+	ch := addDecodingDock(t, b)
+	b.dockCaps = map[net.Conn]proto.ViewCapabilities{}
+	for conn := range b.docks {
+		b.dockCaps[conn] = proto.ViewCapabilities{Layouts: []string{"home"}}
+	}
+	if err := b.switchTheme("night"); err != nil {
+		t.Fatal(err)
+	}
+	if msg := wantThemeMsg(t, ch); msg.Theme != "night" || msg.Palette["background"] != "#000000" {
+		t.Fatalf("semantic theme missing: %+v", msg)
+	}
+	colors.mu.Lock()
+	gets, sets := colors.gets, len(colors.sets)
+	colors.mu.Unlock()
+	lum.mu.Lock()
+	writes := len(lum.calls)
+	lum.mu.Unlock()
+	if gets != 0 || sets != 0 || writes != 0 {
+		t.Fatal("terminal-only theme touched HUD or display")
+	}
+	b.mu.Lock()
+	for conn := range b.docks {
+		b.dockCaps[conn] = proto.ViewCapabilities{Edge: true}
+	}
+	b.mu.Unlock()
+	b.ensurePalette()
+	if msg := wantThemeMsg(t, ch); msg.Theme != "night" || msg.Palette["color2"] != "#a7c080" {
+		t.Fatalf("Edge adoption did not apply desired theme: %+v", msg)
+	}
+	colors.mu.Lock()
+	sets = len(colors.sets)
+	colors.mu.Unlock()
+	if sets != 1 {
+		t.Fatalf("deferred theme applied %d times", sets)
+	}
+	if call := lum.last(t); call.value != 10 {
+		t.Fatal("deferred theme lost configured brightness")
+	}
+}
+
+func TestSemanticDayClearsNightPaletteWithoutHardware(t *testing.T) {
+	b, colors, _ := themeTestBus(t)
+	ch := addDecodingDock(t, b)
+	b.dockCaps = map[net.Conn]proto.ViewCapabilities{}
+	if err := b.switchTheme("night"); err != nil {
+		t.Fatal(err)
+	}
+	wantThemeMsg(t, ch)
+	if err := b.switchTheme("day"); err != nil {
+		t.Fatal(err)
+	}
+	if msg := wantThemeMsg(t, ch); !msg.ResetPalette {
+		t.Fatal("semantic day left night colors installed")
+	}
+	colors.mu.Lock()
+	defer colors.mu.Unlock()
+	if colors.gets != 0 || colors.resets != 0 || len(colors.sets) != 0 {
+		t.Fatal("semantic theme touched absent Edge host")
+	}
+}
+
+func TestDeferredThemeSurvivesBusRestart(t *testing.T) {
+	b, colors, _ := themeTestBus(t)
+	b.opts.Paths.Dir = t.TempDir()
+	if err := b.switchTheme("night"); err != nil {
+		t.Fatal(err)
+	}
+	restored, _, _ := themeTestBus(t)
+	restored.opts.Paths.Dir = b.opts.Paths.Dir
+	restored.restoreTheme()
+	if restored.theme != "night" || !restored.themePending {
+		t.Fatal("deferred theme lost on restart")
+	}
+	colors.mu.Lock()
+	defer colors.mu.Unlock()
+	if colors.gets != 0 || len(colors.sets) != 0 {
+		t.Fatal("persistence touched absent Edge")
+	}
+}
+
+func TestThemePersistenceFailurePreventsHardwareEffects(t *testing.T) {
+	b, colors, _ := themeTestBus(t)
+	addDecodingDock(t, b)
+	b.opts.Paths.Dir = t.TempDir()
+	if err := os.Mkdir(filepath.Join(b.opts.Paths.Dir, "theme-state"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.switchTheme("night"); err == nil {
+		t.Fatal("failed persistence accepted theme")
+	}
+	colors.mu.Lock()
+	defer colors.mu.Unlock()
+	if colors.gets != 0 || len(colors.sets) != 0 {
+		t.Fatal("hardware changed before intent committed")
+	}
+}
+
+func TestHUDColorsBoundsResponse(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "colors-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "s")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		var request strings.Builder
+		buf := make([]byte, 1024)
+		for !strings.Contains(request.String(), "\x1b\\") {
+			n, err := conn.Read(buf)
+			request.Write(buf[:n])
+			if err != nil {
+				return
+			}
+		}
+		conn.Write([]byte("\x1bP@kitty-cmd" + `{"ok":true,"data":"` + strings.Repeat("x", 8<<20) + `"}` + "\x1b\\"))
+	}()
+	_, err = newHudColors(socket).call("get-colors", nil)
+	<-done
+	if err == nil || !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("unbounded HUD response: %v", err)
+	}
+}
+
+func TestThemeReadFailureRetainsReconciliation(t *testing.T) {
+	b, colors, _ := themeTestBus(t)
+	addDecodingDock(t, b)
+	colors.getErr = fmt.Errorf("palette unavailable")
+	response := b.handleCtl(proto.Msg{Type: proto.TypeCtl, Cmd: "theme", Arg: "night"})
+	if response.OK || response.OperationState != "uncertain" || !b.themePending || b.theme != "night" {
+		t.Fatalf("lost partial theme application: %+v pending=%t theme=%s", response, b.themePending, b.theme)
+	}
+	colors.mu.Lock()
+	colors.getErr = nil
+	colors.mu.Unlock()
+	b.ensurePalette()
+	b.paletteWaiters.Wait()
+	if b.themePending || !maps.Equal(b.palette, colors.palette) {
+		t.Fatal("palette was not reconciled")
 	}
 }

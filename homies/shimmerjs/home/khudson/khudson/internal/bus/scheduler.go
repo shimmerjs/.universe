@@ -9,8 +9,9 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // schedTick is the scheduler's pass cadence; the schema floors widget poll
@@ -53,17 +54,19 @@ func backoffFor(failures int) time.Duration {
 // scheduler for fan-out. win is the window the scrape targeted; applySnapshot
 // drops results whose binding has moved (released, rebound) since the poll.
 type snapshotResult struct {
-	id   string
-	win  int
-	data []byte
-	err  error
+	state *WidgetState
+	id    string
+	win   int
+	data  []byte
+	err   error
 }
 
 // nativeResult carries one module poll back into the scheduler.
 type nativeResult struct {
-	id   string
-	data module.Data
-	err  error
+	state *WidgetState
+	id    string
+	data  module.Data
+	err   error
 }
 
 // scheduler drives the exec-widget lifecycle: adopt leftover
@@ -76,7 +79,9 @@ func (b *Bus) scheduler(ctx context.Context) {
 	// adopt is single-flight off the tick goroutine: LS rides rc.Client's 5s
 	// deadlines, and a hung substrate must not freeze polls/fan-out per tick
 	adoptBusy := false
-	adoptDone := make(chan struct{}, 1)
+	adoptDone := make(chan error, 1)
+	var adoptRetry time.Time
+	adoptFailures := 0
 	var shed loadShedder
 
 	tick := time.NewTicker(schedTick)
@@ -90,15 +95,27 @@ func (b *Bus) scheduler(ctx context.Context) {
 				<-adoptDone
 			}
 			b.drainInFlight(entries, busyCh)
-			if b.adoptPending() {
+			if b.renderer == nil && b.adoptPending() {
 				// a swap re-armed adopt but it has not run: rebind leftover
 				// windows onto the current registry so releaseAll can close them
 				b.tryAdopt()
 			}
-			b.releaseAll()
+			if b.renderer == nil {
+				b.releaseAll()
+			}
+			b.stopRenderer()
 			return
-		case <-adoptDone:
+		case err := <-adoptDone:
 			adoptBusy = false
+			if err != nil {
+				adoptFailures++
+				adoptRetry = time.Now().Add(backoffFor(adoptFailures))
+				diagnostic.Default.Observe("renderer.adopt", err, "backoff")
+			} else {
+				diagnostic.Default.Observe("renderer.adopt", nil, "resume")
+				adoptFailures = 0
+				adoptRetry = time.Time{}
+			}
 		case d := <-busyCh:
 			if e, ok := entries[d.id]; ok {
 				e.busy = false
@@ -116,12 +133,23 @@ func (b *Bus) scheduler(ctx context.Context) {
 		case id := <-b.repoll:
 			repollEntry(entries, id)
 		case now := <-tick.C:
-			b.trySwapPending(entries)
-			if !adoptBusy && b.adoptPending() {
+			b.rendererQuiescing = b.rendererTransition(now)
+			if !adoptBusy {
+				b.trySwapPending(entries)
+				if schedulerIdle(entries) && b.stepRenderer(now) {
+					clear(entries)
+					adoptRetry = time.Time{}
+					adoptFailures = 0
+				}
+			}
+			b.mu.Lock()
+			hasDock := len(b.visibleWidgetsLocked()) > 0
+			rendererReady := b.renderer == nil || b.rendererSocket != ""
+			b.mu.Unlock()
+			if hasDock && rendererReady && !b.rendererQuiescing && !adoptBusy && b.adoptPending() && !now.Before(adoptRetry) {
 				adoptBusy = true
 				go func() {
-					b.tryAdopt()
-					adoptDone <- struct{}{}
+					adoptDone <- b.tryAdopt()
 				}()
 			}
 			b.schedulerPass(ctx, now, entries, busyCh, adoptBusy, shed.active(now))
@@ -196,7 +224,9 @@ func (b *Bus) trySwapPending(entries map[string]*schedEntry) {
 	}
 	b.cfg = cfg
 	b.reg = NewRegistry(cfg)
-	b.needAdopt = true
+	b.inputEpoch.Add(1)
+	b.invalidateViewsLocked()
+	b.needAdopt = b.renderer == nil || b.rendererSocket != ""
 	b.pending = nil
 	clear(entries)
 	b.mu.Unlock()
@@ -214,16 +244,16 @@ func (b *Bus) adoptPending() bool {
 }
 
 // tryAdopt rebinds windows left over from a previous bus (crash model:
-// topology from CUE + @ ls + user vars). Retried every tick until the
-// substrate kitty answers; the bus must tolerate kitty starting after it.
+// topology from CUE + @ ls + user vars). The scheduler retries with backoff
+// while a dock needs a renderer.
 // Also re-run after a config reload swaps the registry. Runs off the tick
 // goroutine (adopt single-flight); needAdopt clears only after LS succeeds,
 // so the materialize gate stays closed while the adopt is in flight and no
 // Ensure races the rebind for unbound widgets.
-func (b *Bus) tryAdopt() {
+func (b *Bus) tryAdopt() error {
 	tree, err := b.sup.LS()
 	if err != nil {
-		return
+		return err
 	}
 	b.mu.Lock()
 	reg := b.reg
@@ -232,6 +262,7 @@ func (b *Bus) tryAdopt() {
 	if n := b.sup.Adopt(tree, reg); n > 0 {
 		log.Printf("khudson bus: adopted %d scrape windows", n)
 	}
+	return nil
 }
 
 // schedulerPass runs one tick: reconcile every exec widget against
@@ -253,8 +284,9 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 		go func() {
 			ok := true
 			defer func() { busyCh <- busyDone{id: st.Widget.ID, ok: ok} }()
-			if err := call(); err != nil {
-				log.Printf("khudson bus: %v", err)
+			err := call()
+			diagnostic.Default.Observe("widget.lifecycle."+st.Widget.ID, err, "backoff_on_error")
+			if err != nil {
 				ok = false
 			}
 		}()
@@ -262,16 +294,22 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 
 	b.mu.Lock()
 	reg := b.reg
-	layout, hasLayout := b.cfg.Layouts[b.cfg.Layout]
-	docks := len(b.docks)
+	pendingConfig := b.pending != nil
+	rendererUnavailable := b.renderer != nil && b.rendererSocket == ""
+	visible := b.visibleWidgetsLocked()
 	panelCols, panelRows := b.panelCols, b.panelRows
 	adoptPending := b.needAdopt || adoptInFlight
 	b.mu.Unlock()
 
-	visible := make(map[string]bool)
-	if hasLayout && docks > 0 {
-		for _, id := range layout.WidgetIDs() {
-			visible[id] = true
+	demand := make(map[string]bool)
+	for id := range visible {
+		if st, ok := reg.Get(id); ok && st.Widget.Render.Kind == "native" {
+			demand[st.Widget.Render.Module] = true
+		}
+	}
+	for name, mod := range b.mods {
+		if provider, ok := mod.(module.DemandAware); ok {
+			provider.SetDemand(demand[name] && !pendingConfig && !b.rendererQuiescing)
 		}
 	}
 
@@ -290,7 +328,7 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 		if vis {
 			e.lastVisible = now
 		}
-		if e.busy {
+		if e.busy || pendingConfig || b.rendererQuiescing {
 			continue
 		}
 
@@ -304,9 +342,16 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 				go func(st *WidgetState, id string) {
 					r := b.pollNative(ctx, st)
 					busyCh <- busyDone{id: id, ok: r.err == nil}
-					b.natives <- r
+					select {
+					case b.natives <- r:
+					case <-ctx.Done():
+					}
 				}(st, id)
 			}
+			continue
+		}
+
+		if rendererUnavailable || adoptPending || now.Before(e.backoffUntil) {
 			continue
 		}
 
@@ -326,7 +371,7 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 		}
 
 		switch {
-		case e.errPending && win != 0:
+		case vis && e.errPending && win != 0:
 			// a scrape failed: confirm the window still exists before
 			// trusting the binding again; a dead one unbinds so the next
 			// pass re-materializes
@@ -335,7 +380,13 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 			go func(st *WidgetState, win int) {
 				ok := true
 				defer func() { busyCh <- busyDone{id: st.Widget.ID, ok: ok} }()
-				if tree, err := b.sup.LS(); err == nil && !windowExists(tree, win) {
+				tree, err := b.sup.LS()
+				if err != nil {
+					ok = false
+					diagnostic.Default.Observe("renderer.verify", err, "backoff")
+					return
+				}
+				if !windowExists(tree, win) {
 					log.Printf("khudson bus: widget %s window %d is gone; rebinding", st.Widget.ID, win)
 					st.setWindowID(0)
 					ok = false
@@ -358,8 +409,13 @@ func (b *Bus) schedulerPass(ctx context.Context, now time.Time, entries map[stri
 				break
 			}
 			e.nextPoll = now.Add(st.Widget.Render.PollInterval())
+			e.busy = true
 			b.scrape.Poll(st, func(_ string, snapshot []byte, err error) {
-				b.snapshots <- snapshotResult{id: id, win: win, data: snapshot, err: err}
+				busyCh <- busyDone{id: id, ok: err == nil}
+				select {
+				case b.snapshots <- snapshotResult{state: st, id: id, win: win, data: snapshot, err: err}:
+				case <-ctx.Done():
+				}
 			})
 
 		case !vis && win != 0 && !st.Widget.Render.KeepAlive:
@@ -386,13 +442,13 @@ func (b *Bus) pollNative(ctx context.Context, st *WidgetState) nativeResult {
 	id := st.Widget.ID
 	mod, ok := b.mods[st.Widget.Render.Module]
 	if !ok {
-		return nativeResult{id: id, err: fmt.Errorf("module %q not compiled in", st.Widget.Render.Module)}
+		return nativeResult{state: st, id: id, err: fmt.Errorf("module %q not compiled in", st.Widget.Render.Module)}
 	}
-	timeout := max(st.Widget.Render.PollInterval(), 5*time.Second)
+	timeout := min(max(st.Widget.Render.PollInterval(), 5*time.Second), 30*time.Second)
 	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	data, err := mod.Poll(pctx, pollParams(st.Widget.Render))
-	return nativeResult{id: id, data: data, err: err}
+	return nativeResult{state: st, id: id, data: data, err: err}
 }
 
 // pollParams copies the widget's config params and injects the runtime
@@ -410,6 +466,13 @@ func pollParams(r config.Render) map[string]any {
 // applyNative records a module poll and fans it out to docks. Runs on the
 // scheduler goroutine.
 func (b *Bus) applyNative(r nativeResult) {
+	diagnostic.Default.Observe("widget.poll."+r.id, r.err, "backoff_on_error")
+	b.mu.Lock()
+	current, _ := b.reg.Get(r.id)
+	b.mu.Unlock()
+	if r.state != nil && current != r.state {
+		return
+	}
 	msg := proto.Msg{Type: proto.TypeWidgetData, Widget: r.id}
 	if r.err != nil {
 		msg.Error = r.err.Error()
@@ -454,11 +517,12 @@ func (b *Bus) applyNative(r nativeResult) {
 // applySnapshot records a scrape on the registry and fans it out to docks.
 // Runs on the scheduler goroutine.
 func (b *Bus) applySnapshot(r snapshotResult, entries map[string]*schedEntry) {
+	diagnostic.Default.Observe("renderer.scrape."+r.id, r.err, "verify_binding_on_error")
 	b.mu.Lock()
 	reg := b.reg
 	b.mu.Unlock()
 	st, ok := reg.Get(r.id)
-	if !ok {
+	if !ok || (r.state != nil && r.state != st) {
 		return
 	}
 	cur, cols, rows := st.Binding()

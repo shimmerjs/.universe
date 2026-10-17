@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // psOut mirrors ps -Aceo pcpu=,pmem=,comm= -r: right-aligned floats,

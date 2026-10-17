@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // fakeMod records the params it was polled with and returns canned data.

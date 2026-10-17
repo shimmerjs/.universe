@@ -19,7 +19,7 @@ func startDockWithHello(t *testing.T, b *Bus, hello proto.Msg) (client, server n
 	go func() {
 		defer close(done)
 		defer server.Close()
-		b.serveDock(server, json.NewEncoder(server), json.NewDecoder(server), hello)
+		b.serveDock(server, json.NewDecoder(server), hello)
 	}()
 	go func() {
 		dec := json.NewDecoder(client)
@@ -46,7 +46,7 @@ func TestSecondDockCannotStompSingletons(t *testing.T) {
 	b, _, _ := schedTestBus(t)
 	b.readGrace = 2 * time.Second
 
-	_, first, _ := startDockWithHello(t, b, proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock,
+	_, first, _ := startDockWithHello(t, b, proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(),
 		Cols: 320, Rows: 18, PanelCols: 196, PanelRows: 24})
 	if !pollUntil(2*time.Second, func() bool { c, r := b.panelRegion(); return c == 196 && r == 24 }) {
 		t.Fatal("the first dock must own the panel region")
@@ -58,7 +58,7 @@ func TestSecondDockCannotStompSingletons(t *testing.T) {
 		t.Fatal("the first dock must hold the slot")
 	}
 
-	second, _, _ := startDockWithHello(t, b, proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock,
+	second, _, _ := startDockWithHello(t, b, proto.Msg{Type: proto.TypeHello, Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(),
 		Cols: 80, Rows: 24, PanelCols: 80, PanelRows: 17})
 	if !pollUntil(2*time.Second, func() bool { b.mu.Lock(); defer b.mu.Unlock(); return len(b.docks) == 2 }) {
 		t.Fatal("the second dock never registered")
@@ -86,12 +86,12 @@ func TestSurvivorClaimsTheFreedSlot(t *testing.T) {
 	b.readGrace = 2 * time.Second
 
 	firstClient, _, firstDone := startDockWithHello(t, b, proto.Msg{Type: proto.TypeHello,
-		Role: proto.RoleDock, Cols: 320, Rows: 18, PanelCols: 196, PanelRows: 24})
+		Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 320, Rows: 18, PanelCols: 196, PanelRows: 24})
 	if !pollUntil(2*time.Second, func() bool { c, _ := b.panelRegion(); return c == 196 }) {
 		t.Fatal("the first dock must own the panel region")
 	}
 	second, _, _ := startDockWithHello(t, b, proto.Msg{Type: proto.TypeHello,
-		Role: proto.RoleDock, Cols: 80, Rows: 24, PanelCols: 80, PanelRows: 17})
+		Role: proto.RoleDock, Protocol: proto.Version, Capabilities: testViewCaps(), Cols: 80, Rows: 24, PanelCols: 80, PanelRows: 17})
 
 	firstClient.Close()
 	select {

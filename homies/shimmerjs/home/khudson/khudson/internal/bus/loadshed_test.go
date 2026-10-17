@@ -2,7 +2,6 @@ package bus
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"runtime"
@@ -10,7 +9,8 @@ import (
 	"time"
 
 	"github.com/shimmerjs/khudson/khudson/internal/config"
-	"github.com/shimmerjs/khudson/khudson/internal/module"
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
+	"github.com/shimmerjs/khudson/khudson/provider"
 )
 
 // TestShouldShed pins the shed decision to the NumCPU*shedLoadFactor line;
@@ -137,7 +137,7 @@ func TestShedNativeEssentialOptOut(t *testing.T) {
 	b := &Bus{
 		cfg:   cfg,
 		reg:   NewRegistry(cfg),
-		docks: make(map[net.Conn]*json.Encoder),
+		docks: make(map[net.Conn]*socketio.Writer),
 		sup:   &fakeSup{},
 		mods: map[string]module.Module{
 			"plain": &plainMod{name: "plain"},
