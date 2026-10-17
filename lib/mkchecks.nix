@@ -262,6 +262,22 @@ let
            }; }
     else null;
 
+  mkKittyStartupCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    pkgs = nixpkgs.legacyPackages.${system};
+    hmUserCfg = config.home-manager.users.${host.user} or {};
+  in if host.user == "shimmerjs" && (hmUserCfg.programs.kitty.enable or false)
+    then { inherit system; name = "kitty-startup-${hostname}";
+      value = import ./kitty-startup-check.nix {
+        inherit pkgs;
+        kitty = hmUserCfg.programs.kitty.package;
+        homeFiles = hmUserCfg.home-files;
+        powerlevel10k = inputs.powerlevel10k;
+        fonts = config.fonts.packages or [];
+      }; }
+    else null;
+
   # Weekly-GC filter + daemon posture for macOS hosts. Gated on the daemon
   # existing, which is what makes it darwin-only.
   mkNixGcCheck = hostname: config: let
@@ -285,7 +301,7 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkNixGcCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkKittyStartupCheck mkNixGcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

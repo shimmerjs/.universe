@@ -86,7 +86,7 @@ in
       "cmd+v" = "paste_from_clipboard";
 
       # OS windows
-      "cmd+n" = "new_os_window";
+      "cmd+n" = "launch --type=os-window --cwd=~/dev";
       "cmd+q" = "quit";
       # Splits / "kitty windows"
       # the dynamic split is the one reached for constantly, so it takes the
@@ -131,8 +131,8 @@ in
       # counts cells, not percent. It WRAPS, so one key covers the whole range
       # and cmd only exists to walk it the short way round. Not shift: kitty_mod
       # already holds shift, so cmd is the modifier left to qualify with.
-      "kitty_mod+bracketright" = "kitten kits/bias.py 20";
-      "kitty_mod+cmd+bracketright" = "kitten kits/bias.py -20";
+      "kitty_mod+]" = "kitten kits/bias.py 20";
+      "kitty_mod+cmd+]" = "kitten kits/bias.py -20";
 
       # Tab management
       "cmd+t" = "new_tab_with_cwd";
