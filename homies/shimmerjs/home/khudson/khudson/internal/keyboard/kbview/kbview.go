@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-
 	"github.com/charmbracelet/x/ansi"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard"
 	"github.com/shimmerjs/khudson/khudson/internal/proto"
@@ -776,8 +775,7 @@ func padCenter(s string, w int) string {
 	return strings.Repeat(" ", lp) + s + strings.Repeat(" ", w-pw-lp)
 }
 
-// --- width + color primitives (kept local so the core has no dock dependency;
-// byte-identical to the dock originals the golden pins) ---
+// Local width and color helpers keep the keyboard renderer independent of the dock.
 
 func fitCell(s string, w int) string {
 	t := ansi.Cut(s, 0, w)

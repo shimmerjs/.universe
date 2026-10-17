@@ -76,3 +76,20 @@ func TestHashValidation(t *testing.T) {
 		t.Errorf("FirmwarePath = %q, %v", p, err)
 	}
 }
+
+func TestAppendNeverReplacesHistory(t *testing.T) {
+	dir := t.TempDir()
+	r := rec("2026-10-07T21:00:00Z", "aaa111")
+	r.Title = "original"
+	if _, err := Append(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	r.Title = "replacement"
+	if _, err := Append(dir, r); err == nil {
+		t.Fatal("overwrote existing generation")
+	}
+	records, err := List(dir)
+	if err != nil || len(records) != 1 || records[0].Title != "original" {
+		t.Fatalf("history changed: %+v %v", records, err)
+	}
+}

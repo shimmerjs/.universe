@@ -51,6 +51,9 @@ func (u *UpdateCheck) Get(ctx context.Context, layoutID string) (rev, title stri
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 	l, err := fetch(ctx, layoutID, oryx.RevisionLatest)
+	if ctx.Err() != nil {
+		return "", "", ctx.Err()
+	}
 	u.at, u.forLay = time.Now(), layoutID
 	if err != nil {
 		u.rev, u.title, u.err = "", "", err

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 )
 
@@ -53,7 +54,7 @@ func writeCache(dir, hashID string, l *Layout) error {
 	if err != nil {
 		return fmt.Errorf("oryx cache: encode: %w", err)
 	}
-	if err := os.WriteFile(file, raw, 0o600); err != nil {
+	if err := atomicfile.Write(file, raw, 0o600); err != nil {
 		return fmt.Errorf("oryx cache: %w", err)
 	}
 	return nil

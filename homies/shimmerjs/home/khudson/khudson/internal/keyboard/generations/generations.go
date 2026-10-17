@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/oryx"
 	"github.com/shimmerjs/khudson/khudson/internal/paths"
 )
@@ -92,14 +93,7 @@ func Append(dir string, r Record) (string, error) {
 	}
 	name := r.FlashedAt.UTC().Format(stampFormat) + "-" + r.RevisionID + ".json"
 	file := filepath.Join(dir, name)
-	// .part + rename: List fails loudly on any undecodable record, so one
-	// torn write must not poison the whole store. .part carries no .json
-	// suffix, so a crashed leftover is invisible to List.
-	part := file + ".part"
-	if err := os.WriteFile(part, raw, 0o600); err != nil {
-		return "", fmt.Errorf("generations: %w", err)
-	}
-	if err := os.Rename(part, file); err != nil {
+	if err := atomicfile.Create(file, raw, 0600); err != nil {
 		return "", fmt.Errorf("generations: %w", err)
 	}
 	return file, nil

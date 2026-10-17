@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/generations"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/oryx"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/usbserial"
@@ -293,11 +294,7 @@ func download(ctx context.Context, url, dst, wantMD5 string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return fmt.Errorf("flash: download: %w", err)
 	}
-	part := dst + ".part"
-	if err := os.WriteFile(part, raw, 0o600); err != nil {
-		return fmt.Errorf("flash: download: %w", err)
-	}
-	if err := os.Rename(part, dst); err != nil {
+	if err := atomicfile.Write(dst, raw, 0600); err != nil {
 		return fmt.Errorf("flash: download: %w", err)
 	}
 	return nil

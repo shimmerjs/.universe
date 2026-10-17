@@ -1,10 +1,5 @@
-// Loader resolves the display board keymapp-free. The USB serial names the
-// deployed revision (ground truth); the payload comes from the oryx disk
-// cache, the generations store, or -- asynchronously, never blocking a
-// render tick -- a network fetch. Per-frame cost is bounded per the
-// constant-cost invariant: one TTL'd ioreg exec via the shared Poller and
-// map/field checks; the disk probes (oryx cache, generations store) run at
-// most once per revision -- a miss is memoized, not retried per tick.
+// Loader resolves keyboard snapshots from USB identity, caches, and Oryx.
+// Hosts call it from an owned worker; identity and disk reads may block.
 package keyboard
 
 import (
@@ -13,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/diagnostic"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/generations"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/keydict"
 	"github.com/shimmerjs/khudson/khudson/internal/keyboard/oryx"
@@ -55,10 +51,14 @@ type Loader struct {
 	// tests never read the real per-user state dir.
 	Cache func(hashID string) (*oryx.Layout, error)
 
-	mu       sync.Mutex
-	board    *Board
-	inFlight bool
-	failedAt time.Time
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	workers    sync.WaitGroup
+	closed     bool
+	generation uint64
+	board      *Board
+	inFlight   bool
+	failedAt   time.Time
 	// probedRev is the revision localPayload last missed on; coldProbed
 	// marks the one-shot lastGeneration probe. Both memoize disk misses so
 	// a persistent miss costs field checks per tick, not reads.
@@ -74,7 +74,9 @@ func (l *Loader) dir() string {
 			l.genDir = l.GenDir
 			return
 		}
-		if d, err := generations.DefaultDir(); err == nil {
+		d, err := generations.DefaultDir()
+		diagnostic.Default.Observe("keyboard.generations.path", err, "skip unavailable generation store")
+		if err == nil {
 			l.genDir = d
 		}
 	})
@@ -86,6 +88,7 @@ func (l *Loader) dir() string {
 // stale board (or the fetching hint) meanwhile.
 func (l *Loader) Load(ctx context.Context) LoadState {
 	id, err := l.Poller.Get(ctx)
+	diagnostic.Default.Observe("keyboard.identity.read", err, "retain board; retry while demanded")
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -123,7 +126,7 @@ func (l *Loader) Load(ctx context.Context) LoadState {
 			return st
 		}
 	}
-	l.kickFetch(id)
+	l.kickFetch(ctx, id)
 	st.Board = l.board
 	if l.board == nil {
 		st.Err = "fetching layout " + id.RevisionID + " from oryx"
@@ -139,6 +142,7 @@ func (l *Loader) lastGeneration() *generations.Record {
 		return nil
 	}
 	rec, err := generations.Latest(d)
+	diagnostic.Default.Observe("keyboard.generations.latest", err, "retain empty state; use identity or network")
 	if err != nil || rec == nil || rec.Layout == nil {
 		return nil
 	}
@@ -152,11 +156,15 @@ func (l *Loader) localPayload(id usbserial.Identity) *oryx.Layout {
 	if cache == nil {
 		cache = oryx.LoadCached
 	}
-	if cached, err := cache(id.LayoutID); err == nil && cached.RevisionID == id.RevisionID {
+	cached, err := cache(id.LayoutID)
+	diagnostic.Default.Observe("keyboard.layout.cache", err, "try generation store or network")
+	if err == nil && cached != nil && cached.RevisionID == id.RevisionID {
 		return cached
 	}
 	if d := l.dir(); d != "" {
-		if rec, err := generations.Find(d, id.RevisionID); err == nil && rec != nil && rec.Layout != nil {
+		rec, err := generations.Find(d, id.RevisionID)
+		diagnostic.Default.Observe("keyboard.generations.find", err, "fetch exact revision if cache unavailable")
+		if err == nil && rec != nil && rec.Layout != nil {
 			return rec.Layout
 		}
 	}
@@ -166,8 +174,8 @@ func (l *Loader) localPayload(id usbserial.Identity) *oryx.Layout {
 // kickFetch starts one background fetch for id's revision, single-flight
 // and backoff-throttled. Delivery is direct into the memo under mu; the
 // default fetch also writes the disk cache through.
-func (l *Loader) kickFetch(id usbserial.Identity) {
-	if l.inFlight || time.Since(l.failedAt) < fetchBackoff {
+func (l *Loader) kickFetch(parent context.Context, id usbserial.Identity) {
+	if l.closed || parent.Err() != nil || l.inFlight || time.Since(l.failedAt) < fetchBackoff {
 		return
 	}
 	fetch := l.Fetch
@@ -175,15 +183,23 @@ func (l *Loader) kickFetch(id usbserial.Identity) {
 		fetch = oryx.FetchLayout
 	}
 	l.inFlight = true
+	ctx, cancel := context.WithTimeout(parent, fetchTimeout)
+	l.cancel = cancel
+	generation := l.generation
+	l.workers.Add(1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer l.workers.Done()
 		defer cancel()
 		// a payload beside an error is FetchLayout's cache-write-failure
 		// contract: the fetch succeeded, so render it either way
-		payload, _ := fetch(ctx, id.LayoutID, id.RevisionID)
+		payload, err := fetch(ctx, id.LayoutID, id.RevisionID)
+		diagnostic.Default.Observe("keyboard.layout.fetch", err, "retain cache; back off failed fetch")
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		l.inFlight = false
+		if ctx.Err() != nil || generation != l.generation || l.closed {
+			return
+		}
 		if payload == nil {
 			l.failedAt = time.Now()
 			return
@@ -198,9 +214,32 @@ func (l *Loader) kickFetch(id usbserial.Identity) {
 func (l *Loader) Invalidate() {
 	l.Poller.Invalidate()
 	l.mu.Lock()
+	l.generation++
+	if l.cancel != nil {
+		l.cancel()
+	}
 	l.board = nil
 	l.failedAt = time.Time{}
 	l.probedRev = ""
 	l.coldProbed = false
 	l.mu.Unlock()
+}
+
+// Suspend cancels only speculative reads. A firmware job has a separate owner.
+func (l *Loader) Suspend() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.generation++
+	if l.cancel != nil {
+		l.cancel()
+	}
+}
+func (l *Loader) Close() {
+	l.mu.Lock()
+	l.closed = true
+	if l.cancel != nil {
+		l.cancel()
+	}
+	l.mu.Unlock()
+	l.workers.Wait()
 }

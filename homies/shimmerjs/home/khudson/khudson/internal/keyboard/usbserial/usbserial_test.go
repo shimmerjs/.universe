@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // needIoreg skips when the exec'd reader's ioreg CLI is missing (the nix
@@ -96,5 +97,25 @@ func TestReadLive(t *testing.T) {
 	}
 	if id.LayoutID == "" || id.RevisionID == "" {
 		t.Errorf("identity = %+v, want both hashes set", id)
+	}
+}
+
+func TestCancelledReadDoesNotPoisonVisibleLifetime(t *testing.T) {
+	calls := 0
+	p := &Poller{TTL: time.Hour, Read: func(ctx context.Context) (Identity, error) {
+		calls++
+		if ctx.Err() != nil {
+			return Identity{}, ctx.Err()
+		}
+		return Identity{LayoutID: "fresh"}, nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Get(ctx); err == nil {
+		t.Fatal("cancelled read accepted")
+	}
+	id, err := p.Get(context.Background())
+	if err != nil || id.LayoutID != "fresh" || calls != 2 {
+		t.Fatalf("cancelled lifetime cached: %+v %v calls=%d", id, err, calls)
 	}
 }

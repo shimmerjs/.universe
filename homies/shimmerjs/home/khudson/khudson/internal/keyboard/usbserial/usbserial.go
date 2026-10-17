@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
 )
 
 // zsaVendorID is ZSA Technology Labs' USB vendor id (0x3297). Matching on
@@ -59,7 +61,7 @@ func Read(ctx context.Context) (Identity, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "-p", "IOUSB", "-l", "-w0").Output()
+	out, err := subprocess.OutputWithTimeout(ctx, execTimeout, bin, "-p", "IOUSB", "-l", "-w0")
 	if err != nil {
 		// surface the child's stderr (house Output() idiom): "exit status 1"
 		// alone diagnoses nothing
@@ -173,7 +175,11 @@ func (p *Poller) Get(ctx context.Context) (Identity, error) {
 	if read == nil {
 		read = Read
 	}
-	p.id, p.err = read(ctx)
+	id, err := read(ctx)
+	if ctx.Err() != nil {
+		return Identity{}, ctx.Err()
+	}
+	p.id, p.err = id, err
 	p.at = time.Now()
 	return p.id, p.err
 }
