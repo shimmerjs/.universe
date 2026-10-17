@@ -27,7 +27,9 @@ the package comes from `overlays.nix`: codex fresh off nixpkgs master (the `nixp
 
 codex rewrites that file at runtime from about twenty call sites -- `/model`, theme, keymap, folder trust, notice dismissals, `codex mcp add`, `codex features enable` -- and its writer *dereferences the symlink chain* and creates its temp file next to the final target (`core/src/config/edit.rs:749` -> `utils/path-utils/src/lib.rs:47`). point that at the store and every one of those saves is a permanent EACCES. there is no fallback to replacing the symlink; upstream has a test asserting the follow-the-symlink behaviour is intentional. so nix leaves it alone and interactive codex works whole.
 
-everything nix wants to say lives in **profile layers** instead: `$CODEX_HOME/<name>.config.toml`, each a complete config selected with `codex exec -p <name>`. a profile file is a full User layer at precedence 21, sitting just above the base user config, and it carries the entire config schema -- not a restricted subset.
+**except for three keys, rewritten in place by activation** (no symlink, so codex keeps writing the file): `model`, plus the prompt posture `approval_policy = "never"` and `default_permissions = ":danger-full-access"`. codex's default for a folder with no `[projects]` entry is `:read-only` under `on-request`, which turns every edit into a prompt; this is the posture clod runs under, with the hook estate as the guardrail. it does not reach the consult legs -- verified, `codex exec -s read-only` still clamps and the sandboxed write is denied. the same step seeds `[projects]` trust for `.universe` and the `mono` repo root, since trust is a separate startup gate; codex resolves a worktree to its main repo root first (`git-utils/src/trust.rs`), so one entry covers the worktrees beside it.
+
+everything else nix wants to say lives in **profile layers** instead: `$CODEX_HOME/<name>.config.toml`, each a complete config selected with `codex exec -p <name>`. a profile file is a full User layer at precedence 21, sitting just above the base user config, and it carries the entire config schema -- not a restricted subset.
 
 | profile    | model        | effort | web search | used by |
 |------------|--------------|--------|------------|---------|
@@ -40,7 +42,7 @@ everything nix wants to say lives in **profile layers** instead: `$CODEX_HOME/<n
 
 three things follow from all this, and they bite if forgotten:
 
-- **there is no default profile.** no env var, no config key, and the legacy top-level `profile =` selector is fatal in 0.153.4. every call site names its profile. a call without `-p` runs on the account default at no pinned effort.
+- **there is no default profile.** no env var, no config key, and the legacy top-level `profile =` selector is fatal in 0.153.4. every call site names its profile. a call without `-p` runs on the nix-pinned default model at no pinned effort.
 - **`-p` goes after the subcommand.** `codex exec -p review ...`, not `codex -p review exec ...`. both parse; only the first matches the `Bash(codex exec:*)` allowlist entry.
 - **a profile is not write-free either.** under `-p` it becomes the active user layer and the TUI's persistence paths retarget onto it. that costs nothing here only because the callers that pass `-p` are all non-interactive, and `codex exec` never persists config. don't start passing `-p` to the TUI.
 

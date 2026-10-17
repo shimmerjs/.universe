@@ -12,7 +12,11 @@
 # temp file beside it, so a store symlink there is a permanent EACCES for
 # every persisted setting. Left alone, interactive codex works whole.
 # Everything nix wants to say lives in the profile layers instead (see
-# ./profiles.nix), which only non-interactive callers select.
+# ./profiles.nix), which only non-interactive callers select. The
+# exceptions are the handful of settings that have to apply to calls
+# naming no profile -- the default model and the prompt posture:
+# activation rewrites those keys in the real file, keeping the file
+# codex's.
 #
 # Owned: the profile files, AGENTS.md, the agent roles, the skills. All
 # are leaf entries inside a real, writable ~/.codex, so codex's own state
@@ -30,6 +34,38 @@
 }:
 let
   profiles = import ./profiles.nix { inherit lib; };
+
+  # The top-level scalars nix owns inside config.toml. SCALARS ONLY: a
+  # table here would replace the user's whole table, not a key in it.
+  #
+  # The posture pair matches clod's. codex defaults a folder with no
+  # `[projects]` entry to the `:read-only` profile under `on-request`, so
+  # every edit escalates to a prompt; the hook estate (./hooks.nix) is the
+  # guardrail instead. An explicit `-s read-only` still clamps the session
+  # with this set (verified), so the consult legs stay off the tree.
+  ownedScalars = {
+    # `review` is the unmodified astra base (see ./profiles.nix).
+    model = profiles.review.model;
+    approval_policy = "never";
+    default_permissions = ":danger-full-access";
+  };
+
+  # Folders whose trust prompt nix answers up front. Trust is a separate
+  # startup gate, shown whatever the approval policy says. codex resolves a
+  # worktree to its MAIN repo root first (git-utils/src/trust.rs), so one
+  # entry covers every worktree beside it.
+  trustedProjects = [
+    "${config.home.homeDirectory}/.universe"
+    "${config.home.homeDirectory}/dev/cg/cgdev/mono"
+    "${config.home.homeDirectory}/dev/cg/cgdev/mono/main"
+  ];
+
+  ownedConfigSpec = pkgs.writeText "cody-owned-config.json" (
+    builtins.toJSON {
+      scalars = ownedScalars;
+      trusted = trustedProjects;
+    }
+  );
 
   # The hook binaries are shared with clod -- one glod module, one go-fmt
   # script, one sweep script, serving both harnesses. fancypants and
@@ -91,6 +127,9 @@ in
     };
   };
 
+  # The harness is named cody; `codex` is just the binary it wraps.
+  programs.zsh.shellAliases.cody = "codex";
+
   # Agent roles, auto-discovered from <config_folder>/agents/**/*.toml --
   # no config.toml entry and no `-p` needed, which is why they are the one
   # part of the harness that applies to interactive codex too. They shape
@@ -135,6 +174,18 @@ in
       errorEcho "cody: com.openai.codex config_toml_base64 did not take; hooks will not run"
       exit 1
     fi
+  '';
+
+  # The nix-owned slice of config.toml. It cannot ship as a store file --
+  # that is the EACCES trap in the header -- so activation edits the real
+  # file in place through a TOML parser (./owned-config.py): owned scalars
+  # set where they sit, trust seeded for each project that has none, every
+  # other setting preserved. Invalid TOML is reported and left untouched;
+  # activation fails so an unapplied change cannot look successful.
+  # A `/model` or TUI mode pick holds until the next activation.
+  home.activation.codexOwnedConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    ${pkgs.python3.withPackages (ps: [ ps.tomlkit ])}/bin/python3 ${./owned-config.py} \
+      ${ownedConfigSpec} "$HOME/.codex/config.toml" ''${DRY_RUN_CMD:+--dry-run}
   '';
 
   programs.claude-code = {

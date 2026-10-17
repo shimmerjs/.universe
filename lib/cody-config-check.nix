@@ -3,7 +3,7 @@
 # RENDERED home files and the PINNED codex source, so it tests what
 # actually deploys against the schema the actual binary enforces.
 #
-# Six legs, each pinning a failure mode that is silent at runtime:
+# Eight legs, each pinning a failure mode that is silent at runtime:
 #
 # 1. No ~/.codex/config.toml. Nix must not own that file: codex rewrites
 #    it at runtime and its writer dereferences the symlink chain before
@@ -34,13 +34,22 @@
 #    key would become unoverridable config (that layer outranks the user's
 #    own config.toml AND `-c`), and declaring the same hooks in hooks.json
 #    as well would register every handler twice.
+# 8. The activation step's config.toml updater, run against fixtures
+#    (cody-owned-config-test.py). It edits a file codex owns, so a bad edit
+#    corrupts user state quietly: quoted keys, multiline strings and other
+#    table spellings must not fool it, the user's own trust choices and
+#    comments survive, malformed input and dry runs leave the file alone,
+#    and a converged file is never rewritten.
 {
   pkgs,
   homeFiles,
   codexPkg,
 }:
 let
-  python = pkgs.python3.withPackages (ps: [ ps.jsonschema ]);
+  python = pkgs.python3.withPackages (ps: [
+    ps.jsonschema
+    ps.tomlkit
+  ]);
 in
 pkgs.runCommand "cody-config-check"
   {
@@ -51,5 +60,6 @@ pkgs.runCommand "cody-config-check"
     export SCHEMA=${codexPkg.src}/codex-rs/core/config.schema.json
     export MODELS=${codexPkg.src}/codex-rs/models-manager/models.json
     python3 ${./cody-config-check.py}
+    OWNED_CONFIG=${../hosts/aw-chainguard/cody/owned-config.py} python3 ${./cody-owned-config-test.py}
     touch $out
   ''
