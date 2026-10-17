@@ -1,5 +1,8 @@
 # khudson overlay / popover subsystem -- design
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: proposed (design workflow, 9 agents; the input-focus and pid lenses each ran a source-grounded verify). Long-press-triggered modal overlays; first instances: dockmirror context menu (quit/force-quit) and the keyboard firmware picker. All anchors verified against source; go.mod:7 lipgloss/v2 v2.0.4.
 
 ## recommendation: `Popover` -- a lipgloss.Canvas-composited modal overlay, delivered to modules as DATA via a new `module.Row.Menu`

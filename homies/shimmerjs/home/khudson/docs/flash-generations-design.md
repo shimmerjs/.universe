@@ -1,5 +1,8 @@
 # flash + generations: zapp integration and the keymapp chop
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 kuiboard owns the flash loop: detect a new Oryx revision, download the firmware, drive zapp, verify the result off the board itself, and record every deployed generation. keymapp exits the picture entirely.
 
 ## locked decisions (2026-07-21)

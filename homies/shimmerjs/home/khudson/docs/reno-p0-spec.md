@@ -1,5 +1,8 @@
 # reno P0 spec -- script + presenter
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: as built, reconciled against the 2026-07-22 design re-review (11 confirmed findings: 5 fatal, 6 major; dispositions at the end of this doc). Settles what reno-design.md deferred: the script syntax, the effect protocol types, the ctl wire shape, and the strip vocabulary for the tab-flip. Supersedes nothing; reno-design.md remains the design of record. Corrections from the 2026-07-22 subsystem map are folded in and marked (map). Ad hoc scriptless recording (user, 2026-07-22) shapes the run lifecycle here even though its OBS half lands in P1.
 
 ## script format (settled)

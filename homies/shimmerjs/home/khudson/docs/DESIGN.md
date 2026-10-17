@@ -1,10 +1,11 @@
 # khudson design decisions
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 Reconciled, load-bearing decisions for the Corsair Xeneon Edge touch HUD.
-Durable reference. Current state, backlog, devplans and handoffs are
-session work and live outside the repo. Deep gotchas and the
-verified-constraint history live in the author's memory
-(`edge-hud-project`).
+Current implementation is documented in [architecture-current.md](architecture-current.md).
+This document retains design intent and historical constraints.
 
 ## Shape
 

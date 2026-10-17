@@ -1,5 +1,8 @@
 # khudson panel surfaces -- edge + couch (design + arc)
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: proposed, reconciled 2026-08-19. grounded in kitty 0.48.2's shipped docs/plists/kitten sources, upstream v0.48.2 C and Go source, and the khudson tree; NOTHING run on glass -- phase 0 exists to fix that. reviewed by three same-model design lenses (feasibility, ordering, hermeticity), one cross-model wedge review (codex), and one different-model wedge review (fable); every load-bearing claim relayed from a reviewer was re-verified here against source before landing in this doc. companions: standalone-modules-design.md (couch doctrine), DESIGN.md (fullscreen + launch), ecosystem.html (topology).
 
 ## the reframe

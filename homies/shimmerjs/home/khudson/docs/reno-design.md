@@ -1,5 +1,8 @@
 # reno -- khudson demo presenter / recorder (design)
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: proposed. Produced by a 94-agent prior-art run (28 claims 3-skeptic quorum-verified; codex leg down) and a 81-agent design review (codex up; the first cut failed on two fatals, all 16 confirmed findings are folded in below; 38 low-tier findings sat over the verify cap and remain unverified -- re-review before implementation). Annotation rounds 1-2 folded 2026-07-22: script format flipped CUE -> txtar/testscript; presenter/recorder became dedicated layouts behind one strip tab; OBS accepted as sole capture engine; component named reno end to end; moviemaker ships both surfaces over one core. No open user gates remain -- the four verify-first spikes are the remaining gates. [V] = quorum-verified, [U] = cited-unverified; load-bearing [U] items appear in the verify-first gates. The demo-presenter-recorder-register memory (2026-07-22) is the authoritative requirement set; this doc must not silently narrow it. Companions: standalone-modules-design.md (couch doctrine), magicbus-design.md (daemon fabric), overlay-subsystem-design.md (dock modal vocabulary).
 
 ## the two use cases, one spine

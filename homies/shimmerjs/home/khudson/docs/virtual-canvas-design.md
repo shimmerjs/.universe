@@ -1,5 +1,8 @@
 # virtual canvas -- a fixed demo/recording canvas on a virtual display (design snapshot)
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: PROPOSED, no code, nothing gated on it. Snapshot taken 2026-08-10 while scrapping reno's vcam/gmeet leg (reno-design.md capture section, adjacent lead (b)) -- captured independently so it survives outside that ledger. Claims are file:line-grounded against the tree at that date; [V] = verified here, [U] = expected but not probed.
 
 the idea: stop recording whatever displays happen to be plugged in. create one virtual display of fixed geometry, run the demo on it, capture that. recording geometry becomes a constant instead of a function of the physical arrangement.

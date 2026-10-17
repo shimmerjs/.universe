@@ -1,5 +1,8 @@
 # magicbus -- a modular hid device bus (design)
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: phases 1-2 IMPLEMENTED (committed on clod-khudson-hardening, 2026-07-14: touchd module registry, central arrival scanner, -config CUE->JSON, universe.home.magicbus HM module in nix/magicbus.nix -- signingIdentity/touchdPkgs/install/plist anchors below that cite module.nix now live there). Phases 3-5 remain proposed. Original design produced by a 3-candidate design workflow (12 agents, 36 stress flaws) plus a follow-up stress pass; claims file:line-grounded against the tree as of 2026-07-14 (pre-extraction line refs).
 
 ## problem

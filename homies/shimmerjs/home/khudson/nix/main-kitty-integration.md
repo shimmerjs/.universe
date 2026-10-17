@@ -86,6 +86,6 @@ exposes no second RC surface.
   job -- SHIPPED as internal/bus/mainkitty.go (30s probe, 2s dial bound,
   unlink only on ECONNREFUSED so a wedged-but-alive kitty never loses its
   socket, sticky "stale" state via ctl status). The locked decision
-  survives: the config layer must not rm -f main-kitty.sock. Contrast:
-  the substrate agent rm -f's its own kitty.sock pre-exec because it owns
-  that path exclusively.
+  survives: the config layer must not rm -f main-kitty.sock. The bus-owned
+  renderer uses a distinct socket for each process generation; `ctl status`
+  exposes its current `rendererSocket`.

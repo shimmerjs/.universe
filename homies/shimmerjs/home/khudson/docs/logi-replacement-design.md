@@ -1,5 +1,8 @@
 # logi options+ replacement -- feasibility report + phase plan (MX Master 4, direct BT)
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: proposed. produced by a prior-art workflow (93 agents; 3-skeptic refute-quorum on load-bearing claims: 26 verified, 2 refuted-and-corrected, 123 cited-unverified, 78 above the verify cap). citation labels: [N] = quorum-verified claim, [U N] = cited but not quorum-verified (source named, not independently confirmed). the "corrections from verification" section restates every load-bearing verification inline. companion to magicbus-design.md (the logiretch module seam); the six design-doc corrections at the bottom have been folded into magicbus-design.md in the same commit.
 
 user steer (verbatim, 2026-07-14): "figure out if its plausible to build out all of the functionality of the logitech app (esp in terms of input functionality [dpi, etc]) purely via our own substrate (hid bus and go toolchain/app). end goal is no logioptions app or anything in the family, entirely self managed. battery pct should have specialized icon in bottom row of khud (same one with home/kb/clod/caffeine/etc)"
@@ -167,7 +170,7 @@ physical move is not.
 - Never cache DevSrvsID paths across disconnects; re-enumerate on every reopen (registry entry IDs are unique per service lifetime) [U47]. Removal callback -> read returns -1 maps onto the existing readLoop loss contract as-is [U46][U115].
 - Numbered-write proof is a REAL spike gap: the moonlander write is unnumbered (moonlander.go:90-94) -- it proves the pipe, not HID++ framing [1].
 
-## khud dock battery icon: cadence note (as requested)
+## khud dock battery icon: cadence note
 
 **No protocol constraint threatens the bounded 60-300s cadence -- it holds with orders-of-magnitude slack.** 0x1004 is push-capable: unsolicited broadcasts at notification addr 0x00 arrive on the same vendor handle the module holds open, so the icon is event-fresh at zero marginal cost while the link is up; the bounded poll demotes to a reconcile floor for missed events after sleep/reconnect [4][U42][U62]. The BLE connection-interval floor (~25-60ms per transaction) is 3-4 orders below the poll budget [U40]. The real limit is availability, not rate: a napping mouse has no live link, so the icon must render **last-known-value + age**, never an error -- and the age display doubles as the staleness alarm for the OS-update regression class our backoff would otherwise mask [U103][U44]. Reattach latency after power-cycle is bounded by the 30s arrival scan (unless optional phase 3 ships) -- inside budget [U37]. Zero-HID++ fallback exists (ioreg BatteryPercent from cached GATT, no charging state; MX4 presence unverified) [U102]. Constant-cost invariant: O(1) per event, one timer, ~32-report bounded queue -- holds [24][U50].
 

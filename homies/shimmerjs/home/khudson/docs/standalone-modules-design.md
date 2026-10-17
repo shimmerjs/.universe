@@ -1,5 +1,8 @@
 # standalone khudson modules -- design (keyboard first)
 
+Design history and intended behavior. For current process ownership, shipped
+capabilities, and validation limits, see [current architecture](architecture-current.md).
+
 status: proposed. from a 3-candidate design workflow (11 agents; 1 stress lens -- packaging/macOS -- died on a schema retry, so that area is UNVERIFIED by the adversarial pass and sits exactly under open-question 2). All anchors are the workflow's, verified against source.
 
 ## goal
