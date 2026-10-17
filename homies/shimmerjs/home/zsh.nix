@@ -53,7 +53,6 @@
     ];
     shellAliases = {
       ls = "ls -A --color=auto";
-      clod = "claude";
       k = "kubectl";
       ksh = "kitty +kitten ssh";
       kcopy = "kitty +kitten clipboard";

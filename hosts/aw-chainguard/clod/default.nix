@@ -175,8 +175,29 @@ in
     };
 
     settings = {
-      model = "claude-opus-5-5";
-      effortLevel = "high";
+      model = "claude-opus-5-5[1m]";
+      modelSettings = {
+        "claude-opus-5-5" = {
+          effortLevel = "high";
+          maxEffortLevel = "max";
+          autoCompactWindow = "auto";
+        };
+        "claude-sonnet-5-5" = {
+          effortLevel = "high";
+          maxEffortLevel = "max";
+          autoCompactWindow = "auto";
+        };
+        "claude-haiku-5-5" = {
+          effortLevel = "medium";
+          maxEffortLevel = "max";
+          autoCompactWindow = "auto";
+        };
+        "claude-fable-5-1" = {
+          effortLevel = "high";
+          maxEffortLevel = "max";
+          autoCompactWindow = "auto";
+        };
+      };
       outputStyle = "terse";
       tui = "fullscreen";
       autoScrollEnabled = true;
@@ -446,6 +467,9 @@ in
   home.packages = [
     clodCheat
   ];
+
+  # The harness is named clod; `claude` is just the binary it wraps.
+  programs.zsh.shellAliases.clod = "claude";
 
   # Statuslines, keybindings, the generated workflow cheatsheet, and every workflow
   # script auto-deployed from ./workflows (see ./workflows/default.nix). No native
