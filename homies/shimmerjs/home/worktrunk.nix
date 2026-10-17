@@ -1,8 +1,9 @@
 { inputs, lib, pkgs, ... }:
 {
-  imports = [ inputs.worktrunk.homeModules.default ];
-
-  programs.worktrunk.enable = true;
+  programs.worktrunk = {
+    enable = true;
+    package = inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  };
 
   # PATH-level wt wrapper: a worktree-container dir (e.g. mono/) is not a repo
   # itself, so route through -C main when ./main is a worktree. The shell
