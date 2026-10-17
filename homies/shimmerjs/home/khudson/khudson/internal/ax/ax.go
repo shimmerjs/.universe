@@ -2,8 +2,7 @@
 // dock-mirror module's per-window unminimize: it walks the Dock's own AX
 // tree for AXMinimizedWindowDockItem entries and presses them by EXACT
 // title, with an in-app AXMinimized-write fallback for the tap-vs-sweep
-// race. One TCC grant total: Accessibility on the fixed-path khudson
-// binary.
+// race. Accessibility trust belongs to the executable making the calls.
 package ax
 
 /*
@@ -12,9 +11,7 @@ package ax
 #include <ApplicationServices/ApplicationServices.h>
 
 // axEnsureTrusted wraps AXIsProcessTrustedWithOptions so the option
-// dictionary (kAXTrustedCheckOptionPrompt) stays in C. prompt fires the
-// System Settings dialog even from a launchd agent (yabai precedent);
-// the process must restart after granting.
+// dictionary (kAXTrustedCheckOptionPrompt) stays in C.
 static int axEnsureTrusted(int prompt) {
 	const void *keys[] = { kAXTrustedCheckOptionPrompt };
 	const void *vals[] = { prompt ? kCFBooleanTrue : kCFBooleanFalse };
@@ -39,6 +36,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
 )
 
 // Typed errors, distinguishable via errors.Is/As; press and attribute-set
@@ -58,7 +57,27 @@ type AXError struct {
 	Code int
 }
 
-func (e *AXError) Error() string { return fmt.Sprintf("ax: %s: AXError %d", e.Op, e.Code) }
+func (e *AXError) Error() string        { return fmt.Sprintf("ax: %s: AXError %d", e.Op, e.Code) }
+func (e *AXError) Is(target error) bool { return target == ErrUntrusted && e.Code == axErrAPIDisabled }
+func (e *AXError) NativeCode() int      { return e.Code }
+func (e *AXError) Kind() string {
+	switch e.Code {
+	case axErrAPIDisabled:
+		return "ax_api_disabled"
+	case -25202:
+		return "ax_invalid_element"
+	case -25204:
+		return "ax_cannot_complete"
+	case -25205, -25206, -25208:
+		return "ax_unsupported"
+	case -25212:
+		return "ax_no_value"
+	case 0:
+		return "ax_postcondition"
+	default:
+		return "ax_error"
+	}
+}
 
 // axErrAPIDisabled is kAXErrorAPIDisabled (AXError.h): the AX API refused
 // the call because the process lacks the Accessibility grant.
@@ -68,9 +87,6 @@ const axErrAPIDisabled = -25211
 // untrusted state (so callers see ErrUntrusted however it surfaces),
 // everything else wraps as *AXError.
 func mapAXError(op string, code int) error {
-	if code == axErrAPIDisabled {
-		return fmt.Errorf("ax: %s: %w", op, ErrUntrusted)
-	}
 	return &AXError{Op: op, Code: code}
 }
 
@@ -110,21 +126,38 @@ func Trusted() bool { return C.AXIsProcessTrusted() != 0 }
 // budget is 5s.
 const axMsgTimeout = 2.0
 
-var msgTimeoutOnce sync.Once
+type messagingSetup struct {
+	mu    sync.Mutex
+	ready bool
+}
 
-// boundMessaging installs the process-global AX messaging timeout, once.
-// Needs no trust; called before every walk so no path escapes the bound.
-func boundMessaging() {
-	msgTimeoutOnce.Do(func() {
+func (s *messagingSetup) ensure(set func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ready {
+		return nil
+	}
+	if err := set(); err != nil {
+		return err
+	}
+	s.ready = true
+	return nil
+}
+
+var messaging messagingSetup
+
+func boundMessaging() error {
+	return messaging.ensure(func() error {
 		sw := C.AXUIElementCreateSystemWide()
-		C.AXUIElementSetMessagingTimeout(sw, C.float(axMsgTimeout))
-		release(C.CFTypeRef(sw))
+		defer release(C.CFTypeRef(sw))
+		if code := C.AXUIElementSetMessagingTimeout(sw, C.float(axMsgTimeout)); code != C.kAXErrorSuccess {
+			return mapAXError("set messaging timeout", int(code))
+		}
+		return nil
 	})
 }
 
-// EnsureTrusted checks the Accessibility grant; prompt=true fires the
-// one-time System Settings dialog when it is missing. A fresh grant only
-// takes effect after the process restarts.
+// EnsureTrusted checks current trust and optionally requests the system prompt.
 func EnsureTrusted(prompt bool) bool {
 	p := C.int(0)
 	if prompt {
@@ -175,7 +208,9 @@ func DockMinimizedItems(ctx context.Context) ([]Item, error) {
 func PressMinimizedItem(title string) error {
 	found := false
 	var pressErr error
-	err := walkDockMinimized(context.Background(), func(got string, item C.AXUIElementRef) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := walkDockMinimized(ctx, func(got string, item C.AXUIElementRef) bool {
 		if !titleMatches(got, title) {
 			return false
 		}
@@ -201,7 +236,9 @@ func walkDockMinimized(ctx context.Context, visit func(title string, item C.AXUI
 	if !Trusted() {
 		return ErrUntrusted
 	}
-	boundMessaging()
+	if err := boundMessaging(); err != nil {
+		return err
+	}
 	pid, err := dockPid(ctx)
 	if err != nil {
 		return err
@@ -216,8 +253,15 @@ func walkDockMinimized(ctx context.Context, visit func(title string, item C.AXUI
 	defer release(C.CFTypeRef(kids))
 	var list C.AXUIElementRef
 	for i := 0; i < arrayLen(kids); i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		el := arrayEl(kids, i)
-		if role, err := stringAttr(el, attrRole, "dock child role"); err == nil && role == "AXList" {
+		role, err := stringAttr(el, attrRole, "dock child role")
+		if err != nil && !optionalAttribute(err) {
+			return err
+		}
+		if role == "AXList" {
 			list = el
 			break
 		}
@@ -232,14 +276,20 @@ func walkDockMinimized(ctx context.Context, visit func(title string, item C.AXUI
 	}
 	defer release(C.CFTypeRef(items))
 	for i := 0; i < arrayLen(items); i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		el := arrayEl(items, i)
 		sub, err := stringAttr(el, attrSubrole, "dock item subrole")
-		if err != nil || sub != "AXMinimizedWindowDockItem" {
+		if err != nil && !optionalAttribute(err) {
+			return err
+		}
+		if sub != "AXMinimizedWindowDockItem" {
 			continue
 		}
 		title, err := stringAttr(el, attrTitle, "dock item title")
 		if err != nil {
-			continue
+			return err
 		}
 		if visit(title, el) {
 			return nil
@@ -266,8 +316,10 @@ func UnminimizeWindow(appName, title string) error {
 	if !Trusted() {
 		return ErrUntrusted
 	}
-	boundMessaging()
-	out, err := exec.Command("lsappinfo", "list").Output()
+	if err := boundMessaging(); err != nil {
+		return err
+	}
+	out, err := commandOutput("lsappinfo", "list")
 	if err != nil {
 		return fmt.Errorf("lsappinfo list: %w", err)
 	}
@@ -275,15 +327,20 @@ func UnminimizeWindow(appName, title string) error {
 	if len(pids) == 0 {
 		return notFound(fmt.Sprintf("app %q", appName))
 	}
+	var failures error
 	for _, pid := range pids {
 		found, err := unminimizeIn(pid, title)
 		if found {
 			if err != nil {
 				return err
 			}
-			_ = exec.Command("open", "-a", appName).Run()
-			return nil
+			_, err = commandOutput("open", "-a", appName)
+			return err
 		}
+		failures = errors.Join(failures, err)
+	}
+	if failures != nil {
+		return failures
 	}
 	return notFound(fmt.Sprintf("minimized window %q of %q (other-Space windows are invisible to kAXWindows)", title, appName))
 }
@@ -297,17 +354,23 @@ func unminimizeIn(pid int, title string) (found bool, err error) {
 	defer release(C.CFTypeRef(app))
 	wins, werr := arrayAttr(app, attrWindows, "app windows")
 	if werr != nil {
-		return false, nil
+		return false, werr
 	}
 	defer release(C.CFTypeRef(wins))
 	for i := 0; i < arrayLen(wins); i++ {
 		win := arrayEl(wins, i)
 		got, terr := stringAttr(win, attrTitle, "window title")
-		if terr != nil || !titleMatches(got, title) {
+		if terr != nil && !optionalAttribute(terr) {
+			return false, terr
+		}
+		if !titleMatches(got, title) {
 			continue
 		}
 		minimized, merr := boolAttr(win, attrMinimized, "window AXMinimized")
-		if merr != nil || !minimized {
+		if merr != nil {
+			return true, merr
+		}
+		if !minimized {
 			continue
 		}
 		if code := C.AXUIElementSetAttributeValue(win, attrMinimized,
@@ -321,13 +384,7 @@ func unminimizeIn(pid int, title string) (found bool, err error) {
 		if still {
 			return true, &AXError{Op: "set AXMinimized (readback still minimized)", Code: 0}
 		}
-		for range raiseTries {
-			if C.AXUIElementPerformAction(win, actionRaise) == C.kAXErrorSuccess {
-				break
-			}
-			time.Sleep(raiseGap)
-		}
-		return true, nil
+		return true, raiseWindow(win)
 	}
 	return false, nil
 }
@@ -340,7 +397,7 @@ func unminimizeIn(pid int, title string) (found bool, err error) {
 // injectable so tests can prove the no-kill paths without touching apps.
 var (
 	lsList = func() (string, error) {
-		out, err := exec.Command("lsappinfo", "list").Output()
+		out, err := commandOutput("lsappinfo", "list")
 		if err != nil {
 			return "", fmt.Errorf("lsappinfo list: %w", err)
 		}
@@ -348,8 +405,8 @@ var (
 	}
 	killPid = func(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
 	osaQuit = func(bundleID string) error {
-		return exec.Command("osascript", "-e",
-			fmt.Sprintf("tell application id %q to quit", bundleID)).Run()
+		_, err := commandOutput("osascript", "-e", fmt.Sprintf("tell application id %q to quit", bundleID))
+		return err
 	}
 )
 
@@ -484,7 +541,7 @@ func parseBundlePids(lsappinfoOut, bundleID string) []int {
 // dockPid resolves the Dock's pid via lsappinfo -- no AppleScript, same
 // exec pattern as the dockmirror module's other samplers.
 func dockPid(ctx context.Context) (int, error) {
-	out, err := exec.CommandContext(ctx, "lsappinfo", "info", "-only", "pid", "-app", "com.apple.dock").Output()
+	out, err := subprocess.Output(ctx, "lsappinfo", "info", "-only", "pid", "-app", "com.apple.dock")
 	if err != nil {
 		return 0, fmt.Errorf("lsappinfo dock pid: %w", err)
 	}
@@ -549,7 +606,17 @@ func parseAppPids(lsappinfoOut, app string) []int {
 	return pids
 }
 
-// --- CF plumbing ---
+func commandOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return out, ctx.Err()
+	}
+	return out, err
+}
 
 func release(v C.CFTypeRef) {
 	if v != 0 {
@@ -605,7 +672,15 @@ func arrayAttr(el C.AXUIElementRef, attr C.CFStringRef, op string) (C.CFArrayRef
 		release(v)
 		return 0, &AXError{Op: op + ": non-array value", Code: 0}
 	}
-	return C.CFArrayRef(v), nil
+	arr := C.CFArrayRef(v)
+	for i := 0; i < arrayLen(arr); i++ {
+		el := C.CFTypeRef(C.CFArrayGetValueAtIndex(arr, C.CFIndex(i)))
+		if el == 0 || C.CFGetTypeID(el) != C.AXUIElementGetTypeID() {
+			release(v)
+			return 0, &AXError{Op: op + ": non-element array member"}
+		}
+	}
+	return arr, nil
 }
 
 func arrayLen(arr C.CFArrayRef) int { return int(C.CFArrayGetCount(arr)) }
@@ -631,4 +706,10 @@ func goString(s C.CFStringRef) string {
 		buf = buf[:i]
 	}
 	return string(buf)
+}
+
+// An optional attribute may be absent; messaging and permission failures are not absence.
+func optionalAttribute(err error) bool {
+	var e *AXError
+	return errors.As(err, &e) && (e.Code == -25205 || e.Code == -25212)
 }

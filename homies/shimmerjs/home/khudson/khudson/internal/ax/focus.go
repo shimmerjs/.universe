@@ -6,8 +6,8 @@ package ax
 import "C"
 
 import (
+	"errors"
 	"fmt"
-	"os/exec"
 	"time"
 )
 
@@ -23,23 +23,20 @@ var (
 // activating third apps can get refusals and bouncing Dock icons -- so
 // FocusApp pairs it with an AX raise under the existing grant.
 var openBundle = func(bundleID string) error {
-	return exec.Command("open", "-b", bundleID).Run()
+	_, err := commandOutput("open", "-b", bundleID)
+	return err
 }
 
-// FocusApp brings the app owning bundleID to the front: cooperative
-// activation plus an AX raise of its focused/main window, with a
-// frontmost readback as the post-condition (attribute writes silently
-// no-op; only the readback proves the focus landed). Window selection:
-// AXFocusedWindow, else AXMainWindow, else the first of kAXWindows.
-// Space-blind by construction: kAXWindows omits other-Space windows, so
-// an app living entirely on another Space comes back ErrNotFound --
-// P0 ships no Space switching, and this verb says so rather than
-// pretending.
+// FocusApp requests activation, raises a focused/main/listed window, and checks
+// AXFrontmost. It does not switch Spaces. Unavailable windows return ErrNotFound;
+// permission and messaging failures retain their native errors.
 func FocusApp(bundleID string) error {
 	if !Trusted() {
 		return ErrUntrusted
 	}
-	boundMessaging()
+	if err := boundMessaging(); err != nil {
+		return err
+	}
 	pids, err := resolveBundlePids(bundleID)
 	if err != nil {
 		return err
@@ -73,29 +70,31 @@ func focusIn(pid int) (found bool, err error) {
 	app := C.AXUIElementCreateApplication(C.pid_t(pid))
 	defer release(C.CFTypeRef(app))
 
-	win, ok := pickWindow(app)
-	if !ok {
-		return false, nil
+	win, err := pickWindow(app)
+	if err != nil || win == 0 {
+		return false, err
 	}
 	defer release(C.CFTypeRef(win))
 
-	for range raiseTries {
-		if C.AXUIElementPerformAction(win, actionRaise) == C.kAXErrorSuccess {
-			break
-		}
-		time.Sleep(raiseGap)
+	if err := raiseWindow(win); err != nil {
+		return true, err
 	}
 	if code := C.AXUIElementSetAttributeValue(app, attrFrontmost,
 		C.CFTypeRef(C.kCFBooleanTrue)); code != C.kAXErrorSuccess {
 		return true, mapAXError("set AXFrontmost", int(code))
 	}
-	// activation animates; retry the readback through it
+	// Activation can finish after the request returns.
+	var readErr error
 	for range raiseTries {
 		front, ferr := boolAttr(app, attrFrontmost, "AXFrontmost readback")
 		if ferr == nil && front {
 			return true, nil
 		}
+		readErr = ferr
 		time.Sleep(raiseGap)
+	}
+	if readErr != nil {
+		return true, readErr
 	}
 	return true, &AXError{Op: "focus-app (readback not frontmost)", Code: 0}
 }
@@ -103,37 +102,45 @@ func focusIn(pid int) (found bool, err error) {
 // pickWindow resolves the raise target: the app's focused window, else
 // its main window, else the first listed window. The returned element is
 // retained; the caller releases it.
-func pickWindow(app C.AXUIElementRef) (C.AXUIElementRef, bool) {
+func pickWindow(app C.AXUIElementRef) (C.AXUIElementRef, error) {
 	for _, attr := range []C.CFStringRef{attrFocusedWindow, attrMainWindow} {
-		if v, err := copyAttr(app, attr, "focus window"); err == nil {
-			return C.AXUIElementRef(v), true
+		v, err := copyAttr(app, attr, "focus window")
+		if err != nil && !optionalAttribute(err) {
+			return 0, err
+		}
+		if err == nil {
+			if C.CFGetTypeID(v) != C.AXUIElementGetTypeID() {
+				release(v)
+				return 0, &AXError{Op: "focus window: non-element value"}
+			}
+			return C.AXUIElementRef(v), nil
 		}
 	}
 	wins, err := arrayAttr(app, attrWindows, "app windows")
 	if err != nil {
-		return 0, false
+		return 0, err
 	}
 	defer release(C.CFTypeRef(wins))
 	if arrayLen(wins) == 0 {
-		return 0, false
+		return 0, nil
 	}
 	win := arrayEl(wins, 0)
 	C.CFRetain(C.CFTypeRef(win))
-	return win, true
+	return win, nil
 }
 
 // attrHidden is the app-level kAXHidden attribute (cmd-H visibility).
 var attrHidden = cfStr("AXHidden")
 
-// SetAppHidden hides or unhides every process of the bundle: the demo
-// verbs' window-visibility primitive (spaces machinery was retired in
-// favor of hide/show/focus -- user decision 2026-07-22). Write + read
-// back per house style; a no-effect write is an error, not a success.
+// SetAppHidden updates every matching process and verifies each readback.
+// Partial success returns the failures so callers do not assume convergence.
 func SetAppHidden(bundleID string, hidden bool) error {
 	if !Trusted() {
 		return ErrUntrusted
 	}
-	boundMessaging()
+	if err := boundMessaging(); err != nil {
+		return err
+	}
 	pids, err := resolveBundlePids(bundleID)
 	if err != nil {
 		return err
@@ -141,50 +148,48 @@ func SetAppHidden(bundleID string, hidden bool) error {
 	if len(pids) == 0 {
 		return notFound(fmt.Sprintf("running bundle %q", bundleID))
 	}
+	return setHiddenPids(pids, hidden, setHiddenIn)
+}
+
+func setHiddenPids(pids []int, hidden bool, set func(int, bool) error) error {
+	var failures error
+	for _, pid := range pids {
+		if err := set(pid, hidden); err != nil {
+			failures = errors.Join(failures, fmt.Errorf("pid %d: %w", pid, err))
+		}
+	}
+	return failures
+}
+
+func setHiddenIn(pid int, hidden bool) error {
+	app := C.AXUIElementCreateApplication(C.pid_t(pid))
+	defer release(C.CFTypeRef(app))
 	val := C.CFTypeRef(C.kCFBooleanFalse)
 	if hidden {
 		val = C.CFTypeRef(C.kCFBooleanTrue)
 	}
-	// every matching pid, not first-success: a bundle can own several
-	// UI-bearing processes and half-hiding it reads as a broken verb
-	var lastErr error
-	hid := 0
-	for _, pid := range pids {
-		app := C.AXUIElementCreateApplication(C.pid_t(pid))
-		if code := C.AXUIElementSetAttributeValue(app, attrHidden, val); code != C.kAXErrorSuccess {
-			lastErr = mapAXError("set AXHidden", int(code))
-			release(C.CFTypeRef(app))
-			continue
-		}
-		still, berr := boolAttr(app, attrHidden, "AXHidden readback")
-		release(C.CFTypeRef(app))
-		if berr != nil {
-			lastErr = berr
-			continue
-		}
-		if still != hidden {
-			lastErr = &AXError{Op: "set AXHidden (readback unchanged)", Code: 0}
-			continue
-		}
-		hid++
+	if code := C.AXUIElementSetAttributeValue(app, attrHidden, val); code != C.kAXErrorSuccess {
+		return mapAXError("set AXHidden", int(code))
 	}
-	if hid == 0 {
-		return lastErr
+	still, err := boolAttr(app, attrHidden, "AXHidden readback")
+	if err != nil {
+		return err
+	}
+	if still != hidden {
+		return &AXError{Op: "set AXHidden (readback unchanged)"}
 	}
 	return nil
 }
 
-// AppHidden reports whether every UI process of the bundle is hidden. ANY
-// visible process means shown: the question a caller is really asking is
-// "can I see it", and a half-hidden bundle answers yes. A bundle with no
-// running process is ErrNotFound rather than "hidden" -- not running and
-// running-but-hidden are different states and a toggle must not conflate
-// them.
+// AppHidden returns true only if every matching process is known hidden.
+// Any known visible process returns false. An absent bundle is ErrNotFound.
 func AppHidden(bundleID string) (bool, error) {
 	if !Trusted() {
 		return false, ErrUntrusted
 	}
-	boundMessaging()
+	if err := boundMessaging(); err != nil {
+		return false, err
+	}
 	pids, err := resolveBundlePids(bundleID)
 	if err != nil {
 		return false, err
@@ -192,23 +197,51 @@ func AppHidden(bundleID string) (bool, error) {
 	if len(pids) == 0 {
 		return false, notFound(fmt.Sprintf("running bundle %q", bundleID))
 	}
-	var lastErr error
-	read := 0
-	for _, pid := range pids {
+	return hiddenPids(pids, func(pid int) (bool, error) {
 		app := C.AXUIElementCreateApplication(C.pid_t(pid))
-		hidden, err := boolAttr(app, attrHidden, "AXHidden")
-		release(C.CFTypeRef(app))
+		defer release(C.CFTypeRef(app))
+		return boolAttr(app, attrHidden, "AXHidden")
+	})
+}
+
+func hiddenPids(pids []int, read func(int) (bool, error)) (bool, error) {
+	var failures error
+	for _, pid := range pids {
+		hidden, err := read(pid)
 		if err != nil {
-			lastErr = err
+			failures = errors.Join(failures, fmt.Errorf("pid %d: %w", pid, err))
 			continue
 		}
-		read++
 		if !hidden {
 			return false, nil
 		}
 	}
-	if read == 0 {
-		return false, lastErr
+	if failures != nil {
+		return false, failures
 	}
 	return true, nil
+}
+
+func raiseWindow(win C.AXUIElementRef) error {
+	return retryRaise(func() error {
+		code := C.AXUIElementPerformAction(win, actionRaise)
+		if code == C.kAXErrorSuccess {
+			return nil
+		}
+		return mapAXError("raise window", int(code))
+	}, time.Sleep)
+}
+
+func retryRaise(raise func() error, pause func(time.Duration)) error {
+	var err error
+	for i := range raiseTries {
+		err = raise()
+		if err == nil {
+			return nil
+		}
+		if i+1 < raiseTries {
+			pause(raiseGap)
+		}
+	}
+	return err
 }

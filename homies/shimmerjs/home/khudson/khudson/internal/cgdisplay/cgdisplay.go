@@ -22,12 +22,8 @@ package cgdisplay
 // mac-capture links the same symbol)
 extern CFUUIDRef CGDisplayCreateUUIDFromDisplayID(uint32_t displayID);
 
-static int activeDisplays(uint32_t *ids, int max) {
-	uint32_t count = 0;
-	if (CGGetActiveDisplayList((uint32_t)max, ids, &count) != kCGErrorSuccess) {
-		return -1;
-	}
-	return (int)count;
+static int32_t activeDisplays(uint32_t *ids, int max, uint32_t *count) {
+	return CGGetActiveDisplayList((uint32_t)max, ids, count);
 }
 
 static void displayUUID(uint32_t id, char *buf, int len) {
@@ -55,7 +51,7 @@ static void displayBounds(uint32_t id, int *x, int *y, int *w, int *h) {
 static int displayIsMain(uint32_t id) { return CGDisplayIsMain(id); }
 
 // pixel dimensions: CGDisplayBounds AND CGDisplayPixelsWide are in
-// POINTS on Retina (arc-2 review #23); the display mode carries the
+// POINTS on Retina; the display mode carries the
 // real pixel size capture sources see.
 static void displayPixels(uint32_t id, int *w, int *h) {
 	*w = 0;
@@ -84,11 +80,21 @@ type Display struct {
 
 // Active lists the active displays, main display first as CG orders it.
 func Active() []Display {
+	displays, _ := ActiveWithError()
+	return displays
+}
+
+// ActiveWithError distinguishes enumeration failure from an empty display set.
+func ActiveWithError() ([]Display, error) {
 	const maxDisplays = 16
 	var ids [maxDisplays]C.uint32_t
-	n := int(C.activeDisplays(&ids[0], maxDisplays))
+	var count C.uint32_t
+	if code := int32(C.activeDisplays(&ids[0], maxDisplays, &count)); code != 0 {
+		return nil, &APIError{Boundary: "enumerate", Code: code}
+	}
+	n := int(count)
 	if n <= 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]Display, 0, n)
 	for i := range n {
@@ -106,5 +112,5 @@ func Active() []Display {
 			Main: C.displayIsMain(id) != 0,
 		})
 	}
-	return out
+	return out, nil
 }

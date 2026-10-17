@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // Pure-logic units only: no AX calls, so the suite passes inside
@@ -224,5 +225,82 @@ func TestErrorTaxonomy(t *testing.T) {
 	nf := notFound(`dock item "x"`)
 	if !errors.Is(nf, ErrNotFound) || errors.Is(nf, ErrUntrusted) {
 		t.Fatalf("notFound = %v, want ErrNotFound only", nf)
+	}
+}
+
+func TestMessagingSetupRetriesFailure(t *testing.T) {
+	var setup messagingSetup
+	calls := 0
+	set := func() error {
+		calls++
+		if calls == 1 {
+			return mapAXError("timeout", -25202)
+		}
+		return nil
+	}
+	if setup.ensure(set) == nil {
+		t.Fatal("setup failure hidden")
+	}
+	if err := setup.ensure(set); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.ensure(set); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("setup calls=%d", calls)
+	}
+}
+func TestRaiseExhaustionPreservesNativeError(t *testing.T) {
+	calls := 0
+	err := retryRaise(func() error { calls++; return mapAXError("raise", -25204) }, func(time.Duration) {})
+	var native *AXError
+	if !errors.As(err, &native) || native.NativeCode() != -25204 || calls != raiseTries {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+	err = mapAXError("disabled", axErrAPIDisabled)
+	if !errors.Is(err, ErrUntrusted) || !errors.As(err, &native) || native.NativeCode() != axErrAPIDisabled {
+		t.Fatalf("lost disabled code: %v", err)
+	}
+}
+
+func TestPartialHideFailureIsNotSuccess(t *testing.T) {
+	failure := mapAXError("hidden", -25204)
+	calls := 0
+	err := setHiddenPids([]int{1, 2}, true, func(pid int, _ bool) error {
+		calls++
+		if pid == 1 {
+			return failure
+		}
+		return nil
+	})
+	if !errors.Is(err, failure) || calls != 2 {
+		t.Fatalf("partial hide: %v calls=%d", err, calls)
+	}
+	hidden, err := hiddenPids([]int{1, 2}, func(pid int) (bool, error) {
+		if pid == 1 {
+			return false, failure
+		}
+		return true, nil
+	})
+	if hidden || !errors.Is(err, failure) {
+		t.Fatalf("unknown process reported hidden: %v %v", hidden, err)
+	}
+	hidden, err = hiddenPids([]int{1, 2}, func(pid int) (bool, error) {
+		if pid == 1 {
+			return false, failure
+		}
+		return false, nil
+	})
+	if hidden || err != nil {
+		t.Fatalf("known visible process: %v %v", hidden, err)
+	}
+}
+func TestOptionalAttributeDoesNotHideMessagingFailure(t *testing.T) {
+	for _, code := range []int{-25205, -25212, -25204, axErrAPIDisabled, -25202} {
+		want := code == -25205 || code == -25212
+		if got := optionalAttribute(mapAXError("attribute", code)); got != want {
+			t.Fatalf("code=%d optional=%t", code, got)
+		}
 	}
 }

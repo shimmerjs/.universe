@@ -92,7 +92,7 @@ func TestKittyArgs(t *testing.T) {
 		"--position", "342x2160",
 		"--start-as", "fullscreen",
 		"--title", "khudson-hud",
-		"/nix/store/y/bin/khudson", "dock", "-config", "/cfg/edge.cue",
+		"/nix/store/y/bin/khudson", "dock", "-edge", "-config", "/cfg/edge.cue",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v\nwant %v", got, want)
@@ -103,8 +103,8 @@ func TestKittyArgs(t *testing.T) {
 	if bare[0] != "-o" {
 		t.Fatalf("bare args must not start with --config: %v", bare)
 	}
-	if bare[len(bare)-1] != "dock" {
-		t.Fatalf("bare args must end with the dock subcommand: %v", bare)
+	if bare[len(bare)-2] != "dock" || bare[len(bare)-1] != "-edge" {
+		t.Fatalf("bare args must identify the physical Edge client: %v", bare)
 	}
 }
 
@@ -221,6 +221,66 @@ func TestRunChildQueriesOnlyOnChange(t *testing.T) {
 	}
 	if n := queries.Load(); n != 0 {
 		t.Fatalf("display query ran %d times on a stable arrangement; a healthy HUD must cost zero queries", n)
+	}
+}
+
+// One notification must remain pending until reconciliation succeeds.
+// No further OS notifications are sent after the injected failure.
+func TestRunChildRetriesConsumedChange(t *testing.T) {
+	for _, failure := range []string{"query", "layout"} {
+		t.Run(failure, func(t *testing.T) {
+			changed := make(chan struct{}, 1)
+			changed <- struct{}{}
+			var queries atomic.Int32
+			opts := Options{
+				KittyBin: fakeChild(t, "sleep 30"), Socket: hudSockPath(t),
+				DisplayName: "XENEON EDGE", RetryDelay: 10 * time.Millisecond,
+				Logf: t.Logf,
+				Query: func(context.Context) ([]Screen, error) {
+					if queries.Add(1) == 1 {
+						if failure == "query" {
+							return nil, errors.New("injected query failure")
+						}
+						return []Screen{{Name: "XENEON EDGE", X: 100, Y: 100, W: 800, H: 600}}, nil
+					}
+					return nil, nil // completed disconnection
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if got := runChild(ctx, opts, changed, 342, 2160); got != childDisplayLost {
+				t.Fatalf("outcome = %v, queries = %d; consumed change was not retried", got, queries.Load())
+			}
+		})
+	}
+}
+
+func TestRunAbsentDisplayDoesNotUseErrorRetry(t *testing.T) {
+	var queries atomic.Int32
+	queried := make(chan struct{}, 1)
+	stop := startRun(t, Options{
+		Socket: hudSockPath(t), DisplayName: "XENEON EDGE",
+		RetryDelay: 5 * time.Millisecond, Watch: stubWatch(nil), Logf: t.Logf,
+		Query: func(context.Context) ([]Screen, error) {
+			queries.Add(1)
+			select {
+			case queried <- struct{}{}:
+			default:
+			}
+			return nil, nil
+		},
+	})
+	select {
+	case <-queried:
+	case <-time.After(time.Second):
+		t.Fatal("initial query did not run")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := queries.Load(); got != 1 {
+		t.Fatalf("absent display queried %d times without a change or error; want 1", got)
 	}
 }
 

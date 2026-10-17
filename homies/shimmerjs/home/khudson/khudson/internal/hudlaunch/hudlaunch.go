@@ -12,21 +12,8 @@
 // window along. So the launcher tracks the target's frame, not just its name,
 // and relaunches when the position it was launched at goes stale.
 //
-// So the tracking has two tiers, and the split exists to make a stable
-// arrangement cost nothing: Query execs osascript, and macOS books each exec
-// as a full app launch, with the loginwindow check-in, WindowServer
-// focus-chain re-evaluation and TCC authorization that implies. Watch is the
-// cheap tier -- an IN-PROCESS CoreGraphics enumeration, no exec, no TCC --
-// polled often, and Query only runs when Watch says the display set moved.
-//
-// Watch is a POLL and not a callback, which it was for one morning.
-// CGDisplayRegisterReconfigurationCallback registered fine from a locked
-// thread parked on its own run loop and then never fired once: measured
-// 2026-08-23 against a real unplug and replug, which the enumeration beside
-// it saw and the callback did not. A HUD that never comes back when you plug
-// the display in is a worse failure than an enumeration every few seconds,
-// and the enumeration is cheap enough that the event tier bought nothing
-// worth that risk.
+// Watch detects arrangement changes; Query resolves names and Cocoa frames.
+// Failed reconciliation stays pending and retries without another change.
 package hudlaunch
 
 import (
@@ -44,8 +31,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shimmerjs/khudson/khudson/internal/atomicfile"
 	"github.com/shimmerjs/khudson/khudson/internal/cgdisplay"
 	"github.com/shimmerjs/khudson/khudson/internal/sockclaim"
+	"github.com/shimmerjs/khudson/khudson/internal/subprocess"
 )
 
 // Options configures the launcher loop.
@@ -62,6 +51,7 @@ type Options struct {
 	Query       QueryFunc     // nil = osascript-backed default
 	Watch       WatchFunc     // nil = CoreGraphics-backed default
 	Logf        func(format string, args ...any)
+	Record      func(Diagnostic) // nil = structured records through Logf
 }
 
 func stateDirOf(opts Options) string {
@@ -85,31 +75,45 @@ type WatchFunc func(ctx context.Context) (<-chan struct{}, error)
 // geometry both ride it, because the launcher relaunches on a MOVE as well as
 // a plug -- a display that only changed origin still invalidates the position
 // the child was launched at.
-var scanDisplays = func() string {
-	var b strings.Builder
-	for _, d := range cgdisplay.Active() {
-		fmt.Fprintf(&b, "%s:%d,%d,%dx%d;", d.UUID, d.X, d.Y, d.W, d.H)
-	}
-	return b.String()
-}
+func scanDisplays() (string, error) { return cgdisplay.Fingerprint() }
 
 // watchByScan is the default WatchFunc: signal whenever the fingerprint
 // moves. Depth-1 and coalesced, the same contract a callback would have had,
 // so nothing downstream knows which tier it is on.
-func watchByScan(ctx context.Context, every time.Duration) (<-chan struct{}, error) {
+func watchByScan(ctx context.Context, every time.Duration, scan func() (string, error), record func(Diagnostic)) (<-chan struct{}, error) {
 	ch := make(chan struct{}, 1)
+	failures := 0
+	lastError := ""
+	read := func() (string, bool) {
+		now, err := scan()
+		if err != nil {
+			failures++
+			// First occurrence, changed error, and exponentially spaced
+			// repeats preserve evidence without a two-second log stream.
+			if failures&(failures-1) == 0 || err.Error() != lastError {
+				recordFailure(Options{Record: record}, "watch.snapshot", err, "retry_scan_keep_last_state", failures)
+			}
+			lastError = err.Error()
+			return "", false
+		}
+		if failures > 0 && record != nil {
+			record(Diagnostic{Boundary: "watch.snapshot", Outcome: "recovered", Action: "compare_state", Attempt: failures})
+		}
+		failures = 0
+		return now, true
+	}
+	last, known := read() // baseline precedes the caller's first query
 	go func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
-		last := scanDisplays()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
 			}
-			if now := scanDisplays(); now != last {
-				last = now
+			if now, ok := read(); ok && (!known || now != last) {
+				last, known = now, true
 				select {
 				case ch <- struct{}{}:
 				default:
@@ -156,17 +160,26 @@ func normalize(opts Options) Options {
 	if opts.Watch == nil {
 		scan := opts.Scan
 		opts.Watch = func(ctx context.Context) (<-chan struct{}, error) {
-			return watchByScan(ctx, scan)
+			return watchByScan(ctx, scan, scanDisplays, opts.Record)
 		}
 	}
 	if opts.Logf == nil {
 		opts.Logf = log.Printf
+	}
+	if opts.Record == nil {
+		opts.Record = func(d Diagnostic) {
+			d.Time = time.Now().UTC()
+			data, _ := json.Marshal(d)
+			opts.Logf("display-lifecycle %s", data)
+		}
 	}
 	return opts
 }
 
 // Run blocks until ctx is done, supervising one HUD kitty at a time.
 func Run(ctx context.Context, opts Options) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	opts = normalize(opts)
 	sd := stateDirOf(opts)
 	// Singleton: a second launcher (a dev run racing the agent, or overlap
@@ -174,7 +187,7 @@ func Run(ctx context.Context, opts Options) error {
 	// is also the flock'd sidecar sockclaim's probe-then-claim caveat names.
 	unlock, err := acquireLock(filepath.Join(sd, "hud-launcher.lock"))
 	if err != nil {
-		opts.Logf("hud-launcher: %v", err)
+		recordFailure(opts, "state.lock", err, "refuse_second_launcher", 1)
 		return err
 	}
 	defer unlock()
@@ -185,7 +198,10 @@ func Run(ctx context.Context, opts Options) error {
 	// Resume the persisted relaunch schedule: backoff used to live only in
 	// process memory, so every launchd respawn relaunched at full speed.
 	backoffPath := filepath.Join(sd, "hud-backoff.state")
-	st := loadBackoff(backoffPath)
+	st, err := loadBackoffWithError(backoffPath)
+	if err != nil {
+		recordFailure(opts, "state.backoff.read", err, "reset_memory_backoff", 1)
+	}
 	backoff := clampBackoff(st.Backoff)
 	if wait := resumeWait(st, time.Now()); wait > 0 {
 		opts.Logf("hud-launcher: resuming persisted backoff: %s", wait.Round(time.Second))
@@ -200,9 +216,10 @@ func Run(ctx context.Context, opts Options) error {
 		// Without the watcher the launcher is blind to hotplug: fail loudly
 		// and let launchd respawn rather than supervise a HUD it can never
 		// re-place.
-		opts.Logf("hud-launcher: display watch: %v", err)
+		recordFailure(opts, "watch.start", err, "restart_watcher", 1)
 		return err
 	}
+	opts.Record(Diagnostic{Boundary: "watch.start", Outcome: "ready", Action: "query_initial_state"})
 	waitingLogged := false
 	for {
 		if ctx.Err() != nil {
@@ -210,9 +227,9 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		screens, err := opts.Query(ctx)
 		if err != nil {
-			opts.Logf("hud-launcher: display query: %v", err)
+			recordFailure(opts, "query.initial", err, "retry", 1)
 			if !waitChange(ctx, changed, opts.RetryDelay) {
-				return nil
+				return watchEnded(ctx, opts)
 			}
 			continue
 		}
@@ -222,12 +239,10 @@ func Run(ctx context.Context, opts Options) error {
 				opts.Logf("hud-launcher: display %q not connected; waiting", opts.DisplayName)
 				waitingLogged = true
 			}
-			// The scan is what wakes this, but it waits on a timer too:
-			// this branch used to block on the event alone, and the one
-			// morning the event tier was a callback that never fired, that
-			// turned a missed signal into a HUD that never came back.
-			if !waitChange(ctx, changed, opts.RetryDelay) {
-				return nil
+			// Absence is a successful observation. The watcher handles
+			// reconciliation; the query-error timer must stay disarmed.
+			if !waitChange(ctx, changed, 0) {
+				return watchEnded(ctx, opts)
 			}
 			continue
 		}
@@ -237,15 +252,17 @@ func Run(ctx context.Context, opts Options) error {
 			// Mid-reconfiguration there may be no display at the Cocoa
 			// origin. The settling change can already have fired, so retry on
 			// a timer rather than block on an event that has been and gone.
-			opts.Logf("hud-launcher: %v", err)
+			recordFailure(opts, "layout.initial", err, "retry", 1)
 			if !waitChange(ctx, changed, opts.RetryDelay) {
-				return nil
+				return watchEnded(ctx, opts)
 			}
 			continue
 		}
 
 		start := time.Now()
-		saveBackoff(backoffPath, backoffState{LastLaunch: start, Backoff: backoff})
+		if err := saveBackoff(backoffPath, backoffState{LastLaunch: start, Backoff: backoff}); err != nil {
+			recordFailure(opts, "state.backoff.write", err, "continue_with_memory_backoff", 1)
+		}
 		// dev override read fresh per launch: clearing the marker and killing
 		// the HUD kitty is the whole restore path
 		launch := opts
@@ -256,6 +273,8 @@ func Run(ctx context.Context, opts Options) error {
 		switch {
 		case ctx.Err() != nil:
 			return nil
+		case outcome == childWatchLost:
+			return errors.New("display watcher closed")
 		case outcome == childDisplayLost:
 			// not a crash: wait for the display, no backoff
 			opts.Logf("hud-launcher: display %q disconnected; HUD torn down", opts.DisplayName)
@@ -329,19 +348,20 @@ const (
 	childSignaled              // died by signal: treat as pressure, never resets backoff
 	childDisplayLost
 	childMoved // the arrangement moved the target; relaunch at the new position
+	childWatchLost
 )
 
-// runChild launches one HUD kitty and blocks until it exits, the display
-// disappears (child torn down), or ctx is done (child torn down). It re-reads
-// the arrangement only when changed fires, so a healthy HUD on a stable
-// arrangement costs nothing.
+// runChild owns one HUD kitty until exit, display loss, or cancellation.
+// It queries on changes and retries failed reconciliation; successful
+// reconciliation leaves no query timer armed.
 func runChild(ctx context.Context, opts Options, changed <-chan struct{}, x, y int) childOutcome {
+	opts = normalize(opts)
 	// a stale socket file from a previous instance would shadow the new
 	// bind, but a LIVE one belongs to a running HUD: refuse to touch it and
 	// let Run's crash backoff pace the retry. No bind here -- kitty owns the
 	// socket via --listen-on.
 	if err := sockclaim.Free(opts.Socket); err != nil {
-		opts.Logf("hud-launcher: %v", err)
+		recordFailure(opts, "socket.claim", err, "backoff_relaunch", 1)
 		return childExited
 	}
 	args := kittyArgs(opts, x, y)
@@ -354,52 +374,101 @@ func runChild(ctx context.Context, opts Options, changed <-chan struct{}, x, y i
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	opts.Logf("hud-launcher: launching HUD at %dx%d", x, y)
 	if err := cmd.Start(); err != nil {
-		opts.Logf("hud-launcher: start kitty: %v", err)
+		recordFailure(opts, "child.start", err, "backoff_relaunch", 1)
 		return childExited
 	}
 	pidPath := filepath.Join(stateDirOf(opts), "hud-kitty.pid")
-	writePidfile(pidPath, cmd.Process.Pid)
-	defer os.Remove(pidPath)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	defer syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err := writePidfile(pidPath, cmd.Process.Pid); err != nil {
+		recordFailure(opts, "state.owner.write", err, "stop_untracked_child", 1)
+		terminate(cmd, done, opts.Logf)
+		return childExited
+	}
+	defer func() {
+		if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			recordFailure(opts, "state.owner.remove", err, "reverify_on_restart", 1)
+		}
+	}()
+	return monitorChild(ctx, opts, changed, done, func() { terminate(cmd, done, opts.Logf) }, x, y)
+}
 
+func monitorChild(ctx context.Context, opts Options, changed <-chan struct{}, done <-chan error, stop func(), x, y int) childOutcome {
+	var timer *time.Timer
+	var retry <-chan time.Time
+	attempt := 0
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	failed := func(boundary string, err error) {
+		attempt++
+		recordFailure(opts, boundary, err, "retry_pending_change", attempt)
+		// Keep a single retry armed. Additional events cannot accelerate it
+		// or postpone it indefinitely during a notification storm.
+		timer = time.NewTimer(opts.RetryDelay)
+		retry = timer.C
+	}
 	for {
 		select {
 		case err := <-done:
 			if err != nil {
-				opts.Logf("hud-launcher: HUD kitty: %v", err)
+				recordFailure(opts, "child.exit", err, "backoff_relaunch", 1)
 			}
 			if exitedBySignal(err) {
 				return childSignaled
 			}
 			return childExited
 		case <-ctx.Done():
-			terminate(cmd, done, opts.Logf)
+			stop()
 			return childExited
-		case <-changed:
-			screens, err := opts.Query(ctx)
-			if err != nil {
-				// a transient query failure must not kill a healthy HUD
-				opts.Logf("hud-launcher: display query: %v", err)
-				continue
-			}
-			target, ok := find(screens, opts.DisplayName)
+		case _, ok := <-changed:
 			if !ok {
-				terminate(cmd, done, opts.Logf)
-				return childDisplayLost
+				recordFailure(opts, "watch.receive", errors.New("watch channel closed"), "restart_watcher", 1)
+				stop()
+				return childWatchLost
 			}
-			nx, ny, err := LaunchPos(target, screens)
-			if err != nil {
-				// mid-reconfiguration there may be no display at the Cocoa
-				// origin: unresolvable is not moved, leave the child alone
-				opts.Logf("hud-launcher: %v", err)
+			if retry != nil {
 				continue
 			}
-			if nx != x || ny != y {
-				opts.Logf("hud-launcher: %q is now at %dx%d, HUD was placed at %dx%d; relaunching", opts.DisplayName, nx, ny, x, y)
-				terminate(cmd, done, opts.Logf)
-				return childMoved
+		case <-retry:
+			retry = nil
+		}
+		if ctx.Err() != nil {
+			stop()
+			return childExited
+		}
+		screens, err := opts.Query(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				continue
 			}
+			failed("query.changed", err)
+			continue
+		}
+		target, ok := find(screens, opts.DisplayName)
+		if !ok {
+			if attempt > 0 {
+				opts.Record(Diagnostic{Boundary: "reconcile", Outcome: "recovered", Action: "stop_child_display_absent", Attempt: attempt})
+			}
+			stop()
+			return childDisplayLost
+		}
+		nx, ny, err := LaunchPos(target, screens)
+		if err != nil {
+			failed("layout.changed", err)
+			continue
+		}
+		if attempt > 0 {
+			opts.Record(Diagnostic{Boundary: "reconcile", Outcome: "recovered", Action: "clear_pending_change", Attempt: attempt})
+		}
+		attempt = 0
+		if nx != x || ny != y {
+			opts.Logf("hud-launcher: %q is now at %dx%d, HUD was placed at %dx%d; relaunching", opts.DisplayName, nx, ny, x, y)
+			stop()
+			return childMoved
 		}
 	}
 }
@@ -508,7 +577,9 @@ func orphanMatch(argv, socket string) bool {
 // keeps those two apart. Seam: tests fake the unreadable-but-live case, which
 // no real ps invocation can be made to produce on demand.
 var psCommand = func(pid int) string {
-	out, err := exec.Command("/bin/ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := subprocess.Output(ctx, "/bin/ps", "-o", "command=", "-p", strconv.Itoa(pid))
 	if err != nil {
 		return ""
 	}
@@ -519,12 +590,8 @@ func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func writePidfile(path string, pid int) {
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, []byte(strconv.Itoa(pid)+"\n"), 0o600) != nil {
-		return
-	}
-	_ = os.Rename(tmp, path)
+func writePidfile(path string, pid int) error {
+	return atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0600)
 }
 
 // backoffState is the relaunch schedule persisted across launcher deaths.
@@ -553,28 +620,27 @@ func clampBackoff(d time.Duration) time.Duration {
 	return d
 }
 
-func loadBackoff(path string) backoffState {
+func loadBackoff(path string) backoffState { st, _ := loadBackoffWithError(path); return st }
+func loadBackoffWithError(path string) (backoffState, error) {
 	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return backoffState{}, nil
+	}
 	if err != nil {
-		return backoffState{}
+		return backoffState{}, err
 	}
 	var st backoffState
-	if json.Unmarshal(b, &st) != nil {
-		return backoffState{}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return backoffState{}, err
 	}
-	return st
+	return st, nil
 }
-
-func saveBackoff(path string, st backoffState) {
+func saveBackoff(path string, st backoffState) error {
 	b, err := json.Marshal(st)
 	if err != nil {
-		return
+		return err
 	}
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) != nil {
-		return
-	}
-	_ = os.Rename(tmp, path)
+	return atomicfile.Write(path, b, 0600)
 }
 
 // kittyArgs builds the kitty argv after the binary name. --listen-on goes on
@@ -592,7 +658,7 @@ func kittyArgs(opts Options, x, y int) []string {
 		"--position", fmt.Sprintf("%dx%d", x, y),
 		"--start-as", "fullscreen",
 		"--title", "khudson-hud",
-		opts.KhudsonBin, "dock",
+		opts.KhudsonBin, "dock", "-edge",
 	)
 	if opts.DockConfig != "" {
 		args = append(args, "-config", opts.DockConfig)
@@ -629,9 +695,8 @@ func find(screens []Screen, name string) (Screen, bool) {
 }
 
 // screensJXA emits every NSScreen as JSON in Cocoa global coordinates.
-// osascript is the only dependency: NSScreen needs an Aqua session, which a
-// LaunchAgent has, and shelling out keeps AppKit out of the binary (the
-// only in-process framework link is internal/ax's ApplicationServices).
+// NSScreen resolution stays in a deadline-bounded subprocess. AppKit in the
+// parent owns callback dispatch; a stuck name query cannot block its main thread.
 const screensJXA = `ObjC.import("AppKit");
 function run() {
   var scr = $.NSScreen.screens, out = [];
@@ -645,17 +710,30 @@ function run() {
 func queryScreens(ctx context.Context) ([]Screen, error) {
 	qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(qctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", screensJXA).Output()
+	out, err := subprocess.OutputWithTimeout(qctx, 10*time.Second, "/usr/bin/osascript", "-l", "JavaScript", "-e", screensJXA)
 	if err != nil {
+		if qctx.Err() != nil {
+			return nil, fmt.Errorf("osascript screens: %w", qctx.Err())
+		}
 		return nil, fmt.Errorf("osascript screens: %w", err)
 	}
 	return parseScreens(out)
 }
 
+var errInvalidSnapshot = errors.New("invalid display snapshot")
+
 func parseScreens(out []byte) ([]Screen, error) {
 	var screens []Screen
 	if err := json.Unmarshal(out, &screens); err != nil {
 		return nil, fmt.Errorf("parse screens: %w", err)
+	}
+	if screens == nil {
+		return nil, fmt.Errorf("%w: expected an array, got null", errInvalidSnapshot)
+	}
+	for _, screen := range screens {
+		if screen.Name == "" || screen.W <= 0 || screen.H <= 0 {
+			return nil, fmt.Errorf("%w: missing name or nonpositive dimensions", errInvalidSnapshot)
+		}
 	}
 	return screens, nil
 }
@@ -669,27 +747,38 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// waitChange blocks until the display arrangement changes or ctx ends,
-// reporting false only for ctx. A nonzero retry adds a deadline, for the
-// callers whose reason to re-query is a failure of their own rather than a
-// change they are owed notice of; retry <= 0 waits for the change alone.
+// waitChange reports false for cancellation or a closed source. A positive
+// retry also wakes the caller after that interval; zero waits for a change.
 func waitChange(ctx context.Context, changed <-chan struct{}, retry time.Duration) bool {
 	if retry <= 0 {
 		select {
 		case <-ctx.Done():
 			return false
-		case <-changed:
-			return true
+		case _, ok := <-changed:
+			return ok
 		}
 	}
 	t := time.NewTimer(retry)
 	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-changed:
-		return true
-	case <-t.C:
-		return true
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case _, ok := <-changed:
+			if !ok {
+				return false
+			}
+		case <-t.C:
+			return true
+		}
 	}
+}
+
+func watchEnded(ctx context.Context, opts Options) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	err := errors.New("display watcher closed")
+	recordFailure(opts, "watch.receive", err, "restart_watcher", 1)
+	return err
 }
