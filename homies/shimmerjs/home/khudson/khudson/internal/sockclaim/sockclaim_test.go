@@ -138,7 +138,7 @@ func TestFreeRefusesHeldRefusedPath(t *testing.T) {
 	defer ln.Close()
 	stubDial(t, &net.OpError{Op: "dial", Net: "unix", Err: syscall.ECONNREFUSED})
 	origHolder := pathHolder
-	pathHolder = func(string) bool { return true }
+	pathHolder = func(string) (bool, error) { return true, nil }
 	t.Cleanup(func() { pathHolder = origHolder })
 
 	err = Free(path)
@@ -184,4 +184,19 @@ func TestClaimSocketReplacesCorpse(t *testing.T) {
 		t.Fatalf("corpse not claimed: %v", err)
 	}
 	ln.Close()
+}
+
+func TestFreePreservesSocketWhenHolderProbeFails(t *testing.T) {
+	path := shortSockPath(t)
+	bindCorpse(t, path)
+	stubDial(t, syscall.ECONNREFUSED)
+	orig := pathHolder
+	pathHolder = func(string) (bool, error) { return false, os.ErrPermission }
+	t.Cleanup(func() { pathHolder = orig })
+	if err := Free(path); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("probe error: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("unclassified socket removed: %v", err)
+	}
 }

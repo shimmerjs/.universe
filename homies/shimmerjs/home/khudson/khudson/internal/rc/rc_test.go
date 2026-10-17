@@ -3,13 +3,17 @@ package rc
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // serveOnce runs a fake kitty on a unix socket: accepts one connection,
@@ -135,7 +139,7 @@ func TestReadDCSWatermark(t *testing.T) {
 	if err == nil {
 		t.Fatal("unterminated stream did not error")
 	}
-	if !strings.Contains(err.Error(), "frame terminator") {
+	if !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("err %v, want the watermark error", err)
 	}
 	if junk.n > 2*readDCSMax {
@@ -165,5 +169,56 @@ func TestSendBytesBase64(t *testing.T) {
 	payload, _ := json.Marshal(env.Payload)
 	if !bytes.Contains(payload, []byte(`"data":"base64:`)) {
 		t.Fatalf("payload %s, want base64 data", payload)
+	}
+}
+
+func TestReadDCSRejectsOversizeTerminatedFrame(t *testing.T) {
+	frame := dcsPrefix + strings.Repeat("x", readDCSMax-len(dcsPrefix)) + dcsSuffix
+	if _, err := readDCS(strings.NewReader(frame)); err == nil {
+		t.Fatal("oversize terminated frame accepted")
+	}
+}
+
+func TestColorsRejectsInputCommandsBeforeDial(t *testing.T) {
+	if _, err := CallColors("", time.Second, "send-key", nil); err == nil || !strings.Contains(err.Error(), "not a color command") {
+		t.Fatalf("color-only boundary: %v", err)
+	}
+}
+
+func TestLostReplyIsUncertainButRefusalIsDefinite(t *testing.T) {
+	for name, reply := range map[string]string{"lost": "", "malformed": dcsPrefix + `{` + dcsSuffix, "refused": dcsPrefix + `{"ok":false,"error":"refused"}` + dcsSuffix} {
+		t.Run(name, func(t *testing.T) {
+			dir, err := os.MkdirTemp("/tmp", "kitty-wire-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+			socket := filepath.Join(dir, "kitty.sock")
+			listener, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				readDCS(conn)
+				io.WriteString(conn, reply)
+			}()
+			err = New(socket).SendKey("id:1", "enter")
+			<-done
+			wantUncertain := !strings.Contains(reply, "refused")
+			if err == nil || errors.Is(err, socketio.ErrUncertainDelivery) != wantUncertain {
+				t.Fatalf("reply=%q err=%v", reply, err)
+			}
+		})
+	}
+	if err := New(filepath.Join(t.TempDir(), "absent.sock")).SendKey("id:1", "enter"); err == nil || errors.Is(err, socketio.ErrUncertainDelivery) {
+		t.Fatalf("dial failure is definite: %v", err)
 	}
 }

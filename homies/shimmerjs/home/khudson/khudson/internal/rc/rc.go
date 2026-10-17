@@ -1,17 +1,19 @@
 // Package rc speaks kitty's remote-control wire protocol raw over a unix
 // socket: <ESC>P@kitty-cmd{json}<ESC>\ framing both directions, envelope
 // {cmd, version, no_response, payload}, response {ok, data, error} per
-// https://sw.kovidgoyal.net/kitty/rc_protocol/. No third-party client
-// exists; this is deliberately small and defensive about response shapes.
+// https://sw.kovidgoyal.net/kitty/rc_protocol/.
 package rc
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"time"
+
+	"github.com/shimmerjs/khudson/khudson/internal/socketio"
 )
 
 // Version is the protocol version khudson claims. It must stay <= the running
@@ -54,12 +56,13 @@ func (c *Client) call(cmd string, payload any) (json.RawMessage, error) {
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
+	deadline := time.Now().Add(timeout)
 	conn, err := net.DialTimeout("unix", c.Socket, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("%s: dial %s: %w", cmd, c.Socket, err)
 	}
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("%s: deadline: %w", cmd, err)
 	}
 
@@ -71,17 +74,20 @@ func (c *Client) call(cmd string, payload any) (json.RawMessage, error) {
 	msg = append(msg, dcsPrefix...)
 	msg = append(msg, body...)
 	msg = append(msg, dcsSuffix...)
-	if _, err := conn.Write(msg); err != nil {
-		return nil, fmt.Errorf("%s: write: %w", cmd, err)
+	if n, err := conn.Write(msg); err != nil || n != len(msg) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return nil, fmt.Errorf("%s: write: %w", cmd, errors.Join(socketio.ErrUncertainDelivery, err))
 	}
 
 	raw, err := readDCS(conn)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", cmd, err)
+		return nil, fmt.Errorf("%s: %w", cmd, errors.Join(socketio.ErrUncertainDelivery, err))
 	}
 	var resp response
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("%s: bad response %q: %w", cmd, truncate(raw, 200), err)
+		return nil, fmt.Errorf("%s: bad response %q: %w", cmd, truncate(raw, 200), errors.Join(socketio.ErrUncertainDelivery, err))
 	}
 	if !resp.OK {
 		if resp.Error == "" {
@@ -90,6 +96,15 @@ func (c *Client) call(cmd string, payload any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("%s: kitty: %s", cmd, resp.Error)
 	}
 	return resp.Data, nil
+}
+
+// CallColors shares the bounded transport while keeping the HUD palette
+// connection incapable of launching windows or forwarding terminal input.
+func CallColors(socket string, timeout time.Duration, command string, payload any) (json.RawMessage, error) {
+	if command != "get-colors" && command != "set-colors" {
+		return nil, fmt.Errorf("not a color command: %s", command)
+	}
+	return (&Client{Socket: socket, Timeout: timeout}).call(command, payload)
 }
 
 // readDCSMax bounds the response buffer: the largest legitimate frames
@@ -111,6 +126,9 @@ func readDCS(r io.Reader) ([]byte, error) {
 	for {
 		n, rerr := r.Read(tmp)
 		buf.Write(tmp[:n])
+		if buf.Len() > readDCSMax {
+			return nil, fmt.Errorf("response exceeds %d bytes", readDCSMax)
+		}
 		b := buf.Bytes()
 		if start < 0 {
 			if i := bytes.Index(b[scanned:], []byte(dcsPrefix)); i >= 0 {
@@ -125,9 +143,6 @@ func readDCS(r io.Reader) ([]byte, error) {
 				return b[start : scanned+i], nil
 			}
 			scanned = max(start, len(b)-len(dcsSuffix)+1)
-		}
-		if buf.Len() > readDCSMax {
-			return nil, fmt.Errorf("response exceeds %d bytes without a frame terminator", readDCSMax)
 		}
 		if rerr != nil {
 			if rerr == io.EOF {

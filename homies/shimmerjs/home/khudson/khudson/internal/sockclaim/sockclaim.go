@@ -5,13 +5,8 @@
 // the errno level), remove only an unheld refused corpse or nothing.
 package sockclaim
 
-// KNOWN ACCEPTED: probe-then-claim is not atomic --
-// two concurrent starters can both see a corpse and the loser's Remove
-// can unlink the winner's fresh socket (split-brain in a ~ms window).
-// launchd label serialization makes the realistic trigger a manual run
-// racing the agent; the hudlaunch launcher flock closes it.
-
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -40,11 +35,24 @@ var errWedged = errors.New("listener wedged")
 // full-backlog unix connect exactly like a corpse (never blocks to the
 // probe deadline), so ECONNREFUSED alone cannot distinguish a
 // wedged-under-load listener from a dead one -- the incident scenario.
-// lsof exits 1 with no output when nothing holds the path; a failed exec
-// falls back to corpse semantics (the pre-lsof behavior). Var: test seam.
-var pathHolder = func(path string) bool {
-	out, err := exec.Command("/usr/sbin/lsof", "-t", "--", path).Output()
-	return err == nil && len(strings.TrimSpace(string(out))) > 0
+// Unknown probe failures refuse takeover; only an empty exit 1 means no holder.
+var pathHolder = func(path string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/sbin/lsof", "-t", "--", path)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(out) == 0 && len(exit.Stderr) == 0 {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(strings.TrimSpace(string(out))) > 0, nil
 }
 
 // Free probes path and clears a dead socket file: an answering listener
@@ -69,7 +77,11 @@ func Free(path string) error {
 	case errors.Is(err, syscall.ECONNREFUSED):
 		// refused is a corpse ONLY when nothing live holds the path: a
 		// full backlog on a wedged listener refuses identically on darwin.
-		if pathHolder(path) {
+		held, err := pathHolder(path)
+		if err != nil {
+			return fmt.Errorf("probe holder of %s (not removed): %w", path, err)
+		}
+		if held {
 			return fmt.Errorf("%s: %w (refused but a live process holds the path; not removed)", path, errWedged)
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -81,7 +93,8 @@ func Free(path string) error {
 	}
 }
 
-// ClaimSocket frees path (refusing a live listener) and binds it.
+// ClaimSocket frees path and binds it. Callers must serialize the complete
+// owner lifetime with a lock; probing alone cannot serialize concurrent claims.
 func ClaimSocket(path string) (net.Listener, error) {
 	if err := Free(path); err != nil {
 		return nil, err

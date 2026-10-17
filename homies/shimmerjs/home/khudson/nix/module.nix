@@ -56,7 +56,7 @@ let
     pname = "khudson";
     version = "0.1.0";
     src = ../khudson;
-    vendorHash = "sha256-h+Ez9R2sm7Hk73QQi8U5Grn+xCb05Fl/e0PT9wR8XfA=";
+    vendorHash = "sha256-tHuTNfQ6gOGyzGT7bUfOiowboMc4Jl8C3lG/zx15O7M=";
     # Unit tests run in the build, not as flake checks. Tests that exec host
     # tools (top/vm_stat/m1ddc/gh/kitten) skip-on-missing; env-gated live
     # tests self-skip. The oryx
