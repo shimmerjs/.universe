@@ -20,6 +20,10 @@
 # resolves, and so does khudson's launcher, which execs that path inside its own
 # rebranded copy of the bundle to own the Dock identity.
 #
+# Preserve KITTY_LAUNCHED_BY_LAUNCH_SERVICES in LSEnvironment: kitty needs it
+# to read macos-launch-services-cmdline and start in ~. Replacing the dict
+# dropped --listen-on and left windows without an explicit cwd in /.
+#
 # No re-signing: the bundle carries no seal, only per-Mach-O ad-hoc signatures
 # whose CDHashes are path-independent.
 #
@@ -70,9 +74,7 @@
               path = sys.argv[1]
               with open(path, "rb") as f:
                   d = plistlib.load(f)
-              d["LSEnvironment"] = {
-                  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:$out/bin:${suffix}",
-              }
+              d.setdefault("LSEnvironment", {})["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:$out/bin:${suffix}"
               with open(path, "wb") as f:
                   plistlib.dump(d, f)
               PYEOF

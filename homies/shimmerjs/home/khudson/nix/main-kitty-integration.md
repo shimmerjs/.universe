@@ -49,6 +49,16 @@ Accepted consequence: a shell-spawned `kitty` binds no socket -- the
 daily kitty is LS-launched. The socket lives under the state root, not
 /tmp (macOS reaps /private/tmp entries idle more than ~3 days).
 
+kitty recognizes an LS launch only by `KITTY_LAUNCHED_BY_LAUNCH_SERVICES=1`,
+which LaunchServices injects from the `LSEnvironment` dict in kitty.app's
+Info.plist. `modules/darwin/kitty-overlay.nix` adds PATH to that dict and
+must merge, never replace: from 083e5a1 until the merge fix it replaced
+the dict, so every LS-launched kitty skipped the cmdline file, bound no
+socket, and started in `/` instead of `~` (bus `ctl status` reported
+`mainKitty: absent`). posture-check leg (c) now fails the build if the
+flag is missing or the cmdline file stops parsing to the one
+`--listen-on`.
+
 ## quick-access override
 
 The quick-access terminal is a second kitty process on the same
@@ -66,9 +76,9 @@ exposes no second RC surface.
   `ls "$HOME/Library/Application Support/khudson/main-kitty.sock"` and a
   passwordless
   `kitten @ --to "unix:$HOME/Library/Application Support/khudson/main-kitty.sock" ls`
-  round-trip. Live right now: the RUNNING kitty still holds the
-  password-era posture (switch replaces the conf file, not the process)
-  until the relaunch owed at the next switch.
+  round-trip. The same holds for Info.plist changes: a kitty launched
+  before the LSEnvironment merge fix landed has no socket until it is
+  quit and relaunched through LaunchServices (Dock, Finder, `open -a`).
 - Verify under socket-only (never confirmed): the `f2` cheatsheet and
   `cmd+shift+e` tab-switcher overlays use `launch --allow-remote-control`,
   which should keep working via the per-window KITTY_LISTEN_ON grant.

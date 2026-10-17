@@ -31,10 +31,33 @@ let
       dailyKittyEntry.source
     else
       pkgs.writeText "daily-kitty.conf" dailyKittyEntry.text;
+  dailyKittyApp =
+    if dailyKitty == null then "" else "${hmCfg.programs.kitty.package}/Applications/kitty.app";
+  lsCmdline =
+    if dailyKitty == null then "" else hmCfg.xdg.configFile."kitty/macos-launch-services-cmdline".source;
+  mainKittyListen = "unix:${hmCfg.home.homeDirectory}/Library/Application Support/khudson/main-kitty.sock";
+  # kitty reads macos-launch-services-cmdline only when LaunchServices hands
+  # it KITTY_LAUNCHED_BY_LAUNCH_SERVICES=1 from the bundle's LSEnvironment,
+  # which modules/darwin/kitty-overlay.nix rewrites.
+  lsLaunchCheck = pkgs.writeText "main-kitty-ls-launch.py" ''
+    import plistlib
+    import shlex
+    import sys
+
+    app, cmdline, want = sys.argv[1:]
+    with open(app + "/Contents/Info.plist", "rb") as f:
+        env = plistlib.load(f).get("LSEnvironment", {})
+    if env.get("KITTY_LAUNCHED_BY_LAUNCH_SERVICES") != "1":
+        sys.exit(f"POSTURE FAIL: {app} LSEnvironment lacks KITTY_LAUNCHED_BY_LAUNCH_SERVICES=1 (got {env}); an LS-launched kitty skips macos-launch-services-cmdline and never binds main-kitty.sock")
+    with open(cmdline) as f:
+        argv = shlex.split(f.read())
+    if argv != ["--listen-on", want]:
+        sys.exit(f"POSTURE FAIL: macos-launch-services-cmdline parses to {argv}, want exactly one --listen-on {want!r}")
+  '';
 in
 pkgs.runCommand "khudson-posture-check"
   {
-    inherit hudKitty dailyKitty;
+    inherit hudKitty dailyKitty dailyKittyApp lsCmdline mainKittyListen;
     # The activation scripts as rendered strings; their string context
     # carries the launcher store paths, so the files exist in this build.
     agentsData = hmCfg.home.activation.khudsonAgents.data;
@@ -62,13 +85,14 @@ pkgs.runCommand "khudson-posture-check"
     grep -Fq -- '-o allow_remote_control=socket-only' "$launcher" \
       || fail "substrate kitty argv lost '-o allow_remote_control=socket-only'"
 
-    echo "(c) daily kitty.conf: socket-only, passwordless"
+    echo "(c) daily kitty: socket-only, passwordless, LS launch binds main-kitty.sock"
     if [ -n "$dailyKitty" ]; then
-    grep -Fq 'allow_remote_control socket-only' "$dailyKitty" \
-      || fail "daily kitty.conf lost 'allow_remote_control socket-only'"
-    if grep -q 'rc-password.conf\|remote_control_password' "$dailyKitty"; then
-      fail "daily kitty.conf regrew password machinery (inert on socket peers; retired 2026-07-10)"
-    fi
+      grep -Fq 'allow_remote_control socket-only' "$dailyKitty" \
+        || fail "daily kitty.conf lost 'allow_remote_control socket-only'"
+      if grep -q 'rc-password.conf\|remote_control_password' "$dailyKitty"; then
+        fail "daily kitty.conf regrew password machinery (inert on socket peers; retired 2026-07-10)"
+      fi
+      ${pkgs.python3.interpreter} ${lsLaunchCheck} "$dailyKittyApp" "$lsCmdline" "$mainKittyListen" || exit 1
     else
       echo "    (skipped: mainKittyIntegration off -- posture has no daily-kitty leg)"
     fi

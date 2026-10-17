@@ -526,6 +526,10 @@ in
         # "Application Support" needs the embedded quotes. Caveat: the file is
         # read only for Launch-Services launches -- a shell-spawned kitty
         # binds no socket (acceptable: the daily kitty is LS-launched).
+        # kitty knows it was LS-launched only from the
+        # KITTY_LAUNCHED_BY_LAUNCH_SERVICES=1 in its bundle's LSEnvironment,
+        # which modules/darwin/kitty-overlay.nix must merge into, not replace;
+        # posture-check leg (c) pins both halves.
         darwinLaunchOptions = [
           "--listen-on"
           "'unix:${appSupport}/main-kitty.sock'"

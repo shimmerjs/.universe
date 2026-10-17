@@ -85,6 +85,8 @@ stdenvNoCC.mkDerivation {
     d["CFBundleDisplayName"] = "khudson"
     d["CFBundleIdentifier"] = "org.khudson.hud"
     d["CFBundleIconFile"] = "khudson.icns"
+    # The HUD must not read the daily kitty's LaunchServices arguments.
+    d.get("LSEnvironment", {}).pop("KITTY_LAUNCHED_BY_LAUNCH_SERVICES", None)
     for k in ("CFBundleIconName", "CFBundleDocumentTypes",
               "CFBundleURLTypes", "NSServices"):
         d.pop(k, None)
@@ -109,6 +111,7 @@ stdenvNoCC.mkDerivation {
     }
     for k, v in want.items():
         assert d.get(k) == v, (k, d.get(k))
+    assert "KITTY_LAUNCHED_BY_LAUNCH_SERVICES" not in d.get("LSEnvironment", {})
     for k in ("CFBundleIconName", "CFBundleDocumentTypes",
               "CFBundleURLTypes", "NSServices"):
         assert k not in d, k
