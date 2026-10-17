@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -19,10 +18,6 @@ type Match struct {
 // inject device sets without hardware.
 var hidEnumerate = hid.Enumerate
 
-// enumerateLogInterval bounds enumerate-failure logging: once on the
-// transition into the failing state, then once per interval while it lasts.
-const enumerateLogInterval = time.Minute
-
 // scanner is the central arrival scanner behind every Env.AwaitDevice: ONE
 // hid.Enumerate per tick services all waiting modules, run under openMu so a
 // scan can never race an open flipping the process-global exclusive flag.
@@ -36,10 +31,9 @@ type scanner struct {
 	states map[Match]*matchState
 	wake   chan struct{}
 
-	// enumerate-failure log rate limit; touched only from tick (single
-	// caller: run)
-	enumFailing    bool
-	lastEnumErrLog time.Time
+	// Enumeration failures retain device state and schedule a shared retry.
+	enumFailures int
+	enumRetry    time.Time
 }
 
 // matchState is the per-waiter ledger, persistent across await calls so the
@@ -79,7 +73,7 @@ func (s *scanner) await(ctx context.Context, m Match) (string, error) {
 	}
 	if st.ch != nil {
 		s.mu.Unlock()
-		return "", fmt.Errorf("duplicate waiter for %04X:%04X usage_page=0x%02X usage=0x%02X", m.VID, m.PID, m.UsagePage, m.Usage)
+		return "", moduleTerminal{fmt.Errorf("duplicate waiter for %04X:%04X usage_page=0x%02X usage=0x%02X", m.VID, m.PID, m.UsagePage, m.Usage)}
 	}
 	now := time.Now()
 	if st.armed {
@@ -145,6 +139,10 @@ func (s *scanner) reportOpenAt(path string, err error, now time.Time) {
 // scheduled attempt advances the absent ramp.
 func (s *scanner) tick(now time.Time) {
 	s.mu.Lock()
+	if now.Before(s.enumRetry) {
+		s.mu.Unlock()
+		return
+	}
 	found := map[Match]string{}
 	for m, st := range s.states {
 		if st.ch != nil {
@@ -165,20 +163,19 @@ func (s *scanner) tick(now time.Time) {
 		return nil
 	})
 	openMu.Unlock()
-	// enumerate failure keeps the retry-forever posture (waiters stay
-	// parked); the log is rate-limited so a chronic failure cannot spam
+	hidBoundaries.Observe("hid.enumerate", err, "retry_without_changing_device_state")
 	if err != nil {
-		if !s.enumFailing || now.Sub(s.lastEnumErrLog) >= enumerateLogInterval {
-			fmt.Fprintf(os.Stderr, "hid enumerate: %v (retrying, logging per %s while it persists)\n", err, enumerateLogInterval)
-			s.lastEnumErrLog = now
-		}
-		s.enumFailing = true
-	} else {
-		s.enumFailing = false
+		s.mu.Lock()
+		s.enumFailures++
+		s.enumRetry = now.Add(min(time.Second<<min(s.enumFailures, 5), 30*time.Second))
+		s.mu.Unlock()
+		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.enumFailures = 0
+	s.enumRetry = time.Time{}
 	for m, path := range found {
 		st := s.states[m]
 		if st == nil || st.ch == nil {
@@ -239,6 +236,9 @@ func (s *scanner) nextDue() (time.Time, bool) {
 			next = st.due
 			ok = true
 		}
+	}
+	if ok && next.Before(s.enumRetry) {
+		next = s.enumRetry
 	}
 	return next, ok
 }

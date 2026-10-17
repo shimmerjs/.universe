@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -78,6 +79,9 @@ func runDaemon(ctx context.Context, opts options, enabled map[string]bool, logiC
 }
 
 func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled map[string]bool, logiCfg *logiConfig, rec *recorder) error {
+	ctx, cancel := context.WithCancel(ctx)
+	var observers sync.WaitGroup
+	defer func() { cancel(); observers.Wait() }()
 	var tap func(int64, []byte)
 	if rec != nil {
 		tap = rec.write
@@ -114,8 +118,20 @@ func runDaemonScanner(ctx context.Context, sc *scanner, opts options, enabled ma
 	if len(entries) == 0 {
 		return errors.New("no modules running")
 	}
-	go rate.run(ctx, inputRateEvery)
-	go newWedgeWatch(rate).run(ctx, wedgePoll)
+	observers.Go(func() { rate.run(ctx, inputRateEvery) })
+	observers.Go(func() { newWedgeWatch(rate).run(ctx, wedgePoll) })
+	if opts.diagnostics != "" {
+		observers.Go(func() {
+			journal := boundedJournal{path: opts.diagnostics, limit: 4 << 20}
+			superviseInputDiagnostics(ctx, func() error {
+				return runInputDiagnostics(ctx, 5*time.Second, rate, osEventObservation, func(data []byte) error {
+					err := journal.append(data)
+					hidBoundaries.Observe("input.journal", err, "retry_in_one_minute_on_error")
+					return err
+				})
+			})
+		})
+	}
 	return runModules(ctx, sc, entries)
 }
 
@@ -182,6 +198,7 @@ func readLoop(ctx context.Context, dev *hid.Device, seen *atomic.Int64, emit fun
 			continue
 		}
 		if err != nil {
+			hidBoundaries.Observe("hid.read", err, "close_and_reopen_with_backoff")
 			return err
 		}
 		if n <= 0 {

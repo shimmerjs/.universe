@@ -54,6 +54,7 @@ type options struct {
 	socket      string
 	keysSocket  string
 	logiSocket  string
+	diagnostics string
 }
 
 func main() {
@@ -69,6 +70,7 @@ func main() {
 	flag.StringVar(&opts.socket, "socket", "", "unix socket path (default ~/Library/Application Support/khudson/touch.sock)")
 	flag.StringVar(&opts.keysSocket, "keys-socket", "", "Moonlander key-event socket path (default ~/Library/Application Support/khudson/keys.sock)")
 	flag.StringVar(&opts.logiSocket, "logi-socket", "", "logiretch (MX Master) state socket path (default ~/Library/Application Support/khudson/logiretch.sock)")
+	flag.StringVar(&opts.diagnostics, "diagnostics", "", "bounded input counters journal (no key values)")
 	flag.Parse()
 	if arg := flag.Arg(0); arg != "" {
 		switch arg {

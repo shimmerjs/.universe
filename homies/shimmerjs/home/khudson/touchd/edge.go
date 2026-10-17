@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -35,6 +36,9 @@ const heartbeatEvery = 5 * time.Second
 func (m *edgeModule) Name() string { return "edge" }
 
 func (m *edgeModule) Run(ctx context.Context, env Env) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make(chan error, 2)
 	// one emit hook for both collections, recorder tap before parse so the
 	// capture and the fanout see reports in the same order
 	var mu sync.Mutex
@@ -56,11 +60,19 @@ func (m *edgeModule) Run(ctx context.Context, env Env) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			m.collectionLoop(ctx, env, mouse, emit)
+			if err := m.collectionLoop(ctx, env, mouse, emit); err != nil && !errors.Is(err, context.Canceled) {
+				errs <- err
+				cancel()
+			}
 		}()
 	}
 	wg.Wait()
-	return nil
+	close(errs)
+	var result error
+	for err := range errs {
+		result = errors.Join(result, err)
+	}
+	return result
 }
 
 // heartbeat publishes a liveness line while at least one collection is open.
@@ -88,7 +100,7 @@ func (m *edgeModule) heartbeat(ctx context.Context, env Env) {
 // seize-holding driver surfaces here as repeated open errors; the scanner
 // owns the backoff schedule). Logs only when the error changes or hourly,
 // not per attempt.
-func (m *edgeModule) collectionLoop(ctx context.Context, env Env, mouse bool, emit func(int64, []byte)) {
+func (m *edgeModule) collectionLoop(ctx context.Context, env Env, mouse bool, emit func(int64, []byte)) error {
 	name, match := "digitizer", edgeDigitizerMatch
 	if mouse {
 		name, match = "mouse", edgeMouseMatch
@@ -98,7 +110,7 @@ func (m *edgeModule) collectionLoop(ctx context.Context, env Env, mouse bool, em
 	for {
 		path, err := env.AwaitDevice(ctx, match)
 		if err != nil {
-			return
+			return err
 		}
 		dev, err := env.OpenExclusive(path)
 		if err != nil {
@@ -124,7 +136,7 @@ func (m *edgeModule) collectionLoop(ctx context.Context, env Env, mouse bool, em
 				deassertMode(dev)
 			}
 			dev.Close()
-			return
+			return ctx.Err()
 		}
 		dev.Close()
 		fmt.Fprintf(os.Stderr, "%s gone, reopening: %v\n", name, err)

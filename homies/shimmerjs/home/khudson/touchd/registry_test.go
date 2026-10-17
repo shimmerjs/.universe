@@ -207,14 +207,22 @@ func TestRegistryBindRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the first failed attempt shows up as newBroadcaster's dial guard
-	// connecting to the squatter; release the socket before the next attempt
-	go func() {
-		for squatter.clientCount() == 0 {
-			time.Sleep(time.Millisecond)
+	failed := make(chan struct{}, 1)
+	original := newBroadcaster
+	newBroadcaster = func(path string) (*broadcaster, error) {
+		b, err := original(path)
+		if path == keys && err != nil {
+			select {
+			case failed <- struct{}{}:
+			default:
+			}
 		}
-		squatter.close()
-	}()
+		return b, err
+	}
+	t.Cleanup(func() { newBroadcaster = original })
+	released := make(chan struct{})
+	go func() { <-failed; squatter.close(); close(released) }()
+	t.Cleanup(func() { <-released })
 
 	opts := options{socket: filepath.Join(dir, "touch.sock"), keysSocket: keys}
 	sc, stop := startDaemon(t, defaultModules(), opts)

@@ -151,6 +151,26 @@ let
   # and are gated on the module being enabled for the host's user -- no other
   # builder discovers khudson, so this is the one lib/ shim. Both import from
   # the module dir so the checked script/artifacts are the deployed ones.
+  mkMagicbusConformanceCheck = hostname: config: let
+    host = importHost hostname;
+    system = host.system;
+    cfg = config.home-manager.users.${host.user}.universe.home.magicbus or {};
+  in if cfg.enable or false then {
+    inherit system; name = "magicbus-conformance-${hostname}";
+    value = cfg.package.overrideAttrs (_: {
+      pname = "magicbus-conformance";
+      buildPhase = "true";
+      checkPhase = ''
+        go vet ./...
+        find . -path ./vendor -prune -o -name '*.go' -exec gofmt -l {} + > formatting.txt
+        if [ -s formatting.txt ]; then cat formatting.txt; exit 1; fi
+        go test -race -json ./... > conformance.jsonl || { cat conformance.jsonl; exit 1; }
+      '';
+      installPhase = ''mkdir -p "$out"; cp conformance.jsonl "$out/"'';
+      postInstall = "";
+    });
+  } else null;
+
   mkKhudsonInstallCheck = hostname: config: let
     host = importHost hostname;
     system = host.system;
@@ -301,7 +321,7 @@ let
            }; }
     else null;
 
-  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkKittyStartupCheck mkNixGcCheck ];
+  checkBuilders = [ mkNvimCheck mkWorkflowCheck mkCheatsheetCheck mkStatuslineCheck mkHooksCheck mkWorkflowTestsCheck mkKhudsonInstallCheck mkKhudsonPostureCheck mkKhudsonGlyphCheck mkKribSheetsCheck mkClaudePluginsCheck mkCodyConfigCheck mkZshrcCheck mkKittyStartupCheck mkMagicbusConformanceCheck mkNixGcCheck ];
 
   # Collect checks from a set of system configurations (darwin or nixos).
   collectChecks = configs:

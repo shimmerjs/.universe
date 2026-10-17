@@ -124,7 +124,7 @@ func (m *logiretchModule) Run(ctx context.Context, env Env) error {
 	for {
 		path, err := env.AwaitDevice(ctx, logiMatch)
 		if err != nil {
-			return nil
+			return err
 		}
 		dev, err := env.OpenShared(path)
 		if err != nil {

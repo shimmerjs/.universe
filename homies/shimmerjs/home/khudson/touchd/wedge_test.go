@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -93,7 +95,7 @@ func TestWedgeClearsOnDeliveryNotOnSilence(t *testing.T) {
 	// the pipeline delivers something again
 	f.idle = 0
 	line := f.step(1)
-	if !strings.Contains(line, "WEDGE CLEARED") {
+	if !strings.Contains(line, "IDLE DISAGREEMENT ENDED") {
 		t.Fatalf("clear line = %q", line)
 	}
 	// and it does not keep announcing that either
@@ -102,13 +104,12 @@ func TestWedgeClearsOnDeliveryNotOnSilence(t *testing.T) {
 	}
 }
 
-// A drain zeroes the counters mid-interval. That is bookkeeping, and must
-// read as neither new reports nor the hardware going quiet.
+// Interval logging must not change the cumulative activity signal.
 func TestWedgeSurvivesACounterDrain(t *testing.T) {
 	f := newWedgeFixture()
 	f.idle = 0
 	f.step(5)
-	f.w.rate.drain() // the 60s forensic line just fired, counters back to 0
+	f.w.rate.drain() // the interval log consumed its delta
 
 	// let the last real reports age out, so anything that fires below is
 	// the drain's doing and not leftover freshness
@@ -119,19 +120,13 @@ func TestWedgeSurvivesACounterDrain(t *testing.T) {
 	if l := f.step(0); l != "" {
 		t.Errorf("a drain alone flagged a wedge: %q", l)
 	}
-	// counters restart from zero after a drain; new reports must still
-	// register as new, or the watch goes blind for the rest of the minute
+	// Reports after a drain still count as activity.
 	if line := f.step(2); !strings.Contains(line, "WEDGE:") {
 		t.Errorf("reports after a drain must still count: %q", line)
 	}
 }
 
-// Secure event input is how a password field or an authorization dialog
-// takes the keyboard, and a holder that never releases it loses input
-// system-wide while the hardware keeps sending. macOS publishes the holder
-// only WHILE it is held, so the onset line has to carry it -- it cannot be
-// recovered from the log afterwards, which is why no previous episode could
-// answer the question.
+// Preserve the console field as evidence without treating absence as proof.
 func TestWedgeOnsetReportsSecureInputHolder(t *testing.T) {
 	held := `+-o Root  <class IORegistryEntry>
     "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kCGSSessionSecureInputPID"=4242,"kCGSSessionUserNameKey"="shimmerjs"})`
@@ -143,7 +138,7 @@ func TestWedgeOnsetReportsSecureInputHolder(t *testing.T) {
 	f.idle = 0
 	f.step(3)
 	f.idle = 10 * time.Second
-	if line := f.step(3); !strings.Contains(line, "secure input HELD by pid 4242") {
+	if line := f.step(3); !strings.Contains(line, "secure input field names pid 4242") {
 		t.Errorf("onset must name the secure-input holder: %q", line)
 	}
 
@@ -154,7 +149,21 @@ func TestWedgeOnsetReportsSecureInputHolder(t *testing.T) {
 	g.idle = 0
 	g.step(3)
 	g.idle = 10 * time.Second
-	if line := g.step(3); !strings.Contains(line, "secure input: not held") {
+	if line := g.step(3); !strings.Contains(line, "secure input: holder not observed in console snapshot") {
 		t.Errorf("onset must record the absence: %q", line)
+	}
+}
+
+func TestDiagnosticProbeBoundsOutput(t *testing.T) {
+	_, err := probeOutput(context.Background(), "/bin/sh", "-c", "while :; do printf '0123456789012345678901234567890123456789012345678901234567890123456789'; done")
+	if !errors.Is(err, errProbeOutputLimit) {
+		t.Fatalf("output bound: %v", err)
+	}
+}
+func TestDiagnosticProbeHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := probeOutput(ctx, "/bin/sh", "-c", "exit 0"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost: %v", err)
 	}
 }

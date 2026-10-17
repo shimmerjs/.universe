@@ -11,7 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"net"
 	"slices"
 	"sync"
 	"time"
@@ -50,9 +52,10 @@ type hidppResult struct {
 // one HID++ handle: one request in flight, swId cycled per request, replies
 // matched by classifyReply and everything else fed to onEvent.
 type hidppConn struct {
-	dev  hidDevice
-	stop chan struct{}
-	done chan struct{}
+	closeOnce sync.Once
+	dev       hidDevice
+	stop      chan struct{}
+	done      chan struct{}
 
 	mu      sync.Mutex
 	pending *pendingReq
@@ -87,7 +90,7 @@ func newHidppConn(dev hidDevice) *hidppConn {
 // close stops the reader and joins it; the caller closes the device after
 // (and hid.Exit comes later still).
 func (c *hidppConn) close() {
-	close(c.stop)
+	c.closeOnce.Do(func() { close(c.stop) })
 	<-c.done
 }
 
@@ -105,6 +108,7 @@ func (c *hidppConn) loop() {
 			continue
 		}
 		if err != nil {
+			hidBoundaries.Observe("hidpp.read", err, "close_and_reopen_with_backoff")
 			c.mu.Lock()
 			c.readErr = err
 			c.mu.Unlock()
@@ -191,7 +195,23 @@ func (c *hidppConn) readError() error {
 // report number 0x11 leads the buffer), then the swId-matched reply or its
 // error frame within the reply deadline. res.raw is valid whenever err wraps
 // hidppError.
-func (c *hidppConn) request(ctx context.Context, devIdx, featIdx, fnID byte, params ...byte) (hidppResult, error) {
+func (c *hidppConn) request(ctx context.Context, devIdx, featIdx, fnID byte, params ...byte) (result hidppResult, returnedError error) {
+	defer func() {
+		hidBoundaries.Observe(fmt.Sprintf("hidpp.request.%02x.%02x", featIdx, fnID), returnedError, "caller_recovery_policy")
+	}()
+	if err := ctx.Err(); err != nil {
+		return hidppResult{}, err
+	}
+	select {
+	case <-c.stop:
+		return hidppResult{}, net.ErrClosed
+	case <-c.done:
+		if err := c.readError(); err != nil {
+			return hidppResult{}, err
+		}
+		return hidppResult{}, net.ErrClosed
+	default:
+	}
 	c.mu.Lock()
 	if c.readErr != nil {
 		err := c.readErr
@@ -208,7 +228,10 @@ func (c *hidppConn) request(ctx context.Context, devIdx, featIdx, fnID byte, par
 	c.pending = p
 	c.mu.Unlock()
 
-	if _, err := c.dev.Write(req); err != nil {
+	if n, err := c.dev.Write(req); err != nil || n != len(req) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
 		c.clearPending(p)
 		return hidppResult{}, fmt.Errorf("write: %w", err)
 	}
@@ -218,9 +241,18 @@ func (c *hidppConn) request(ctx context.Context, devIdx, featIdx, fnID byte, par
 			return res, hidppError(res.code)
 		}
 		return res, nil
+	case <-c.done:
+		c.clearPending(p)
+		if err := c.readError(); err != nil {
+			return hidppResult{}, err
+		}
+		return hidppResult{}, net.ErrClosed
+	case <-c.stop:
+		c.clearPending(p)
+		return hidppResult{}, net.ErrClosed
 	case <-time.After(hidppReplyTimeout):
 		c.clearPending(p)
-		return hidppResult{}, fmt.Errorf("no reply within %s", hidppReplyTimeout)
+		return hidppResult{}, fmt.Errorf("no reply within %s: %w", hidppReplyTimeout, context.DeadlineExceeded)
 	case <-ctx.Done():
 		c.clearPending(p)
 		return hidppResult{}, ctx.Err()

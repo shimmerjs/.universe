@@ -148,6 +148,7 @@ func assertEdgeMode(dev *hid.Device, mouse, noMode, verbose bool) bool {
 // value, usage 0x53 device identifier = 0.
 func setMode(dev *hid.Device, value byte) error {
 	_, err := dev.SendFeatureReport([]byte{reportDeviceMode, value, 0x00})
+	hidBoundaries.Observe(fmt.Sprintf("hid.feature.mode.%d", value), err, "report_failure_without_repeating_write")
 	return err
 }
 

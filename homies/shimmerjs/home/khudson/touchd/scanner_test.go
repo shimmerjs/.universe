@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -311,42 +310,54 @@ func captureStderr(t *testing.T, fn func()) string {
 	return string(out)
 }
 
-// An enumerate failure logs on the transition into the failing state, stays
-// quiet within the interval, re-logs once the interval passes, and a success
-// resets the limiter so the next failure logs immediately.
-func TestScannerEnumerateErrorLogRateLimited(t *testing.T) {
-	enumErr := errors.New("hid_enumerate failed")
-	failing := true
+func TestScannerEnumerateFailurePreservesPendingDeviceState(t *testing.T) {
 	old := hidEnumerate
+	oldRecords := hidBoundaries
+	t.Cleanup(func() { hidEnumerate = old; hidBoundaries = oldRecords })
+	var records []boundaryEvent
+	hidBoundaries = newBoundaryRecorder(func(e boundaryEvent) { records = append(records, e) })
+	failing := true
+	calls := 0
 	hidEnumerate = func(vid, pid uint16, fn hid.EnumFunc) error {
+		calls++
+		info := matchDevice(moonMatch, "device")
+		fn(&info)
 		if failing {
-			return enumErr
+			return errors.New("enumerate incomplete")
 		}
 		return nil
 	}
-	t.Cleanup(func() { hidEnumerate = old })
-
 	sc := newScanner()
-	park(t, sc, moonMatch)
+	ch := park(t, sc, moonMatch)
 	waitParked(t, sc, 1)
-
 	now := time.Now()
-	if out := captureStderr(t, func() { sc.tick(now) }); !strings.Contains(out, "enumerate") {
-		t.Fatalf("first failure did not log: %q", out)
+	sc.tick(now)
+	select {
+	case <-ch:
+		t.Fatal("partial failed enumeration delivered a device")
+	default:
 	}
-	if out := captureStderr(t, func() { sc.tick(now.Add(time.Second)) }); out != "" {
-		t.Fatalf("failure inside the interval logged: %q", out)
+	sc.mu.Lock()
+	bo := sc.states[moonMatch].bo
+	sc.mu.Unlock()
+	if bo.next != 0 {
+		t.Fatal("enumeration error changed absent/open failure class")
 	}
-	if out := captureStderr(t, func() { sc.tick(now.Add(enumerateLogInterval + time.Second)) }); !strings.Contains(out, "enumerate") {
-		t.Fatalf("persistent failure did not re-log after the interval: %q", out)
+	sc.tick(now.Add(time.Second))
+	if calls != 1 {
+		t.Fatal("retry did not back off")
+	}
+	due, ok := sc.nextDue()
+	if !ok || !due.After(now) {
+		t.Fatal("retry not retained")
 	}
 	failing = false
-	if out := captureStderr(t, func() { sc.tick(now.Add(enumerateLogInterval + 2*time.Second)) }); out != "" {
-		t.Fatalf("successful enumerate logged: %q", out)
+	sc.tick(due)
+	if p := recvPath(t, ch); p != "device" {
+		t.Fatal(p)
 	}
-	failing = true
-	if out := captureStderr(t, func() { sc.tick(now.Add(enumerateLogInterval + 3*time.Second)) }); !strings.Contains(out, "enumerate") {
-		t.Fatalf("failure after a success did not log immediately: %q", out)
+	if len(records) != 2 || records[0].Outcome != "error" || records[1].Outcome != "recovered" {
+		t.Fatal(records)
 	}
 }
 

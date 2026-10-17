@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -17,7 +18,7 @@ func TestInputRateDrainKeepsSilentSources(t *testing.T) {
 	if got, want := r.drain(), " edge-digitizer=0 moonlander=3"; got != want {
 		t.Fatalf("drain = %q, want %q", got, want)
 	}
-	// counts are per interval, so the drain must zero them
+	// No new reports means a zero delta.
 	if got, want := r.drain(), " edge-digitizer=0 moonlander=0"; got != want {
 		t.Fatalf("second drain = %q, want %q", got, want)
 	}
@@ -53,5 +54,37 @@ func TestInputRateDrainIsOrdered(t *testing.T) {
 func TestEnvInputSourceNilWithoutRate(t *testing.T) {
 	if c := (Env{}).InputSource("moonlander"); c != nil {
 		t.Fatalf("InputSource without a rate = %v, want nil", c)
+	}
+}
+
+func TestInputRateDrainPreservesCumulativeCount(t *testing.T) {
+	r := newInputRate()
+	c := r.source("keyboard")
+	c.Add(100)
+	r.drain()
+	c.Add(1)
+	if got := r.total(); got != 101 {
+		t.Fatalf("total=%d", got)
+	}
+	if got := r.drain(); got != " keyboard=1" {
+		t.Fatalf("delta=%q", got)
+	}
+}
+
+func TestInputRateConcurrentArrivalAndDrain(t *testing.T) {
+	r := newInputRate()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			r.source(fmt.Sprint(i)).Add(1)
+		}
+	}()
+	for range 1000 {
+		r.drain()
+	}
+	<-done
+	if r.total() != 1000 {
+		t.Fatal("lost reports")
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -637,3 +639,33 @@ func TestLogiStateJSONShape(t *testing.T) {
 }
 
 func intp(v int) *int { return &v }
+
+type shortWriteDevice struct{ *fakeDev }
+
+func (d shortWriteDevice) Write(p []byte) (int, error) { return len(p) - 1, nil }
+func TestHIDRequestAdmission(t *testing.T) {
+	shortHidppTimeouts(t)
+	dev := newFakeDev(nil)
+	conn := newHidppConn(dev)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := conn.request(ctx, 1, 2, 3); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel=%v", err)
+	}
+	if len(dev.written()) != 0 {
+		t.Fatal("cancelled request wrote hardware")
+	}
+	conn.close()
+	conn.close()
+	if _, err := conn.request(context.Background(), 1, 2, 3); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closed=%v", err)
+	}
+	if len(dev.written()) != 0 {
+		t.Fatal("closed request wrote hardware")
+	}
+	short := newHidppConn(shortWriteDevice{newFakeDev(nil)})
+	defer short.close()
+	if _, err := short.request(context.Background(), 1, 2, 3); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write=%v", err)
+	}
+}

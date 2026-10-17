@@ -1,31 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
-// The wedge watch joins the two halves of the signal that identify this
-// machine's recurring input hang, and writes the one line reconstructing it
-// afterwards used to cost an afternoon.
-//
-// magicbusd reads HID reports below the macOS event pipeline; osIdle asks
-// the pipeline how long it believes it has been since any input reached it.
-// Reports arriving while the pipeline insists it has been idle for far
-// longer IS the wedge: the hardware is sending and something above us has
-// stopped delivering. Neither half means anything alone -- a quiet keyboard
-// and an idle pipeline is just nobody typing.
-//
-// It exists because every episode so far destroyed its own evidence. The
-// machine needed a hard reset, and pinning the onset after the fact meant
-// triangulating powerd's assertion age against per-minute HID counts. The
-// unified log keeps about a month, so a timestamped onset is the difference
-// between a grep and an afternoon (2026-08-23: onset 17:01:02, 194 keyboard
-// reports delivered to nothing, resolved instantly on unplugging the Edge).
+// The watch reports disagreement between HID activity and aggregate session idle.
+// Pointer motion can end the disagreement while keyboard delivery remains broken.
 const (
 	// wedgePoll is fast enough to catch the onset within a second and cheap
 	// enough to run forever: one map walk over a handful of atomics plus one
@@ -43,10 +31,7 @@ const (
 	wedgeFresh = 2 * wedgePoll
 )
 
-// secureInputPIDRE pulls the holder out of IORegistry's IOConsoleUsers
-// dictionary. macOS adds this key to the console session ONLY while some
-// process has secure event input enabled, so its presence is the fact and
-// its absence is the other fact.
+// This IORegistry field is diagnostic evidence, not a documented global lock API.
 var secureInputPIDRE = regexp.MustCompile(`"kCGSSessionSecureInputPID"\s*=\s*(\d+)`)
 
 // wedgeWatch reports input-delivery stalls. The clock, the idle probe and
@@ -70,36 +55,39 @@ func newWedgeWatch(rate *inputRate) *wedgeWatch {
 // cannot be read. Shelling out is fine HERE and nowhere near the poll: this
 // runs once, at onset, on an event that happens a few times a month.
 func readConsoleUsers() string {
-	out, err := exec.Command("ioreg", "-l", "-w", "0", "-d", "1").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := probeOutput(ctx, "/usr/sbin/ioreg", "-l", "-w", "0", "-d", "1")
+	hidBoundaries.Observe("input.console.query", err, "retain unknown diagnostic state; do not infer secure-input ownership")
 	if err != nil {
 		return ""
 	}
 	return string(out)
 }
 
-// secureInput names the process holding secure event input, which is the
-// first thing to know about an input stall that followed a permission
-// prompt. Secure input is how a password field or an authorization dialog
-// takes the keyboard, and a holder that never gives it back is a documented
-// way to lose input system-wide while the hardware keeps sending -- exactly
-// this wedge's shape. macOS publishes the holder only while it is held, so
-// this has to be sampled AT onset; it cannot be recovered afterwards, which
-// is why every previous episode could not answer the question.
 func (w *wedgeWatch) secureInput() string {
 	if w.console == nil {
 		return "secure input: unknown"
 	}
-	m := secureInputPIDRE.FindStringSubmatch(w.console())
+	console := w.console()
+	if console == "" {
+		return "secure input: unknown (console read failed)"
+	}
+	m := secureInputPIDRE.FindStringSubmatch(console)
 	if m == nil {
-		return "secure input: not held"
+		return "secure input: holder not observed in console snapshot"
 	}
 	name := "?"
-	if out, err := exec.Command("ps", "-o", "comm=", "-p", m[1]).Output(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := probeOutput(ctx, "/bin/ps", "-o", "comm=", "-p", m[1])
+	hidBoundaries.Observe("input.console.process", err, "keep PID evidence; process name remains unknown")
+	if err == nil {
 		if s := strings.TrimSpace(string(out)); s != "" {
 			name = s
 		}
 	}
-	return fmt.Sprintf("secure input HELD by pid %s (%s)", m[1], name)
+	return fmt.Sprintf("secure input field names pid %s (%s)", m[1], name)
 }
 
 // tick advances the watch one poll and returns the line to log, or "".
@@ -114,8 +102,7 @@ func (w *wedgeWatch) tick(now time.Time) string {
 	if total > w.prev {
 		w.lastSeen = now
 	}
-	// a drain zeroes the counters mid-interval; that is bookkeeping, not
-	// the hardware going quiet, so resync rather than read it as either
+	// The counters are cumulative across log intervals.
 	w.prev = total
 
 	idle := w.idle()
@@ -124,7 +111,7 @@ func (w *wedgeWatch) tick(now time.Time) string {
 	if w.onset.IsZero() {
 		if sending && idle >= wedgeIdle {
 			w.onset = now
-			return fmt.Sprintf("WEDGE: hid reports arriving but the event pipeline reports %s idle -- input delivery is stalled; %s",
+			return fmt.Sprintf("SUSPECTED WEDGE: HID reports arriving with %s session idle -- possible stalled input; %s",
 				idle.Round(time.Second), w.secureInput())
 		}
 		return ""
@@ -132,7 +119,7 @@ func (w *wedgeWatch) tick(now time.Time) string {
 	if idle < wedgeIdle {
 		d := now.Sub(w.onset)
 		w.onset = time.Time{}
-		return fmt.Sprintf("WEDGE CLEARED after %s -- the event pipeline is delivering again", d.Round(time.Second))
+		return fmt.Sprintf("IDLE DISAGREEMENT ENDED after %s -- a session event was observed; keyboard/click recovery unverified", d.Round(time.Second))
 	}
 	return ""
 }
@@ -151,4 +138,41 @@ func (w *wedgeWatch) run(ctx context.Context, every time.Duration) {
 			}
 		}
 	}
+}
+
+var errProbeOutputLimit = errors.New("diagnostic command output exceeds 1 MiB")
+
+type probeCapture struct {
+	buffer   bytes.Buffer
+	cancel   context.CancelFunc
+	exceeded bool
+}
+
+func (b *probeCapture) Write(p []byte) (int, error) {
+	if len(p) > (1<<20)-b.buffer.Len() {
+		b.exceeded = true
+		b.cancel()
+		return 0, errProbeOutputLimit
+	}
+	return b.buffer.Write(p)
+}
+
+// Diagnostic sampling must not strand the input monitor on a stuck pipe.
+func probeOutput(parent context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	output := &probeCapture{cancel: cancel}
+	cmd.Stdout = output
+	err := cmd.Run()
+	if output.exceeded {
+		return nil, errProbeOutputLimit
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return output.buffer.Bytes(), err
 }

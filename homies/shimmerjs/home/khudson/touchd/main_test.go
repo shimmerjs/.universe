@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -499,5 +500,74 @@ func TestMainArgv(t *testing.T) {
 				t.Fatalf("stderr %q, want %q", stderr.String(), tc.stderr)
 			}
 		})
+	}
+}
+
+func TestBroadcasterClose(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "t.sock")
+	b, err := newBroadcaster(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		b.close()
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	waitForClient(t, b)
+	if other, err := newBroadcaster(sock); err == nil {
+		other.close()
+		b.close()
+		t.Fatal("second broadcaster stole ownership")
+	}
+	b.close()
+	if b.clientCount() != 0 {
+		t.Fatal("idle writer survived close")
+	}
+	b.close()
+	next, err := newBroadcaster(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.close()
+}
+
+func TestBroadcasterPeerClose(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "t.sock")
+	b, err := newBroadcaster(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.close()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForClient(t, b)
+	conn.Close()
+	deadline := time.Now().Add(time.Second)
+	for b.clientCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if b.clientCount() != 0 {
+		t.Fatal("disconnected idle client retained")
+	}
+}
+
+func TestBroadcastOverflowDisconnects(t *testing.T) {
+	server, peer := net.Pipe()
+	defer server.Close()
+	defer peer.Close()
+	queue := make(chan []byte, 1)
+	queue <- []byte("held")
+	b := &broadcaster{clients: map[net.Conn]chan []byte{server: queue}}
+	b.publishJSON(map[string]bool{"released": true})
+	if b.clientCount() != 0 {
+		t.Fatal("lagging client retained")
+	}
+	var buf [1]byte
+	if _, err := peer.Read(buf[:]); !errors.Is(err, io.EOF) {
+		t.Fatalf("peer not disconnected: %v", err)
 	}
 }

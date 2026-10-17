@@ -24,14 +24,15 @@ const inputRateEvery = time.Minute
 // on the box records, and one the unified log cannot answer once it has
 // rolled.
 //
-// Cost is one atomic add per report; the map is read only at module start.
+// Reports add atomically; source arrival, totals, and interval reads share a mutex.
 type inputRate struct {
 	mu       sync.Mutex
 	counters map[string]*atomic.Int64
+	last     map[string]int64
 }
 
 func newInputRate() *inputRate {
-	return &inputRate{counters: map[string]*atomic.Int64{}}
+	return &inputRate{counters: map[string]*atomic.Int64{}, last: map[string]int64{}}
 }
 
 // source returns name's counter, creating it on first use. Called when a
@@ -60,24 +61,25 @@ func (r *inputRate) total() int64 {
 	return n
 }
 
-// drain renders the interval's counts and zeroes them. Sources that have
+// drain renders deltas without resetting the cumulative liveness counters. Sources that have
 // opened stay in the line at zero: a source reporting nothing is the
 // observation, so it must not vanish from the record.
 func (r *inputRate) drain() string {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.counters))
 	for name := range r.counters {
 		names = append(names, name)
 	}
-	counters := r.counters
-	r.mu.Unlock()
 	if len(names) == 0 {
 		return ""
 	}
 	slices.Sort(names)
 	line := ""
 	for _, name := range names {
-		line += fmt.Sprintf(" %s=%d", name, counters[name].Swap(0))
+		n := r.counters[name].Load()
+		line += fmt.Sprintf(" %s=%d", name, n-r.last[name])
+		r.last[name] = n
 	}
 	return line
 }

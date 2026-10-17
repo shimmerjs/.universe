@@ -68,6 +68,11 @@ func (e Env) OpenExclusive(path string) (*hid.Device, error) { return e.open(pat
 
 func (e Env) open(path string, exclusive bool) (*hid.Device, error) {
 	dev, err := openPath(path, exclusive)
+	boundary := "hid.open.shared"
+	if exclusive {
+		boundary = "hid.open.exclusive"
+	}
+	hidBoundaries.Observe(boundary, err, "backoff_if_open_failed")
 	if e.scan != nil {
 		e.scan.reportOpen(path, err)
 	}
@@ -86,10 +91,15 @@ type moduleEntry struct {
 	env Env
 }
 
-// runModules is the registry runner: one goroutine per enabled module plus
-// the shared scanner, fan-in-waited until every module returns. A non-nil,
-// non-cancel module error is logged AND returned so the daemon exits nonzero
-// instead of idling under KeepAlive with a dead module. The scanner is
+// moduleTerminal is a known local contract violation. Restarting other HID
+// owners cannot repair it. Unknown errors retain process-wide fail-stop behavior.
+type moduleTerminal struct{ cause error }
+
+func (e moduleTerminal) Error() string { return e.cause.Error() }
+func (e moduleTerminal) Unwrap() error { return e.cause }
+
+// runModules joins all modules. Known local contract failures disable their
+// module; unclassified failures stop the shared runtime. The scanner is
 // joined before returning: it may be inside hidEnumerate under openMu, and
 // main's deferred hid.Exit must not free the manager under an in-flight
 // enumerate.
@@ -107,7 +117,21 @@ func runModules(ctx context.Context, sc *scanner, entries []moduleEntry) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := e.mod.Run(ctx, e.env); err != nil && !errors.Is(err, context.Canceled) {
+			err := e.mod.Run(ctx, e.env)
+			if ctx.Err() != nil {
+				return
+			}
+			if err == nil || errors.Is(err, context.Canceled) {
+				err = moduleTerminal{errors.New("module exited without owner cancellation")}
+			}
+			var local moduleTerminal
+			if errors.As(err, &local) {
+				hidBoundaries.Observe("module."+e.mod.Name(), err, "disabled; inspect module contract; siblings remain running")
+				<-ctx.Done()
+				return
+			}
+			if err != nil {
+				hidBoundaries.Observe("module."+e.mod.Name(), err, "unclassified shared-runtime risk; stop daemon")
 				fmt.Fprintf(os.Stderr, "%s module failed: %v\n", e.mod.Name(), err)
 				errs <- fmt.Errorf("%s module: %w", e.mod.Name(), err)
 				// tear the siblings down so the daemon exits (and launchd

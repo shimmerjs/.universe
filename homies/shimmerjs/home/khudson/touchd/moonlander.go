@@ -127,7 +127,7 @@ func (moonModule) Run(ctx context.Context, env Env) error {
 	for {
 		path, err := env.AwaitDevice(ctx, moonMatch)
 		if err != nil {
-			return nil
+			return err
 		}
 		dev, err := openMoonlander(env, path)
 		if err != nil {
